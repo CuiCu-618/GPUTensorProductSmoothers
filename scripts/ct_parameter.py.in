@@ -74,7 +74,7 @@ def parse_args():
     parser.add_argument('-K','--kernel_type',
                         default='F',
                         nargs='+',
-                        choices=['GLOBAL','SEPERATE','FUSED_BASE','FUSED_L','FUSED_3D','FUSED_CF'],
+                        choices=['GLOBAL','SEPERATE','FUSED_BASE','FUSED_L','FUSED_3D','FUSED_CF','FUSED_BD'],
                         help="variant of the Schwarz smoother kernel"
     )
     parser.add_argument('-G','--granularity',
@@ -145,6 +145,9 @@ class Parameter:
                 count += 1    
             elif kernel.endswith('F'):
                 kernel_str += r'PSMF::SmootherVariant::FUSED_CF, '
+                count += 1
+            elif kernel.endswith('_BD'):
+                kernel_str += r'PSMF::SmootherVariant::FUSED_BD, '
                 count += 1
         self.kernel_type = ('constexpr std::array<PSMF::SmootherVariant, ' + str(count) + '>', kernel_str + '}')
 

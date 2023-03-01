@@ -84,11 +84,11 @@ private:
   void
   bench_transfer();
   void
-  bench_smooth();
+  bench_smooth(unsigned int p);
 
   template <PSMF::SmootherVariant kernel>
   void
-  do_smooth();
+  do_smooth(unsigned int p = 1);
 
   Triangulation<dim>                  triangulation;
   std::shared_ptr<FiniteElement<dim>> fe;
@@ -151,8 +151,8 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   dof_handler.distribute_mg_dofs();
 
   n_dofs = dof_handler.n_dofs();
-  N      = 1;
-  n_mv   = 1; // dof_handler.n_dofs() < 10000000 ? 100 : 20;
+  N      = 5;
+  n_mv   = dof_handler.n_dofs() < 10000000 ? 100 : 20;
 
   const unsigned int nlevels = triangulation.n_global_levels();
   for (unsigned int level = 0; level < nlevels; ++level)
@@ -343,9 +343,9 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
 template <int dim, int fe_degree>
 template <PSMF::SmootherVariant kernel>
 void
-LaplaceProblem<dim, fe_degree>::do_smooth()
+LaplaceProblem<dim, fe_degree>::do_smooth(unsigned int p)
 {
-  *pcout << "Benchmarking Smoother in double precision...\n";
+  // *pcout << "Benchmarking Smoother in double precision...\n";
 
   // DP
   using SmootherTypeDP =
@@ -353,12 +353,15 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   SmootherTypeDP                          smooth_dp;
   typename SmootherTypeDP::AdditionalData additional_data;
   additional_data.relaxation         = 1.;
+  additional_data.patch_per_block    = p;
   additional_data.granularity_scheme = CT::GRANULARITY_;
   smooth_dp.initialize(system_matrix, additional_data);
 
   Timer  time;
   double best_time  = 1e10;
   double best_time2 = 1e10;
+
+  // solution_dp.print(std::cout);
 
   for (unsigned int i = 0; i < N; ++i)
     {
@@ -371,8 +374,12 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
 
+  // std::cout << solution_dp.l2_norm() << std::endl;
+  // solution_dp.print(std::cout);
+
   info_table[2].add_value("Name",
                           std::string(SmootherToString(kernel)) + "_DP");
+  info_table[2].add_value("Patches", p);
   info_table[2].add_value("Time[s]", best_time);
   info_table[2].add_value("Perf[Dof/s]", n_dofs / best_time);
   if (kernel == PSMF::SmootherVariant::GLOBAL)
@@ -385,7 +392,7 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
       info_table[2].add_value("Speedup", base_time_dp / best_time);
     }
 
-  *pcout << "Benchmarking Smoother in single precision...\n";
+  // *pcout << "Benchmarking Smoother in single precision...\n";
 
   // SP
   using SmootherTypeSP =
@@ -393,6 +400,7 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   SmootherTypeSP                          smooth_sp;
   typename SmootherTypeSP::AdditionalData additional_data_;
   additional_data_.relaxation         = 1.;
+  additional_data_.patch_per_block    = p * 2;
   additional_data_.granularity_scheme = CT::GRANULARITY_;
   smooth_sp.initialize(mg_matrices, additional_data_);
 
@@ -407,8 +415,10 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
       best_time2 = std::min(time.wall_time() / n_mv, best_time2);
     }
 
+  // std::cout << solution_sp.l2_norm() << std::endl;
   info_table[3].add_value("Name",
                           std::string(SmootherToString(kernel)) + "_SP");
+  info_table[3].add_value("Patches", p * 2);
   info_table[3].add_value("Time[s]", best_time2);
   info_table[3].add_value("Perf[Dof/s]", n_dofs / best_time2);
   if (kernel == PSMF::SmootherVariant::GLOBAL)
@@ -423,8 +433,10 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
 }
 template <int dim, int fe_degree>
 void
-LaplaceProblem<dim, fe_degree>::bench_smooth()
+LaplaceProblem<dim, fe_degree>::bench_smooth(unsigned int p)
 {
+//   *pcout << "Benchmarking Smoother in double precision...\n";
+//   *pcout << "Benchmarking Smoother in single precision...\n";
   for (unsigned int k = 0; k < CT::KERNEL_TYPE_.size(); ++k)
     switch (CT::KERNEL_TYPE_[k])
       {
@@ -445,6 +457,9 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
           break;
         case PSMF::SmootherVariant::FUSED_CF:
           do_smooth<PSMF::SmootherVariant::FUSED_CF>();
+          break;
+        case PSMF::SmootherVariant::FUSED_BD:
+          do_smooth<PSMF::SmootherVariant::FUSED_BD>(p);
           break;
         default:
           AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
@@ -472,7 +487,14 @@ LaplaceProblem<dim, fe_degree>::run()
   setup_system();
   bench_Ax();
   bench_transfer();
-  bench_smooth();
+  
+  unsigned int max_p;
+  if (CT::GRANULARITY_ == PSMF::GranularityScheme::user_define)
+    max_p = fe_degree > 6 ? 4 : fe_degree > 4 ? 6 : fe_degree > 2 ? 16 : 48;
+  else
+    max_p = 1;
+  for (unsigned int p = 1; p < max_p + 1; ++p)
+    bench_smooth(p);
 
   *pcout << std::endl;
 

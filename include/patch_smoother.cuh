@@ -251,6 +251,14 @@ namespace PSMF
             level_vertex_patch.patch_loop(local_smoother, src, dst);
             break;
           }
+        case SmootherVariant::FUSED_BD:
+          {
+            LocalSmoother<dim, fe_degree, Number, kernel, dof_layout>
+              local_smoother(n_dofs_per_dim);
+
+            level_vertex_patch.patch_loop(local_smoother, src, dst);
+            break;
+          }
         default:
           AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
           break;

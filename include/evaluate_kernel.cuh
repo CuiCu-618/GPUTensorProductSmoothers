@@ -1872,6 +1872,556 @@ namespace PSMF
     unsigned int ndofs_per_dim;
   };
 
+  template <int kernel_size, typename Number>
+  struct TPEvaluator_vmult<kernel_size,
+                           Number,
+                           2,
+                           SmootherVariant::FUSED_BD,
+                           DoFLayout::Q>
+  {
+    /**
+     *  Constructor.
+     */
+    __device__
+    TPEvaluator_vmult()
+    {}
+
+    /**
+     * Vector multication.
+     */
+    __device__ void
+    vmult(Number                                              *dst,
+          const Number                                        *src,
+          Number                                              *temp,
+          SharedMemData<2, Number, SmootherVariant::FUSED_BD> *shared_data)
+    {
+      //
+      constexpr unsigned int shift = kernel_size * 2;
+
+      apply<0, false>(
+        shared_data->mass_ib, src, temp, kernel_size, kernel_size, 2);
+      __syncthreads();
+      apply<1, false, true>(
+        shared_data->der_ii, temp, dst, kernel_size, kernel_size, kernel_size);
+      __syncthreads();
+
+      apply<0, false>(shared_data->mass_I,
+                      &src[shift],
+                      temp,
+                      kernel_size,
+                      2,
+                      kernel_size + 2);
+      __syncthreads();
+      apply<1, false, true>(
+        shared_data->der_ib, temp, dst, kernel_size, kernel_size, 2);
+      __syncthreads();
+
+
+      apply<0, false>(
+        shared_data->der_ib, src, temp, kernel_size, kernel_size, 2);
+      __syncthreads();
+      apply<1, false, true>(
+        shared_data->mass_ii, temp, dst, kernel_size, kernel_size, kernel_size);
+      __syncthreads();
+
+      apply<0, false>(
+        shared_data->der_I, &src[shift], temp, kernel_size, 2, kernel_size + 2);
+      __syncthreads();
+      apply<1, false, true>(
+        shared_data->mass_ib, temp, dst, kernel_size, kernel_size, 2);
+    }
+
+    /**
+     * apply 1d @p shape_data vector to @p in.
+     * n_row, n_col are dimensions for out 'matrix'
+     */
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number      *shape_data,
+          const Number      *in,
+          Number            *out,
+          const unsigned int n_row,
+          const unsigned int n_col,
+          const unsigned int n_k)
+    {
+      const unsigned int linear_tid =
+        threadIdx.y * (kernel_size + 2) + threadIdx.x % (kernel_size + 2);
+
+      if (linear_tid >= n_row * n_col)
+        return;
+
+      const unsigned int row = linear_tid / n_col;
+      const unsigned int col = linear_tid % n_col;
+
+      Number pval = 0;
+
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      // #pragma unroll
+      for (int k = 0; k < n_k; ++k)
+        {
+          const unsigned int shape_idx = row * n_k + k;
+          const unsigned int source_idx =
+            (direction == 0) ? (col * n_k + k) : (k * n_col + col);
+
+          pval += shape_data[shape_idx] * in[source_idx];
+        }
+
+      const unsigned int destination_idx =
+        (direction == 0) ? (col * n_row + row) : (row * n_col + col);
+
+      if (add)
+        out[destination_idx] += pval;
+      if (sub)
+        out[destination_idx] -= pval;
+      else
+        out[destination_idx] = pval;
+    }
+  };
+
+  template <int kernel_size, typename Number>
+  struct TPEvaluator_vmult<kernel_size,
+                           Number,
+                           3,
+                           SmootherVariant::FUSED_BD,
+                           DoFLayout::Q>
+  {
+    /**
+     *  Constructor.
+     */
+    __device__
+    TPEvaluator_vmult()
+    {}
+
+    /**
+     * Vector multication.
+     */
+    __device__ void
+    vmult(Number                                              *dst,
+          const Number                                        *src,
+          Number                                              *temp,
+          SharedMemData<3, Number, SmootherVariant::FUSED_BD> *shared_data)
+    {
+      constexpr unsigned int n_bound_dofs =
+        Util::pow(kernel_size + 2, 3) - Util::pow(kernel_size, 3);
+      constexpr unsigned int n_inner_dofs = Util::pow(kernel_size, 3);
+      constexpr unsigned int n_max =
+        n_bound_dofs > n_inner_dofs ? n_bound_dofs : n_inner_dofs;
+
+      constexpr unsigned int shift = kernel_size * kernel_size * 2;
+      constexpr unsigned int shift2 =
+        shift + (kernel_size + 2) * kernel_size * 2;
+
+      apply<0, false, false, kernel_size, kernel_size, 2, kernel_size>(
+        shared_data->mass_ib, src, &temp[n_max]);
+      __syncthreads();
+      apply<1,
+            false,
+            false,
+            kernel_size,
+            kernel_size,
+            kernel_size,
+            kernel_size>(shared_data->mass_ii, &temp[n_max], temp);
+      __syncthreads();
+      apply<2, false, true, kernel_size, kernel_size, kernel_size, kernel_size>(
+        shared_data->der_ii, temp, dst);
+      __syncthreads();
+      apply<1,
+            false,
+            false,
+            kernel_size,
+            kernel_size,
+            kernel_size,
+            kernel_size>(shared_data->der_ii, &temp[n_max], temp);
+      __syncthreads();
+      apply<0, false, false, kernel_size, kernel_size, 2, kernel_size>(
+        shared_data->der_ib, src, &temp[n_max]);
+      __syncthreads();
+      apply<1, true, false, kernel_size, kernel_size, kernel_size, kernel_size>(
+        shared_data->mass_ii, &temp[n_max], temp);
+      __syncthreads();
+      apply<2, false, true, kernel_size, kernel_size, kernel_size, kernel_size>(
+        shared_data->mass_ii, temp, dst);
+      __syncthreads();
+
+
+      apply<0, false, false, kernel_size, 2, kernel_size + 2, kernel_size>(
+        shared_data->mass_I, &src[shift], &temp[n_max]);
+      __syncthreads();
+      apply<1, false, false, kernel_size, kernel_size, 2, kernel_size>(
+        shared_data->mass_ib, &temp[n_max], temp);
+      __syncthreads();
+      apply<2, false, true, kernel_size, kernel_size, kernel_size, kernel_size>(
+        shared_data->der_ii, temp, dst);
+      __syncthreads();
+      apply<1, false, false, kernel_size, kernel_size, 2, kernel_size>(
+        shared_data->der_ib, &temp[n_max], temp);
+      __syncthreads();
+      apply<0, false, false, kernel_size, 2, kernel_size + 2, kernel_size>(
+        shared_data->der_I, &src[shift], &temp[n_max]);
+      __syncthreads();
+      apply<1, true, false, kernel_size, kernel_size, 2, kernel_size>(
+        shared_data->mass_ib, &temp[n_max], temp);
+      __syncthreads();
+      apply<2, false, true, kernel_size, kernel_size, kernel_size, kernel_size>(
+        shared_data->mass_ii, temp, dst);
+      __syncthreads();
+
+
+      apply<0, false, false, kernel_size, kernel_size + 2, kernel_size + 2, 2>(
+        shared_data->mass_I, &src[shift2], &temp[n_max]);
+      __syncthreads();
+      apply<1, false, false, kernel_size, kernel_size, kernel_size + 2, 2>(
+        shared_data->mass_I, &temp[n_max], temp);
+      __syncthreads();
+      apply<2, false, true, kernel_size, kernel_size, 2, kernel_size>(
+        shared_data->der_ib, temp, dst);
+      __syncthreads();
+      apply<1, false, false, kernel_size, kernel_size, kernel_size + 2, 2>(
+        shared_data->der_I, &temp[n_max], temp);
+      __syncthreads();
+      apply<0, false, false, kernel_size, kernel_size + 2, kernel_size + 2, 2>(
+        shared_data->der_I, &src[shift2], &temp[n_max]);
+      __syncthreads();
+      apply<1, true, false, kernel_size, kernel_size, kernel_size + 2, 2>(
+        shared_data->mass_I, &temp[n_max], temp);
+      __syncthreads();
+      apply<2, false, true, kernel_size, kernel_size, 2, kernel_size>(
+        shared_data->mass_ib, temp, dst);
+    }
+
+    /**
+     * apply 1d @p shape_data vector to @p in.
+     */
+    template <int  direction,
+              bool add,
+              bool sub,
+              int  n_row,
+              int  n_col,
+              int  n_k,
+              int  n_z>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const unsigned int linear_tid =
+        threadIdx.y * (kernel_size + 2) + threadIdx.x % (kernel_size + 2);
+
+      if (linear_tid >= n_row * n_col)
+        return;
+
+      constexpr unsigned int stride = n_row * n_col;
+
+      const unsigned int row = linear_tid / n_col;
+      const unsigned int col = linear_tid % n_col;
+
+      Number pval[kernel_size];
+
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      for (unsigned int z = 0; z < n_z; ++z)
+        {
+          pval[z] = 0;
+          // #pragma unroll
+          for (unsigned int k = 0; k < n_k; ++k)
+            {
+              const unsigned int shape_idx = row * n_k + k;
+
+              const unsigned int source_idx =
+                (direction == 0) ? (col * n_k + k + z * n_col * n_k) :
+                (direction == 1) ? (k * n_col + col + z * n_row * n_k) :
+                                   (z * n_col + col + k * n_row * n_col);
+
+              pval[z] += shape_data[shape_idx] * in[source_idx];
+            }
+        }
+
+      for (unsigned int z = 0; z < n_z; ++z)
+        {
+          const unsigned int destination_idx =
+            (direction == 0) ? (col * n_row + row + z * stride) :
+            (direction == 1) ? (row * n_col + col + z * stride) :
+                               (z * n_col + col + row * stride);
+
+          if (add)
+            out[destination_idx] += pval[z];
+          else if (sub)
+            out[destination_idx] -= pval[z];
+          else
+            out[destination_idx] = pval[z];
+        }
+    }
+  };
+
+
+  template <int kernel_size, typename Number>
+  struct TPEvaluator_inverse<kernel_size,
+                             Number,
+                             2,
+                             SmootherVariant::FUSED_BD,
+                             DoFLayout::Q>
+  {
+    /**
+     *  Constructor.
+     */
+    __device__
+    TPEvaluator_inverse()
+    {}
+
+    /**
+     * Apply inverse to @p src.
+     */
+    __device__ void
+    apply_inverse(Number       *src,
+                  const Number *eigenvalues,
+                  const Number *eigenvectors,
+                  Number       *temp)
+    {
+      const unsigned int linear_tid =
+        threadIdx.x % (kernel_size + 2) + threadIdx.y * (kernel_size + 2);
+
+      unsigned int row = linear_tid / kernel_size;
+      unsigned int col = linear_tid % kernel_size;
+
+      apply<0, true>(eigenvectors, src, temp);
+      __syncthreads();
+      apply<1, true>(eigenvectors, temp, src);
+      __syncthreads();
+      if (linear_tid < kernel_size * kernel_size)
+        src[row * kernel_size + col] /= (eigenvalues[row] + eigenvalues[col]);
+      __syncthreads();
+      apply<0, false>(eigenvectors, src, temp);
+      __syncthreads();
+      apply<1, false, false>(eigenvectors, temp, src);
+    }
+
+    /**
+     * apply 1d @p shape_data vector to @p in.
+     */
+    template <int direction, bool contract_over_rows, bool add = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const unsigned int linear_tid =
+        threadIdx.x % (kernel_size + 2) + threadIdx.y * (kernel_size + 2);
+
+      const unsigned int row = linear_tid / kernel_size;
+      const unsigned int col = linear_tid % kernel_size;
+
+      if (linear_tid >= kernel_size * kernel_size)
+        return;
+
+      Number pval = 0;
+
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      // #pragma unroll
+      for (unsigned int k = 0; k < kernel_size; ++k)
+        {
+          const unsigned int shape_idx =
+            contract_over_rows ? k * kernel_size + row : row * kernel_size + k;
+
+          const unsigned int source_idx = (direction == 0) ?
+                                            (col * kernel_size + k) :
+                                            (k * kernel_size + col);
+
+          pval += shape_data[shape_idx] * in[source_idx];
+        }
+
+
+      const unsigned int destination_idx = (direction == 0) ?
+                                             (col * kernel_size + row) :
+                                             (row * kernel_size + col);
+      if (add)
+        out[destination_idx] += pval;
+      else
+        out[destination_idx] = pval;
+    }
+  };
+
+  template <int kernel_size, typename Number>
+  struct TPEvaluator_inverse<kernel_size,
+                             Number,
+                             3,
+                             SmootherVariant::FUSED_BD,
+                             DoFLayout::Q>
+  {
+    /**
+     *  Constructor.
+     */
+    __device__
+    TPEvaluator_inverse()
+    {}
+
+    /**
+     * Apply inverse to @p src.
+     */
+    __device__ void
+    apply_inverse(Number       *src,
+                  const Number *eigenvalues,
+                  const Number *eigenvectors,
+                  Number       *temp)
+    {
+      const unsigned int linear_tid =
+        threadIdx.x % (kernel_size + 2) + threadIdx.y * (kernel_size + 2);
+
+      unsigned int row = linear_tid / kernel_size;
+      unsigned int col = linear_tid % kernel_size;
+
+      apply<0, true>(eigenvectors, src, temp);
+      __syncthreads();
+      apply<1, true>(eigenvectors, temp, src);
+      __syncthreads();
+      apply<2, true>(eigenvectors, src, temp);
+      __syncthreads();
+      if (linear_tid < kernel_size * kernel_size)
+        for (unsigned int z = 0; z < kernel_size; ++z)
+          {
+            temp[z * kernel_size * kernel_size + row * kernel_size + col] /=
+              (eigenvalues[z] + eigenvalues[row] + eigenvalues[col]);
+          }
+      __syncthreads();
+      apply<0, false>(eigenvectors, temp, src);
+      __syncthreads();
+      apply<1, false>(eigenvectors, src, temp);
+      __syncthreads();
+      apply<2, false, false>(eigenvectors, temp, src);
+    }
+
+    /**
+     * apply 1d @p shape_data vector to @p in.
+     */
+    template <int direction, bool contract_over_rows, bool add = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      constexpr int stride = kernel_size * kernel_size;
+
+      const unsigned int linear_tid =
+        threadIdx.x % (kernel_size + 2) + threadIdx.y * (kernel_size + 2);
+
+      const unsigned int row = linear_tid / kernel_size;
+      const unsigned int col = linear_tid % kernel_size;
+
+      if (linear_tid >= kernel_size * kernel_size)
+        return;
+
+      Number pval[kernel_size];
+
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      for (unsigned int z = 0; z < kernel_size; ++z)
+        {
+          pval[z] = 0;
+          // #pragma unroll
+          for (unsigned int k = 0; k < kernel_size; ++k)
+            {
+              const unsigned int shape_idx =
+                contract_over_rows ? ((direction == 0) ? k * kernel_size + col :
+                                      (direction == 1) ? k * kernel_size + row :
+                                                         k * kernel_size + z) :
+                                     ((direction == 0) ? col * kernel_size + k :
+                                      (direction == 1) ? row * kernel_size + k :
+                                                         z * kernel_size + k);
+
+              const unsigned int source_idx =
+                (direction == 0) ? (row * kernel_size + k + z * stride) :
+                (direction == 1) ? (k * kernel_size + col + z * stride) :
+                                   (row * kernel_size + col + k * stride);
+
+              pval[z] += shape_data[shape_idx] * in[source_idx];
+            }
+        }
+
+      for (unsigned int z = 0; z < kernel_size; ++z)
+        {
+          const unsigned int destination_idx =
+            row * kernel_size + col + z * stride;
+
+          if (add)
+            out[destination_idx] += pval[z];
+          else
+            out[destination_idx] = pval[z];
+        }
+    }
+  };
+
+
+  template <int dim, int fe_degree, typename Number>
+  class LocalSmoother<dim,
+                      fe_degree,
+                      Number,
+                      SmootherVariant::FUSED_BD,
+                      DoFLayout::Q>
+  {
+  public:
+    static constexpr unsigned int n_dofs_1d     = 2 * fe_degree + 1;
+    static constexpr unsigned int n_dofs_1d_inv = 2 * fe_degree - 1;
+
+    LocalSmoother()
+      : ndofs_per_dim(0)
+    {}
+
+    LocalSmoother(unsigned int ndofs_per_dim)
+      : ndofs_per_dim(ndofs_per_dim)
+    {}
+
+    __device__ inline unsigned int
+    get_ndofs()
+    {
+      return ndofs_per_dim;
+    }
+
+    __device__ void
+    operator()(
+      const unsigned int                                     patch,
+      const typename LevelVertexPatch<dim,
+                                      fe_degree,
+                                      Number,
+                                      SmootherVariant::FUSED_BD,
+                                      DoFLayout::Q>::Data   *gpu_data,
+      SharedMemData<dim, Number, SmootherVariant::FUSED_BD> *shared_data) const
+    {
+      constexpr unsigned int n_bound_dofs =
+        Util::pow(n_dofs_1d, dim) - Util::pow(n_dofs_1d_inv, dim);
+      constexpr unsigned int n_inner_dofs = Util::pow(n_dofs_1d_inv, dim);
+      constexpr unsigned int n_max =
+        n_bound_dofs > n_inner_dofs ? n_bound_dofs : n_inner_dofs;
+
+      const unsigned int linear_tid =
+        threadIdx.y * n_dofs_1d + threadIdx.x % n_dofs_1d;
+
+      TPEvaluator_vmult<n_dofs_1d_inv,
+                        Number,
+                        dim,
+                        SmootherVariant::FUSED_BD,
+                        DoFLayout::Q>
+        eval_vmult;
+      TPEvaluator_inverse<n_dofs_1d_inv,
+                          Number,
+                          dim,
+                          SmootherVariant::FUSED_BD,
+                          DoFLayout::Q>
+        eval_inverse;
+      __syncthreads();
+
+      eval_vmult.vmult(&shared_data->local_src[patch * n_inner_dofs],
+                       &shared_data->local_dst[patch * n_bound_dofs],
+                       &shared_data->temp[patch * n_max * (dim - 1)],
+                       shared_data);
+      __syncthreads();
+
+      if (linear_tid < n_dofs_1d_inv)
+        shared_data->mass_ii[linear_tid] = gpu_data->eigenvalues[linear_tid];
+      if (linear_tid < n_dofs_1d_inv * n_dofs_1d_inv)
+        shared_data->der_ii[linear_tid] = gpu_data->eigenvectors[linear_tid];
+      __syncthreads();
+
+      eval_inverse.apply_inverse(&shared_data->local_src[patch * n_inner_dofs],
+                                 shared_data->mass_ii,
+                                 shared_data->der_ii,
+                                 &shared_data->temp[patch * n_max * (dim - 1)]);
+      __syncthreads();
+    }
+
+    unsigned int ndofs_per_dim;
+  };
+
 } // namespace PSMF
 
 

@@ -443,6 +443,25 @@ namespace Step64
                 do_solver(solver, k);
                 break;
               }
+            case PSMF::SmootherVariant::FUSED_BD:
+              {
+                PSMF::MultigridSolver<dim,
+                                      fe_degree,
+                                      CT::DOF_LAYOUT_,
+                                      full_number,
+                                      PSMF::SmootherVariant::FUSED_BD,
+                                      vcycle_number>
+                  solver(dof_handler,
+                         matrix_dp,
+                         matrix,
+                         transfer,
+                         Functions::ZeroFunction<dim, full_number>(),
+                         Functions::ConstantFunction<dim, full_number>(1.),
+                         pcout,
+                         n_mg_cycles);
+                do_solver(solver, k);
+                break;
+              }
             default:
               AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
           }

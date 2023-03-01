@@ -104,7 +104,7 @@ namespace PSMF
         setup_patch_arrays(i);
       }
 
-
+    constexpr unsigned n_dofs_in = 2 * fe_degree - 1;
     constexpr unsigned n_dofs_1d = 2 * fe_degree + 1;
     constexpr unsigned n_dofs_2d = n_dofs_1d * n_dofs_1d;
 
@@ -112,6 +112,13 @@ namespace PSMF
     alloc_arrays(&eigenvectors, n_dofs_2d);
     alloc_arrays(&global_mass_1d, n_dofs_2d);
     alloc_arrays(&global_derivative_1d, n_dofs_2d);
+
+    alloc_arrays(&mass_ii, n_dofs_in * n_dofs_in);
+    alloc_arrays(&mass_ib, n_dofs_in * 2);
+    alloc_arrays(&der_ii, n_dofs_in * n_dofs_in);
+    alloc_arrays(&der_ib, n_dofs_in * 2);
+    alloc_arrays(&mass_I, n_dofs_in * n_dofs_1d);
+    alloc_arrays(&der_I, n_dofs_in * n_dofs_1d);
   }
 
   template <int dim, int fe_degree, typename Number, SmootherVariant kernel>
@@ -130,6 +137,14 @@ namespace PSMF
     data_copy.eigenvectors         = eigenvectors;
     data_copy.global_mass_1d       = global_mass_1d;
     data_copy.global_derivative_1d = global_derivative_1d;
+
+    data_copy.mass_ii = mass_ii;
+    data_copy.mass_ib = mass_ib;
+    data_copy.mass_I  = mass_I;
+
+    data_copy.der_ii = der_ii;
+    data_copy.der_ib = der_ib;
+    data_copy.der_I  = der_I;
 
     return data_copy;
   }
@@ -160,6 +175,9 @@ namespace PSMF
         case SmootherVariant::FUSED_CF:
           patch_loop_fused(func, src, dst);
           break;
+        case SmootherVariant::FUSED_BD:
+          patch_loop_fused(func, src, dst);
+          break;
         default:
           AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
           break;
@@ -185,6 +203,26 @@ namespace PSMF
       mem += 2 * 1 * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
       // temp
       mem += (dim - 1) * patch_per_block * local_dim * sizeof(Number);
+
+      return mem;
+    };
+
+    auto shared_mem_bd = [&]() {
+      std::size_t mem = 0;
+
+      const unsigned int n_dofs_1d   = 2 * fe_degree - 1;
+      const unsigned int local_inner = Util::pow(n_dofs_1d, dim);
+      const unsigned int local_boundary =
+        Util::pow(n_dofs_1d + 2, dim) - local_inner;
+      const unsigned int n_max = max(local_inner, local_boundary);
+
+      // local_src, local_dst, local_residual
+      mem += patch_per_block * local_inner * sizeof(Number);
+      mem += patch_per_block * local_boundary * sizeof(Number);
+      // local_mass, local_derivative, local_eigenvectors, local_eigenvalues
+      mem += 4 * 1 * n_dofs_1d * (n_dofs_1d + 2) * 1 * sizeof(Number);
+      // temp
+      mem += (dim - 1) * patch_per_block * n_max * sizeof(Number);
 
       return mem;
     };
@@ -283,6 +321,27 @@ namespace PSMF
                                                               src.get_values(),
                                                               dst.get_values(),
                                                               get_data(i));
+          break;
+        case SmootherVariant::FUSED_BD:
+          AssertCuda(
+            cudaFuncSetAttribute(loop_kernel_fused_boundary<dim,
+                                                            fe_degree,
+                                                            Number,
+                                                            kernel,
+                                                            Functor,
+                                                            DoFLayout::Q>,
+                                 cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 shared_mem_bd()));
+          for (unsigned int i = 0; i < n_colors; ++i)
+            if (n_patches[i] > 0)
+              loop_kernel_fused_boundary<dim,
+                                         fe_degree,
+                                         Number,
+                                         kernel,
+                                         Functor,
+                                         DoFLayout::Q>
+                <<<grid_dim[i], block_dim[i], shared_mem_bd()>>>(
+                  func, src.get_values(), dst.get_values(), get_data(i));
           break;
         default:
           AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
@@ -583,10 +642,220 @@ namespace PSMF
                             cudaMemcpyHostToDevice);
     AssertCuda(error_code);
 
+
+    constexpr unsigned int n_dofs_in = 2 * fe_degree - 1;
+
+    auto *mass_ii_host = new Number[n_dofs_in * n_dofs_in];
+    auto *mass_ib_host = new Number[n_dofs_in * 2];
+    auto *der_ii_host  = new Number[n_dofs_in * n_dofs_in];
+    auto *der_ib_host  = new Number[n_dofs_in * 2];
+    auto *mass_I_host  = new Number[n_dofs_1d * n_dofs_in];
+    auto *der_I_host   = new Number[n_dofs_1d * n_dofs_in];
+
+    unsigned int c1, c2, c3;
+    c1 = c2 = c3 = 0;
+
+    for (unsigned int i = 1; i < n_dofs_1d - 1; ++i)
+      for (unsigned int j = 0; j < n_dofs_1d; ++j)
+        {
+          if (j > 0 && j < n_dofs_1d - 1)
+            {
+              mass_ii_host[c1] = mass[i * n_dofs_1d + j];
+              der_ii_host[c1]  = laplace[i * n_dofs_1d + j];
+              c1++;
+            }
+          if (j == 0 || j == n_dofs_1d - 1)
+            {
+              mass_ib_host[c2] = mass[i * n_dofs_1d + j];
+              der_ib_host[c2]  = laplace[i * n_dofs_1d + j];
+              c2++;
+            }
+          mass_I_host[c3] = mass[i * n_dofs_1d + j];
+          der_I_host[c3]  = laplace[i * n_dofs_1d + j];
+          c3++;
+        }
+
+    error_code = cudaMemcpy(mass_ii,
+                            mass_ii_host,
+                            n_dofs_in * n_dofs_in * sizeof(Number),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+    error_code = cudaMemcpy(mass_ib,
+                            mass_ib_host,
+                            n_dofs_in * 2 * sizeof(Number),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+    error_code = cudaMemcpy(der_ii,
+                            der_ii_host,
+                            n_dofs_in * n_dofs_in * sizeof(Number),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+    error_code = cudaMemcpy(der_ib,
+                            der_ib_host,
+                            n_dofs_in * 2 * sizeof(Number),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+    error_code = cudaMemcpy(mass_I,
+                            mass_I_host,
+                            n_dofs_in * n_dofs_1d * sizeof(Number),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+    error_code = cudaMemcpy(der_I,
+                            der_I_host,
+                            n_dofs_in * n_dofs_1d * sizeof(Number),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+
+
+
+    // for (unsigned i = 0; i < n_dofs_1d; ++i)
+    //   {
+    //     for (unsigned j = 0; j < n_dofs_1d; ++j)
+    //       std::cout << mass[i * n_dofs_1d + j] << " ";
+    //     std::cout << std::endl;
+    //   }
+    // std::cout << std::endl;
+    // for (unsigned i = 0; i < n_dofs_in; ++i)
+    //   {
+    //     for (unsigned j = 0; j < n_dofs_1d; ++j)
+    //       std::cout << mass_I_host[i * n_dofs_1d + j] << " ";
+    //     std::cout << std::endl;
+    //   }
+    // std::cout << std::endl;
+    // std::cout << std::endl;
+    // for (unsigned i = 0; i < n_dofs_1d; ++i)
+    //   {
+    //     for (unsigned j = 0; j < n_dofs_1d; ++j)
+    //       std::cout << laplace[i * n_dofs_1d + j] << " ";
+    //     std::cout << std::endl;
+    //   }
+
+
+    unsigned int n_bound =
+      Util::pow(n_dofs_1d, dim) - Util::pow(n_dofs_1d - 2, dim);
+    std::vector<unsigned int> index;
+    std::vector<unsigned int> mapping;
+    index.resize(n_bound);
+    mapping.resize(n_bound);
+
+    if (dim == 2)
+      {
+        for (auto i = 0U; i < (n_dofs_1d - 2) * 2; ++i)
+          {
+            index[i] = (i / 2 + 1) * n_dofs_1d + (i % 2) * (n_dofs_1d - 1);
+          }
+
+        for (auto i = 0U; i < n_dofs_1d * 2; ++i)
+          {
+            index[i + (n_dofs_1d - 2) * 2] =
+              (i / n_dofs_1d) * (n_dofs_1d - 2) * n_dofs_1d + i;
+          }
+
+        for (auto i = 0U; i < (n_dofs_1d - 2) * 2; ++i)
+          {
+            mapping[i] = n_dofs_1d + i;
+          }
+
+        for (auto i = 0U; i < n_dofs_1d * 2; ++i)
+          {
+            mapping[i + (n_dofs_1d - 2) * 2] =
+              (i / n_dofs_1d) * (n_dofs_1d - 2) * 2 + i;
+          }
+      }
+    else if (dim == 3)
+      {
+        unsigned int count = 0;
+        unsigned int begin = 0;
+
+        for (auto i = 0U; i < n_dofs_1d - 2; ++i)
+          for (auto j = 0U; j < n_dofs_1d - 2; ++j)
+            for (auto k = 0U; k < 2; ++k)
+              {
+                index[count++] = (i + 1) * n_dofs_1d * n_dofs_1d +
+                                 (j + 1) * n_dofs_1d + k * (n_dofs_1d - 1);
+              }
+
+        for (auto i = 0U; i < n_dofs_1d - 2; ++i)
+          for (auto j = 0U; j < 2; ++j)
+            for (auto k = 0U; k < n_dofs_1d; ++k)
+              {
+                index[count++] = (i + 1) * n_dofs_1d * n_dofs_1d +
+                                 j * n_dofs_1d * (n_dofs_1d - 1) + k;
+              }
+
+        for (auto i = 0U; i < 2; ++i)
+          for (auto j = 0U; j < n_dofs_1d; ++j)
+            for (auto k = 0U; k < n_dofs_1d; ++k)
+              {
+                index[count++] = i * n_dofs_1d * n_dofs_1d * (n_dofs_1d - 1) +
+                                 j * n_dofs_1d + k;
+              }
+
+        count = 0;
+
+        for (auto i = 0U; i < n_dofs_1d - 2; ++i)
+          for (auto j = 0U; j < n_dofs_1d - 2; ++j)
+            for (auto k = 0U; k < 2; ++k)
+              {
+                mapping[count] =
+                  n_dofs_1d * n_dofs_1d + n_dofs_1d + i * n_dofs_1d * 2 + count;
+                count++;
+              }
+        begin = count;
+        count = 0;
+        for (auto i = 0U; i < n_dofs_1d - 2; ++i)
+          for (auto j = 0U; j < 2; ++j)
+            for (auto k = 0U; k < n_dofs_1d; ++k)
+              {
+                mapping[begin + count] = n_dofs_1d * n_dofs_1d +
+                                         i * (n_dofs_1d - 2) * 2 +
+                                         (j % 2) * 2 * (n_dofs_1d - 2) + count;
+                count++;
+              }
+        begin += count;
+        count = 0;
+        for (auto i = 0U; i < 2; ++i)
+          for (auto j = 0U; j < n_dofs_1d; ++j)
+            for (auto k = 0U; k < n_dofs_1d; ++k)
+              {
+                mapping[begin + count] =
+                  i * (n_bound - n_dofs_1d * n_dofs_1d * 2) + count;
+                count++;
+              }
+      }
+
+    error_code = cudaMemcpyToSymbol(boundary_dofs_index,
+                                    index.data(),
+                                    index.size() * sizeof(unsigned int),
+                                    0,
+                                    cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+
+    error_code = cudaMemcpyToSymbol(index_mapping,
+                                    mapping.data(),
+                                    mapping.size() * sizeof(unsigned int),
+                                    0,
+                                    cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+
+    // for (auto i : index)
+    //   std::cout << i << " ";
+    // std::cout << std::endl;
+    // for (auto i : mapping)
+    //   std::cout << i << " ";
+    // std::cout << std::endl;
+
     delete[] mass;
     delete[] laplace;
     delete[] values;
     delete[] vectors;
+
+    delete[] mass_ii_host;
+    delete[] mass_ib_host;
+    delete[] der_ii_host;
+    delete[] der_ib_host;
+    delete[] mass_I_host;
+    delete[] der_I_host;
   }
 
 
@@ -708,6 +977,9 @@ namespace PSMF
           break;
         case SmootherVariant::FUSED_L:
           block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
+          break;
+        case SmootherVariant::FUSED_BD:
+          block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d_inv);
           break;
         case SmootherVariant::FUSED_3D:
           Assert(fe_degree < 5, ExcNotImplemented());

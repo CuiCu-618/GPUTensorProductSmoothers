@@ -56,7 +56,12 @@ namespace PSMF
     /**
      * A conflict-free implementation by restructuring shared memory access.
      */
-    FUSED_CF
+    FUSED_CF,
+
+    /**
+     * only boundary dofs needed.
+     */
+    FUSED_BD
   };
 
 
@@ -203,6 +208,13 @@ namespace PSMF
        * Pointer to 1D eigenvectors.
        */
       Number *eigenvectors;
+
+      Number *mass_ii;
+      Number *mass_ib;
+      Number *der_ii;
+      Number *der_ib;
+      Number *mass_I;
+      Number *der_I;
     };
 
     /**
@@ -434,7 +446,24 @@ namespace PSMF
      * Vector of pointer to 1D eigenvectors of each color.
      */
     Number *eigenvectors;
+
+    Number *mass_ii;
+    Number *mass_ib;
+    Number *der_ii;
+    Number *der_ib;
+    Number *mass_I;
+    Number *der_I;
   };
+
+
+  // boundary dof indices
+  __constant__ unsigned int
+    boundary_dofs_index[Util::pow(2 * 8 + 1, 3) - Util::pow(2 * 8 - 1, 3)];
+
+  // mapping for interior-boundary dofs between lex ordering and tensorproduct
+  // ordering
+  __constant__ unsigned int
+    index_mapping[Util::pow(2 * 8 + 1, 3) - Util::pow(2 * 8 - 1, 3)];
 
   /**
    * Structure to pass the shared memory into a general user function.
@@ -458,6 +487,37 @@ namespace PSMF
       local_derivative = local_mass + 1 * n_dofs_1d * n_dofs_1d * 1;
       temp             = local_derivative + 1 * n_dofs_1d * n_dofs_1d * 1;
     }
+
+    __device__
+    SharedMemData(Number      *data,
+                  unsigned int n_buff,
+                  unsigned int n_dofs_1d,
+                  unsigned int n_dofs_in,
+                  unsigned int n_bound_dofs,
+                  unsigned int n_inner_dofs)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * n_inner_dofs;
+
+      mass_ii = local_dst + n_buff * n_bound_dofs;
+      mass_ib = mass_ii + n_dofs_in * n_dofs_in;
+      mass_I  = mass_ib + n_dofs_in * 2;
+
+      der_ii = mass_I + n_dofs_in * n_dofs_1d;
+      der_ib = der_ii + n_dofs_in * n_dofs_in;
+      der_I  = der_ib + n_dofs_in * 2;
+
+      temp = der_I + n_dofs_in * n_dofs_1d;
+    }
+
+    Number *mass_ii;
+    Number *mass_ib;
+    Number *mass_I;
+
+    Number *der_ii;
+    Number *der_ib;
+    Number *der_I;
+
 
 
     /**
