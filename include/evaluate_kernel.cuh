@@ -2113,7 +2113,7 @@ namespace PSMF
       const unsigned int row = linear_tid / n_col;
       const unsigned int col = linear_tid % n_col;
 
-      Number pval[kernel_size];
+      Number pval[kernel_size + 2];
 
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       for (unsigned int z = 0; z < n_z; ++z)

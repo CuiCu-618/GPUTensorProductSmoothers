@@ -573,8 +573,8 @@ namespace PSMF
                        fe_degree == 3 ? 4 :
                        fe_degree == 4 ? 2 :
                                         1) :
-           dim == 3 ? (fe_degree == 1 ? 16 :
-                       fe_degree == 2 ? 2 :
+           dim == 3 ? (fe_degree == 1 ? 32 :
+                       fe_degree == 2 ? 16 :
                                         1) :
                       1;
   }
