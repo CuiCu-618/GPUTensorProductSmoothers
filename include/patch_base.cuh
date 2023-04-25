@@ -14,6 +14,9 @@
 
 #include <deal.II/grid/filtered_iterator.h>
 
+#include "TPSS/kroneckersvd.h"
+#include "TPSS/tensors.h"
+#include "cuda_vector.cuh"
 #include "tensor_product.h"
 #include "utilities.cuh"
 
@@ -190,6 +193,11 @@ namespace PSMF
     struct Data
     {
       /**
+       * Number of dofs per dim.
+       */
+      unsigned int n_dofs_per_dim;
+
+      /**
        * Number of patches for each color.
        */
       unsigned int n_patches;
@@ -233,14 +241,19 @@ namespace PSMF
       unsigned int *h_to_l;
 
       /**
-       * Pointer to 1D mass matrix for lapalace operator.
+       * Pointer to 1D mass matrix for bilapalace operator.
        */
       Number *laplace_mass_1d;
 
       /**
-       * Pointer to 1D stiffness matrix for lapalace operator.
+       * Pointer to 1D stiffness matrix for bilapalace operator.
        */
       Number *laplace_stiff_1d;
+
+      /**
+       * Pointer to 1D stiffness matrix for bilapalace operator.
+       */
+      Number *bilaplace_stiff_1d;
 
       /**
        * Pointer to 1D mass matrix for smoothing operator.
@@ -251,6 +264,11 @@ namespace PSMF
        * Pointer to 1D stiffness matrix for smoothing operator.
        */
       Number *smooth_stiff_1d;
+
+      /**
+       * Pointer to 1D bilaplace stiffness matrix for smoothing operator.
+       */
+      Number *smooth_bilaplace_1d;
 
       /**
        * Pointer to 1D eigenvalues for smoothing operator.
@@ -289,9 +307,10 @@ namespace PSMF
      * Extracts the information needed to perform loops over cells.
      */
     void
-    reinit(const DoFHandler<dim> &dof_handler,
-           const unsigned int     mg_level,
-           const AdditionalData  &additional_data = AdditionalData());
+    reinit(const DoFHandler<dim>   &dof_handler,
+           const MGConstrainedDoFs &mg_constrained_dofs,
+           const unsigned int       mg_level,
+           const AdditionalData    &additional_data = AdditionalData());
 
     /**
      * @brief This method runs the loop over all patches and apply the local operation on
@@ -333,6 +352,14 @@ namespace PSMF
     reinit_tensor_product_laplace() const;
 
     /**
+     * Copy the values of the constrained entries from src to dst. This is used
+     * to impose zero Dirichlet boundary condition.
+     */
+    template <typename VectorType>
+    void
+    copy_constrained_values(const VectorType &src, VectorType &dst) const;
+
+    /**
      * Free all the memory allocated.
      */
     void
@@ -346,6 +373,24 @@ namespace PSMF
     memory_consumption() const;
 
   private:
+    /**
+     * Helper function. Assemble 1d mass matrices.
+     */
+    std::array<Table<2, VectorizedArray<Number>>, 3>
+    assemble_mass_tensor() const;
+
+    /**
+     * Helper function. Assemble 1d laplace matrices.
+     */
+    std::array<Table<2, VectorizedArray<Number>>, 3>
+    assemble_laplace_tensor() const;
+
+    /**
+     * Helper function. Assemble 1d bilaplace matrices.
+     */
+    std::array<Table<2, VectorizedArray<Number>>, 4>
+    assemble_bilaplace_tensor() const;
+
     /**
      * Helper function. Setup color arrays for collecting data.
      */
@@ -526,14 +571,26 @@ namespace PSMF
     std::vector<unsigned int> h_to_l_host;
 
     /**
-     * Pointer to 1D mass matrix for lapalace operator.
+     * A variable storing the local indices of Dirichlet boundary conditions
+     * on cells for all levels (outer index), the cells within the levels
+     * (second index), and the indices on the cell (inner index).
+     */
+    CudaVector<unsigned int> dirichlet_indices;
+
+    /**
+     * Pointer to 1D mass matrix for bilapalace operator.
      */
     Number *laplace_mass_1d;
 
     /**
-     * Pointer to 1D stiffness matrix for lapalace operator.
+     * Pointer to 1D stiffness matrix for bilapalace operator.
      */
     Number *laplace_stiff_1d;
+
+    /**
+     * Pointer to 1D stiffness matrix for bilapalace operator.
+     */
+    Number *bilaplace_stiff_1d;
 
     /**
      * Pointer to 1D mass matrix for smoothing operator.
@@ -544,6 +601,11 @@ namespace PSMF
      * Pointer to 1D stiffness matrix for smoothing operator.
      */
     Number *smooth_stiff_1d;
+
+    /**
+     * Pointer to 1D bilaplace stiffness matrix for smoothing operator.
+     */
+    Number *smooth_bilaplace_1d;
 
     /**
      * Pointer to 1D eigenvalues for smoothing operator.
@@ -572,14 +634,15 @@ namespace PSMF
                   unsigned int n_dofs_1d,
                   unsigned int local_dim)
     {
-      constexpr unsigned int n = is_laplace ? 3 : 1;
+      constexpr unsigned int n = is_laplace ? dim : 1;
 
       local_src = data;
       local_dst = local_src + n_buff * local_dim;
 
       local_mass       = local_dst + n_buff * local_dim;
       local_derivative = local_mass + n_buff * n_dofs_1d * n_dofs_1d * n;
-      tmp              = local_derivative + n_buff * n_dofs_1d * n_dofs_1d * n;
+      local_bilaplace  = local_derivative + n_buff * n_dofs_1d * n_dofs_1d * n;
+      tmp              = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * n;
     }
 
 
@@ -607,6 +670,11 @@ namespace PSMF
      * Shared memory for computed 1D Laplace matrix.
      */
     Number *local_derivative;
+
+    /**
+     * Shared memory for computed 1D biLaplace matrix.
+     */
+    Number *local_bilaplace;
 
     /**
      * Shared memory for computed 1D eigenvalues.

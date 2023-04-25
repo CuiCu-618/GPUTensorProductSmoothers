@@ -157,14 +157,12 @@ namespace PSMF
    *
    * @tparam dim
    * @tparam fe_degree
-   * @tparam dof_layout
    * @tparam Number full number
    * @tparam smooth_kernel
    * @tparam Number1 vcycle number
    */
-  template <int       dim,
-            int       fe_degree,
-            DoFLayout dof_layout,
+  template <int dim,
+            int fe_degree,
             typename Number,
             LaplaceVariant  lapalace_kernel,
             LaplaceVariant  smooth_vmult,
@@ -189,7 +187,7 @@ namespace PSMF
       const DoFHandler<dim>                                 &dof_handler,
       const MGLevelObject<std::shared_ptr<MatrixFreeType>>  &mfdata_dp,
       const MGLevelObject<std::shared_ptr<MatrixFreeType2>> &mfdata,
-      const MGTransferCUDA<dim, Number2, dof_layout>        &transfer,
+      const MGTransferCUDA<dim, Number2>                    &transfer,
       const Function<dim, Number>                           &boundary_values,
       const Function<dim, Number>                           &right_hand_side,
       std::shared_ptr<ConditionalOStream>                    pcout,
@@ -300,7 +298,8 @@ namespace PSMF
         smoother_data.resize(minlevel, maxlevel);
         for (unsigned int level = minlevel; level <= maxlevel; ++level)
           {
-            smoother_data[level].data = mfdata[level];
+            smoother_data[level].data         = mfdata[level];
+            smoother_data[level].n_iterations = CT::N_SMOOTH_STEPS_;
           }
 
         mg_smoother.initialize(matrix, smoother_data);
@@ -771,7 +770,7 @@ namespace PSMF
 
     const SmartPointer<const DoFHandler<dim>> dof_handler;
 
-    const SmartPointer<const MGTransferCUDA<dim, Number2, dof_layout>> transfer;
+    const SmartPointer<const MGTransferCUDA<dim, Number2>> transfer;
 
     std::vector<std::map<unsigned int, Number>> inhomogeneous_bc;
 
@@ -856,16 +855,14 @@ namespace PSMF
 
 
 
-  template <int       dim,
-            int       fe_degree,
-            DoFLayout dof_layout,
+  template <int dim,
+            int fe_degree,
             typename Number,
             LaplaceVariant  lapalace_kernel,
             LaplaceVariant  smooth_vmult,
             SmootherVariant smooth_inverse>
   class MultigridSolver<dim,
                         fe_degree,
-                        dof_layout,
                         Number,
                         lapalace_kernel,
                         smooth_vmult,
@@ -884,11 +881,11 @@ namespace PSMF
       const DoFHandler<dim>                                &dof_handler,
       const MGLevelObject<std::shared_ptr<MatrixFreeType>> &mfdata_dp,
       const MGLevelObject<std::shared_ptr<MatrixFreeType>> &,
-      const MGTransferCUDA<dim, Number, dof_layout> &transfer_dp,
-      const Function<dim, Number>                   &boundary_values,
-      const Function<dim, Number>                   &right_hand_side,
-      std::shared_ptr<ConditionalOStream>            pcout,
-      const unsigned int                             n_cycles = 1)
+      const MGTransferCUDA<dim, Number>  &transfer_dp,
+      const Function<dim, Number>        &boundary_values,
+      const Function<dim, Number>        &right_hand_side,
+      std::shared_ptr<ConditionalOStream> pcout,
+      const unsigned int                  n_cycles = 1)
       : dof_handler(&dof_handler)
       , transfer(&transfer_dp)
       , minlevel(1)
@@ -986,7 +983,8 @@ namespace PSMF
         smoother_data.resize(minlevel, maxlevel);
         for (unsigned int level = minlevel; level <= maxlevel; ++level)
           {
-            smoother_data[level].data = mfdata_dp[level];
+            smoother_data[level].data         = mfdata_dp[level];
+            smoother_data[level].n_iterations = CT::N_SMOOTH_STEPS_;
           }
 
         mg_smoother.initialize(matrix, smoother_data);
@@ -1165,7 +1163,7 @@ namespace PSMF
 
       std::string solver_name = "GMRES";
 
-      ReductionControl solver_control(CT::MAX_STEPS_, 1e-15, CT::REDUCE_);
+      ReductionControl solver_control(CT::MAX_STEPS_, 1e-14, CT::REDUCE_);
       solver_control.enable_history_data();
       solver_control.log_history(true);
 
@@ -1192,6 +1190,8 @@ namespace PSMF
       auto residual_0 = solver_control.initial_value();
       auto residual_n = solver_control.last_value();
       auto reduction  = solver_control.reduction();
+
+      // std::cout << residual_0 << " " << residual_n << std::endl;
 
       // *** average reduction: r_n = rho^n * r_0
       const double rho =
@@ -1353,6 +1353,7 @@ namespace PSMF
         (mg_smoother).apply(level, solution[level], defect[level]);
       else
         (mg_smoother).smooth(level, solution[level], defect[level]);
+      // (mg_smoother).smooth(level, solution[level], defect[level]);
 
       matrix[level].vmult(t[level], solution[level]);
 
@@ -1368,6 +1369,7 @@ namespace PSMF
       // solution[level] += t[level];
 
       (mg_smoother).smooth(level, solution[level], defect[level]);
+      // (mg_smoother).smooth(level, solution[level], defect[level]);
     }
 
     template <bool is_zero = false>
@@ -1438,8 +1440,8 @@ namespace PSMF
     }
 
 
-    const SmartPointer<const DoFHandler<dim>> dof_handler;
-    const SmartPointer<const MGTransferCUDA<dim, Number, dof_layout>> transfer;
+    const SmartPointer<const DoFHandler<dim>>             dof_handler;
+    const SmartPointer<const MGTransferCUDA<dim, Number>> transfer;
 
     MGLevelObject<MatrixType> matrix;
 

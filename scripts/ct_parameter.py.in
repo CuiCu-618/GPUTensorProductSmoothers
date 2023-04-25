@@ -35,13 +35,19 @@ def parse_args():
                         default=DEFAULT_OUTFILE_
     )
     parser.add_argument('-DIM','--dimension',
-                        default=3,
+                        default=2,
                         type=int,
                         choices=[2,3],
                         help="spatial dimension of the domain"
     )
     parser.add_argument('-DEG','--fe-degree',
                         default=4,
+                        type=int,
+                        choices=range(1,11),
+                        help="spatial dimension of the domain"
+    )
+    parser.add_argument('-NSMO','--n_smooth_steps',
+                        default=1,
                         type=int,
                         choices=range(1,11),
                         help="spatial dimension of the domain"
@@ -53,7 +59,7 @@ def parse_args():
                         help="number of shift elements"
     )
     parser.add_argument('-REDUCE','--reduce',
-                        default=1e-9,
+                        default=1e-8,
                         type=float,
                         help="desired reduction factor"                    
     )
@@ -68,7 +74,7 @@ def parse_args():
                         help="maximum number of dofs"                    
     )
     parser.add_argument('-DLY','--dof-layout',
-                        default='DGQ',
+                        default='Q',
                         type=str,
                         choices=['Q','DGQ','RT'],
                         help="dof layout of finite element method"
@@ -130,8 +136,10 @@ class Parameter:
         dim = options.dimension
         deg = options.fe_degree
         patch = options.patch_per_block
+        nsmo = options.n_smooth_steps
         self.dimension = ('constexpr unsigned int', dim)
         self.fe_degree = ('constexpr unsigned int', deg)
+        self.n_smooth_steps = ('constexpr unsigned int', nsmo)
         self.patch_per_block = ('constexpr unsigned int', patch)
         self.reduce = ('constexpr double', options.reduce)
         self.max_steps = ('constexpr unsigned int', options.max_steps)
@@ -147,7 +155,7 @@ class Parameter:
 
     def laplace_prm(self,variant):
         """translate the variant into parameters"""
-        kernel_str = '{'
+        kernel_str = '{{'
         count = 0
         for kernel in variant:
             if kernel.startswith('B'):
@@ -165,11 +173,11 @@ class Parameter:
             elif kernel.endswith('MMA'):
                 kernel_str += r'PSMF::LaplaceVariant::TensorCoreMMA, '
                 count += 1 
-        self.laplace_type = ('constexpr std::array<PSMF::LaplaceVariant, ' + str(count) + '>', kernel_str + '}')
+        self.laplace_type = ('constexpr std::array<PSMF::LaplaceVariant, ' + str(count) + '>', kernel_str + '}}')
 
     def smooth_vmult_prm(self,variant):
         """translate the variant into parameters"""
-        kernel_str = '{'
+        kernel_str = '{{'
         count = 0
         for kernel in variant:
             if kernel.startswith('B'):
@@ -181,11 +189,11 @@ class Parameter:
             elif kernel.endswith('Core'):
                 kernel_str += r'PSMF::LaplaceVariant::TensorCore, '
                 count += 1    
-        self.smooth_vmult = ('constexpr std::array<PSMF::LaplaceVariant, ' + str(count) + '>', kernel_str + '}')
+        self.smooth_vmult = ('constexpr std::array<PSMF::LaplaceVariant, ' + str(count) + '>', kernel_str + '}}')
 
     def smooth_inv_prm(self,variant):
         """translate the variant into parameters"""
-        kernel_str = '{'
+        kernel_str = '{{'
         count = 0
         for kernel in variant:
             if kernel.startswith('GLO'):
@@ -200,7 +208,7 @@ class Parameter:
             elif kernel.endswith('Core'):
                 kernel_str += r'PSMF::SmootherVariant::TensorCore, '
                 count += 1    
-        self.smooth_inv = ('constexpr std::array<PSMF::SmootherVariant, ' + str(count) + '>', kernel_str + '}')
+        self.smooth_inv = ('constexpr std::array<PSMF::SmootherVariant, ' + str(count) + '>', kernel_str + '}}')
 
     def granularity_prm(self,variant):
         """translate the variant into parameters"""

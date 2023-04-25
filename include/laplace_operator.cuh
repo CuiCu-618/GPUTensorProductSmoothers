@@ -22,7 +22,7 @@ namespace PSMF
   template <int dim, int fe_degree, typename Number, LaplaceVariant kernel>
   struct LocalLaplace
   {
-    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
 
     mutable std::size_t shared_mem;
 
@@ -40,9 +40,9 @@ namespace PSMF
       const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
       // local_src, local_dst
       shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
-      // local_mass, local_derivative
+      // local_mass, local_derivative, local_bilaplace
       shared_mem +=
-        2 * patch_per_block * n_dofs_1d * n_dofs_1d * 3 * sizeof(Number);
+        3 * patch_per_block * n_dofs_1d * n_dofs_1d * dim * sizeof(Number);
       // temp
       shared_mem += n * patch_per_block * local_dim * sizeof(Number);
 
@@ -70,7 +70,7 @@ namespace PSMF
   template <int dim, int fe_degree, typename Number>
   struct LocalLaplace<dim, fe_degree, Number, LaplaceVariant::BasicCell>
   {
-    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
 
     mutable std::size_t shared_mem;
 
@@ -120,7 +120,7 @@ namespace PSMF
   template <int dim, int fe_degree, typename Number>
   struct LocalLaplace<dim, fe_degree, Number, LaplaceVariant::TensorCore>
   {
-    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
 
     mutable std::size_t shared_mem;
 
@@ -172,7 +172,7 @@ namespace PSMF
   template <int dim, int fe_degree, typename Number>
   struct LocalLaplace<dim, fe_degree, Number, LaplaceVariant::TensorCoreMMA>
   {
-    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
 
     mutable std::size_t shared_mem;
 
@@ -253,7 +253,7 @@ namespace PSMF
 
       data->cell_loop(local_laplace, src, dst);
 
-      // mf_data->copy_constrained_values(src, dst);
+      data->copy_constrained_values(src, dst);
     }
 
     void

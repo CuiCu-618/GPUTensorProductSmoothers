@@ -150,6 +150,8 @@ template <int dim, int fe_degree>
 void
 LaplaceProblem<dim, fe_degree>::setup_system()
 {
+  Timer time;
+
   dof_handler.distribute_dofs(*fe);
   dof_handler.distribute_mg_dofs();
 
@@ -157,12 +159,21 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   N      = 5;
   n_mv   = dof_handler.n_dofs() < 10000000 ? 100 : 20;
 
-  const unsigned int nlevels = triangulation.n_global_levels();
-
   *pcout << "Setting up dofs...\n";
+
+  const unsigned int nlevels = triangulation.n_global_levels();
+  for (unsigned int level = 0; level < nlevels; ++level)
+    Util::Lexicographic(dof_handler, level);
+  Util::Lexicographic(dof_handler);
+
   *pcout << "Number of degrees of freedom: " << dof_handler.n_dofs() << " = ("
-         << (1 << (nlevels - 1)) << " x (" << fe->degree << " + 1))^" << dim
-         << std::endl;
+         << ((int)std::pow(dof_handler.n_dofs() * 1.0000001, 1. / dim) - 1) /
+              fe->degree
+         << " x " << fe->degree << " + 1)^" << dim << std::endl;
+
+  *pcout << "DoF setup time:         " << time.wall_time() << "s" << std::endl;
+
+  time.restart();
 
   *pcout << "Setting up Matrix-Free...\n";
   // Initialization of Dirichlet boundaries
@@ -187,7 +198,10 @@ LaplaceProblem<dim, fe_degree>::setup_system()
     additional_data.granularity_scheme = CT::GRANULARITY_;
 
     mfdata_dp = std::make_shared<MatrixFreeDP>();
-    mfdata_dp->reinit(dof_handler, maxlevel, additional_data);
+    mfdata_dp->reinit(dof_handler,
+                      mg_constrained_dofs,
+                      maxlevel,
+                      additional_data);
   }
   // SP
   {
@@ -198,8 +212,13 @@ LaplaceProblem<dim, fe_degree>::setup_system()
     additional_data.granularity_scheme = CT::GRANULARITY_;
 
     mfdata_sp = std::make_shared<MatrixFreeSP>();
-    mfdata_sp->reinit(dof_handler, maxlevel, additional_data);
+    mfdata_sp->reinit(dof_handler,
+                      mg_constrained_dofs,
+                      maxlevel,
+                      additional_data);
   }
+
+  *pcout << "Matrix-free setup time: " << time.wall_time() << "s" << std::endl;
 }
 template <int dim, int fe_degree>
 template <PSMF::LaplaceVariant kernel>
@@ -213,6 +232,21 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
 
   system_rhs_dp = 1.;
   solution_dp   = 0.;
+
+  // LinearAlgebra::ReadWriteVector<full_number>
+  // rw_vector(dof_handler.n_dofs());
+  // // for (auto &val : rw_vector)
+  // // val = 1.;
+  // system_rhs_dp = 0.;
+  // for (unsigned int i = 0; i < system_rhs_dp.size(); ++i)
+  //   {
+  //     rw_vector[i] = 1.;
+  //     system_rhs_dp.import(rw_vector, VectorOperation::insert);
+  //     matrix_dp.vmult(solution_dp, system_rhs_dp);
+  //     solution_dp.print(std::cout);
+  //     std::cout << i << " " << solution_dp.l2_norm() << std::endl;
+  //     rw_vector[i] = 0;
+  //   }
 
   Timer  time;
   double best_time = 1e10;
@@ -299,8 +333,7 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
   u_coarse  = 1.;
   u_coarse_ = 1.;
 
-  PSMF::MGTransferCUDA<dim, full_number, CT::DOF_LAYOUT_> mg_transfer(
-    mg_constrained_dofs);
+  PSMF::MGTransferCUDA<dim, full_number> mg_transfer(mg_constrained_dofs);
   mg_transfer.build(dof_handler);
 
   Timer  time;
@@ -325,8 +358,7 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
 
   *pcout << "Benchmarking Transfer in single precision...\n";
 
-  PSMF::MGTransferCUDA<dim, vcycle_number, CT::DOF_LAYOUT_> mg_transfer_(
-    mg_constrained_dofs);
+  PSMF::MGTransferCUDA<dim, vcycle_number> mg_transfer_(mg_constrained_dofs);
   mg_transfer_.build(dof_handler);
 
   for (unsigned int i = 0; i < N; ++i)
@@ -352,7 +384,8 @@ void
 LaplaceProblem<dim, fe_degree>::do_smooth()
 {
   // DP
-  using MatrixTypeDP = PSMF::LaplaceOperator<dim, fe_degree, full_number, smooth_vmult>;
+  using MatrixTypeDP =
+    PSMF::LaplaceOperator<dim, fe_degree, full_number, smooth_vmult>;
   MatrixTypeDP matrix_dp;
   matrix_dp.initialize(mfdata_dp, dof_handler, maxlevel);
 
@@ -360,7 +393,8 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
     PSMF::PatchSmoother<MatrixTypeDP, dim, fe_degree, smooth_vmult, smooth_inv>;
   SmootherTypeDP                          smooth_dp;
   typename SmootherTypeDP::AdditionalData smoother_data_dp;
-  smoother_data_dp.data = mfdata_dp;
+  smoother_data_dp.data         = mfdata_dp;
+  smoother_data_dp.n_iterations = CT::N_SMOOTH_STEPS_;
 
   smooth_dp.initialize(matrix_dp, smoother_data_dp);
 
@@ -387,7 +421,8 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   info_table[3].add_value("Perf[Dof/s]", n_dofs / best_time);
 
   // SP
-  using MatrixTypeSP = PSMF::LaplaceOperator<dim, fe_degree, vcycle_number, smooth_vmult>;
+  using MatrixTypeSP =
+    PSMF::LaplaceOperator<dim, fe_degree, vcycle_number, smooth_vmult>;
   MatrixTypeSP matrix_sp;
   matrix_sp.initialize(mfdata_sp, dof_handler, maxlevel);
 
@@ -395,7 +430,8 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
     PSMF::PatchSmoother<MatrixTypeSP, dim, fe_degree, smooth_vmult, smooth_inv>;
   SmootherTypeSP                          smooth_sp;
   typename SmootherTypeSP::AdditionalData smoother_data_sp;
-  smoother_data_sp.data = mfdata_sp;
+  smoother_data_sp.data         = mfdata_sp;
+  smoother_data_sp.n_iterations = CT::N_SMOOTH_STEPS_;
 
   smooth_sp.initialize(matrix_sp, smoother_data_sp);
 
@@ -501,7 +537,7 @@ LaplaceProblem<dim, fe_degree>::run()
     n_dofs_1d = std::cbrt(CT::MAX_SIZES_);
 
   auto n_refinement =
-    static_cast<unsigned int>(std::log2(n_dofs_1d / (fe_degree + 1)));
+    static_cast<unsigned int>(std::log2((n_dofs_1d - 1) / fe_degree));
   triangulation.refine_global(n_refinement);
 
   setup_system();

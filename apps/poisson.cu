@@ -138,7 +138,7 @@ namespace Step64
     MGLevelObject<std::shared_ptr<MatrixFreeSP>> mfdata_sp;
     MGConstrainedDoFs                            mg_constrained_dofs;
 
-    PSMF::MGTransferCUDA<dim, vcycle_number, CT::DOF_LAYOUT_> transfer;
+    PSMF::MGTransferCUDA<dim, vcycle_number> transfer;
   };
 
   template <int dim, int fe_degree>
@@ -179,10 +179,14 @@ namespace Step64
     dof_handler.distribute_dofs(*fe);
     dof_handler.distribute_mg_dofs();
     const unsigned int nlevels = triangulation.n_global_levels();
+    for (unsigned int level = 0; level < nlevels; ++level)
+      Util::Lexicographic(dof_handler, level);
+    Util::Lexicographic(dof_handler);
 
     *pcout << "Number of degrees of freedom: " << dof_handler.n_dofs() << " = ("
-           << (1 << (nlevels - 1)) << " x (" << fe->degree << " + 1))^" << dim
-           << std::endl;
+           << ((int)std::pow(dof_handler.n_dofs() * 1.0000001, 1. / dim) - 1) /
+                fe->degree
+           << " x " << fe->degree << " + 1)^" << dim << std::endl;
 
     setup_time += time.wall_time();
 
@@ -232,7 +236,10 @@ namespace Step64
           additional_data.granularity_scheme = CT::GRANULARITY_;
 
           mfdata_dp[level] = std::make_shared<MatrixFreeDP>();
-          mfdata_dp[level]->reinit(dof_handler, level, additional_data);
+          mfdata_dp[level]->reinit(dof_handler,
+                                   mg_constrained_dofs,
+                                   level,
+                                   additional_data);
         }
 
         // single-precision matrix-free data
@@ -251,7 +258,10 @@ namespace Step64
             additional_data.granularity_scheme = CT::GRANULARITY_;
 
             mfdata_sp[level] = std::make_shared<MatrixFreeSP>();
-            mfdata_sp[level]->reinit(dof_handler, level, additional_data);
+            mfdata_sp[level]->reinit(dof_handler,
+                                     mg_constrained_dofs,
+                                     level,
+                                     additional_data);
           }
       }
 
@@ -279,7 +289,6 @@ namespace Step64
   {
     PSMF::MultigridSolver<dim,
                           fe_degree,
-                          CT::DOF_LAYOUT_,
                           full_number,
                           laplace,
                           smooth_vmult,

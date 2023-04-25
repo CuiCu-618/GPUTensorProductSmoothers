@@ -53,10 +53,11 @@ namespace PSMF
     Number                                                       *dst,
     const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
   {
-    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
     constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
     constexpr unsigned int n_dofs_z  = dim == 2 ? 1 : n_dofs_1d;
 
+    const unsigned int n_dofs_per_dim  = gpu_data.n_dofs_per_dim;
     const unsigned int patch_per_block = gpu_data.patch_per_block;
     const unsigned int local_patch     = threadIdx.x / n_dofs_1d;
     const unsigned int patch       = local_patch + patch_per_block * blockIdx.x;
@@ -85,6 +86,14 @@ namespace PSMF
               gpu_data.laplace_stiff_1d[gpu_data.patch_type[patch * dim + d] *
                                           n_dofs_1d * n_dofs_1d +
                                         threadIdx.y * n_dofs_1d + local_tid_x];
+
+            shared_data
+              .local_bilaplace[(local_patch * dim + d) * n_dofs_1d * n_dofs_1d +
+                               threadIdx.y * n_dofs_1d + local_tid_x] =
+              gpu_data
+                .bilaplace_stiff_1d[gpu_data.patch_type[patch * dim + d] *
+                                      n_dofs_1d * n_dofs_1d +
+                                    threadIdx.y * n_dofs_1d + local_tid_x];
           }
 
         for (unsigned int z = 0; z < n_dofs_z; ++z)
@@ -94,12 +103,9 @@ namespace PSMF
                                        threadIdx.y * n_dofs_1d + local_tid_x;
 
             const unsigned int global_dof_indices =
-              Util::compute_indices<dim, fe_degree>(
-                &gpu_data.first_dof[patch * (1 << dim)],
-                local_patch,
-                local_tid_x,
-                threadIdx.y,
-                z);
+              z * n_dofs_per_dim * n_dofs_per_dim +
+              threadIdx.y * n_dofs_per_dim + local_tid_x +
+              gpu_data.first_dof[patch];
 
             shared_data.local_src[index] = src[global_dof_indices];
 
@@ -116,12 +122,11 @@ namespace PSMF
                                        threadIdx.y * n_dofs_1d + local_tid_x;
 
             const unsigned int global_dof_indices =
-              Util::compute_indices<dim, fe_degree>(
-                &gpu_data.first_dof[patch * (1 << dim)],
-                local_patch,
-                local_tid_x,
-                threadIdx.y,
-                z);
+              z * n_dofs_per_dim * n_dofs_per_dim +
+              threadIdx.y * n_dofs_per_dim + local_tid_x +
+              gpu_data.first_dof[patch];
+
+            // printf("[%f %d] ", shared_data.local_dst[index], index);
 
             atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
           }
@@ -302,11 +307,12 @@ namespace PSMF
     Number                                                       *dst,
     const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
   {
-    constexpr unsigned int n_dofs_1d           = 2 * fe_degree;
+    constexpr unsigned int n_dofs_1d           = 2 * fe_degree - 1;
     constexpr unsigned int local_dim           = Util::pow(n_dofs_1d, dim);
     constexpr unsigned int regular_vpatch_size = Util::pow(2, dim);
     constexpr unsigned int n_dofs_z            = dim == 2 ? 1 : n_dofs_1d;
 
+    const unsigned int n_dofs_per_dim  = gpu_data.n_dofs_per_dim;
     const unsigned int patch_per_block = gpu_data.patch_per_block;
     const unsigned int local_patch     = threadIdx.x / n_dofs_1d;
     const unsigned int patch       = local_patch + patch_per_block * blockIdx.x;
@@ -319,9 +325,16 @@ namespace PSMF
 
     if (patch < gpu_data.n_patches)
       {
-        shared_data.local_mass[local_tid_x] = gpu_data.eigenvalues[local_tid_x];
-        shared_data.local_derivative[threadIdx.y * n_dofs_1d + local_tid_x] =
-          gpu_data.eigenvectors[threadIdx.y * n_dofs_1d + local_tid_x];
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            shared_data.local_mass[d * n_dofs_1d + local_tid_x] =
+              gpu_data.eigenvalues[d * n_dofs_1d + local_tid_x];
+            shared_data
+              .local_derivative[(d * n_dofs_1d + threadIdx.y) * n_dofs_1d +
+                                local_tid_x] =
+              gpu_data.eigenvectors[(d * n_dofs_1d + threadIdx.y) * n_dofs_1d +
+                                    local_tid_x];
+          }
 
         // #pragma unroll
         for (unsigned int z = 0; z < n_dofs_z; ++z)
@@ -331,12 +344,9 @@ namespace PSMF
                                        threadIdx.y * n_dofs_1d + local_tid_x;
 
             const unsigned int global_dof_indices =
-              Util::compute_indices<dim, fe_degree>(
-                &gpu_data.first_dof[patch * regular_vpatch_size],
-                local_patch,
-                local_tid_x + 1,
-                threadIdx.y + 1,
-                z + dim - 2);
+              (z + dim - 2) * n_dofs_per_dim * n_dofs_per_dim +
+              (threadIdx.y + 1) * n_dofs_per_dim + local_tid_x + 1 +
+              gpu_data.first_dof[patch];
 
             shared_data.local_src[index] = src[global_dof_indices];
 
@@ -354,12 +364,9 @@ namespace PSMF
                                        threadIdx.y * n_dofs_1d + local_tid_x;
 
             const unsigned int global_dof_indices =
-              Util::compute_indices<dim, fe_degree>(
-                &gpu_data.first_dof[patch * regular_vpatch_size],
-                local_patch,
-                local_tid_x + 1,
-                threadIdx.y + 1,
-                z + dim - 2);
+              (z + dim - 2) * n_dofs_per_dim * n_dofs_per_dim +
+              (threadIdx.y + 1) * n_dofs_per_dim + local_tid_x + 1 +
+              gpu_data.first_dof[patch];
 
             dst[global_dof_indices] =
               shared_data.local_dst[index] * gpu_data.relaxation;
@@ -374,11 +381,12 @@ namespace PSMF
     Number                                                       *dst,
     const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
   {
-    constexpr unsigned int n_dofs_1d           = 2 * fe_degree + 2;
+    constexpr unsigned int n_dofs_1d           = 2 * fe_degree + 1;
     constexpr unsigned int local_dim           = Util::pow(n_dofs_1d, dim);
     constexpr unsigned int regular_vpatch_size = Util::pow(2, dim);
     constexpr unsigned int n_dofs_z            = dim == 2 ? 1 : n_dofs_1d;
 
+    const unsigned int n_dofs_per_dim  = gpu_data.n_dofs_per_dim;
     const unsigned int patch_per_block = gpu_data.patch_per_block;
     const unsigned int local_patch     = threadIdx.x / n_dofs_1d;
     const unsigned int patch       = local_patch + patch_per_block * blockIdx.x;
@@ -395,6 +403,8 @@ namespace PSMF
           gpu_data.smooth_mass_1d[threadIdx.y * n_dofs_1d + local_tid_x];
         shared_data.local_derivative[threadIdx.y * n_dofs_1d + local_tid_x] =
           gpu_data.smooth_stiff_1d[threadIdx.y * n_dofs_1d + local_tid_x];
+        shared_data.local_bilaplace[threadIdx.y * n_dofs_1d + local_tid_x] =
+          gpu_data.smooth_bilaplace_1d[threadIdx.y * n_dofs_1d + local_tid_x];
 
         for (unsigned int z = 0; z < n_dofs_z; ++z)
           {
@@ -403,12 +413,9 @@ namespace PSMF
                                        threadIdx.y * n_dofs_1d + local_tid_x;
 
             const unsigned int global_dof_indices =
-              Util::compute_indices<dim, fe_degree>(
-                &gpu_data.first_dof[patch * regular_vpatch_size],
-                local_patch,
-                local_tid_x,
-                threadIdx.y,
-                z);
+              z * n_dofs_per_dim * n_dofs_per_dim +
+              threadIdx.y * n_dofs_per_dim + local_tid_x +
+              gpu_data.first_dof[patch];
 
             shared_data.local_src[index] = src[global_dof_indices];
 
@@ -435,12 +442,7 @@ namespace PSMF
                   local_patch * local_dim + row * n_dofs_1d + col;
 
                 const unsigned int global_dof_indices =
-                  Util::compute_indices<dim, fe_degree>(
-                    &gpu_data.first_dof[patch * regular_vpatch_size],
-                    local_patch,
-                    col,
-                    row,
-                    0);
+                  row * n_dofs_per_dim + col + gpu_data.first_dof[patch];
 
                 dst[global_dof_indices] =
                   shared_data.local_dst[index] * gpu_data.relaxation;
@@ -459,12 +461,8 @@ namespace PSMF
                                        row * n_dofs_1d + col;
 
                   const unsigned int global_dof_indices =
-                    Util::compute_indices<dim, fe_degree>(
-                      &gpu_data.first_dof[patch * regular_vpatch_size],
-                      local_patch,
-                      col,
-                      row,
-                      z);
+                    z * n_dofs_per_dim * n_dofs_per_dim + row * n_dofs_per_dim +
+                    col + gpu_data.first_dof[patch];
 
                   dst[global_dof_indices] =
                     shared_data.local_dst[index] * gpu_data.relaxation;

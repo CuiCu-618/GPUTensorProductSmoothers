@@ -37,7 +37,7 @@ namespace PSMF
                        lapalace,
                        SmootherVariant::GLOBAL>
   {
-    static constexpr unsigned int n_dofs_1d = 2 * fe_degree;
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree - 1;
 
     LocalSmoother() = default;
 
@@ -57,7 +57,7 @@ namespace PSMF
       shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
       // local_eigenvectors, local_eigenvalues
       shared_mem +=
-        2 * patch_per_block * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
+        3 * patch_per_block * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
       // temp
       shared_mem += (dim - 1) * patch_per_block * local_dim * sizeof(Number);
 
@@ -105,7 +105,7 @@ namespace PSMF
                        SmootherVariant::FUSED_L>
   {
   public:
-    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
 
     mutable std::size_t shared_mem;
 
@@ -124,7 +124,7 @@ namespace PSMF
       shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
       // local_eigenvectors, local_eigenvalues
       shared_mem +=
-        2 * patch_per_block * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
+        3 * patch_per_block * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
       // temp
       shared_mem += (dim - 1) * patch_per_block * local_dim * sizeof(Number);
 
@@ -163,7 +163,7 @@ namespace PSMF
                        SmootherVariant::ConflictFree>
   {
   public:
-    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
 
     mutable std::size_t shared_mem;
 
@@ -299,6 +299,8 @@ namespace PSMF
     public:
       AdditionalData() = default;
 
+      unsigned int n_iterations;
+
       std::shared_ptr<LevelVertexPatch<dim, fe_degree, Number>> data;
       /*
        * Preconditioner.
@@ -318,7 +320,7 @@ namespace PSMF
 
       this->A            = &A;
       this->relaxation   = 1;
-      this->n_iterations = 1;
+      this->n_iterations = parameters_in.n_iterations;
 
       Assert(parameters.preconditioner, ExcNotInitialized());
       this->preconditioner = parameters.preconditioner;
