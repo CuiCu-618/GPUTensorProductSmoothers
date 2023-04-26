@@ -164,9 +164,10 @@ namespace PSMF
   template <int dim,
             int fe_degree,
             typename Number,
-            LaplaceVariant  lapalace_kernel,
-            LaplaceVariant  smooth_vmult,
-            SmootherVariant smooth_inverse,
+            LocalSolverVariant local_solver,
+            LaplaceVariant     lapalace_kernel,
+            LaplaceVariant     smooth_vmult,
+            SmootherVariant    smooth_inverse,
             typename Number2>
   class MultigridSolver
   {
@@ -178,8 +179,12 @@ namespace PSMF
     using MatrixType = LaplaceOperator<dim, fe_degree, Number, lapalace_kernel>;
     using MatrixType2 =
       LaplaceOperator<dim, fe_degree, Number2, lapalace_kernel>;
-    using SmootherType =
-      PatchSmoother<MatrixType2, dim, fe_degree, smooth_vmult, smooth_inverse>;
+    using SmootherType    = PatchSmoother<MatrixType2,
+                                       dim,
+                                       fe_degree,
+                                       local_solver,
+                                       smooth_vmult,
+                                       smooth_inverse>;
     using MatrixFreeType  = LevelVertexPatch<dim, fe_degree, Number>;
     using MatrixFreeType2 = LevelVertexPatch<dim, fe_degree, Number2>;
 
@@ -858,12 +863,14 @@ namespace PSMF
   template <int dim,
             int fe_degree,
             typename Number,
-            LaplaceVariant  lapalace_kernel,
-            LaplaceVariant  smooth_vmult,
-            SmootherVariant smooth_inverse>
+            LocalSolverVariant local_solver,
+            LaplaceVariant     lapalace_kernel,
+            LaplaceVariant     smooth_vmult,
+            SmootherVariant    smooth_inverse>
   class MultigridSolver<dim,
                         fe_degree,
                         Number,
+                        local_solver,
                         lapalace_kernel,
                         smooth_vmult,
                         smooth_inverse,
@@ -873,8 +880,12 @@ namespace PSMF
     using VectorType =
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>;
     using MatrixType = LaplaceOperator<dim, fe_degree, Number, lapalace_kernel>;
-    using SmootherType =
-      PatchSmoother<MatrixType, dim, fe_degree, smooth_vmult, smooth_inverse>;
+    using SmootherType   = PatchSmoother<MatrixType,
+                                       dim,
+                                       fe_degree,
+                                       local_solver,
+                                       smooth_vmult,
+                                       smooth_inverse>;
     using MatrixFreeType = LevelVertexPatch<dim, fe_degree, Number>;
 
     MultigridSolver(

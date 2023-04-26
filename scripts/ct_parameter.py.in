@@ -86,20 +86,26 @@ def parse_args():
     parser.add_argument('-LA','--laplace_type',
                         default='B',
                         nargs='+',
-                        choices=['Basic','Cell','ConflictFree','TensorCore','TensorCoreMMA'],
+                        choices=['Basic','ConflictFree'],
                         help="variant of the Laplace operator kernel"
     )
     parser.add_argument('-SMV','--smooth_vmult',
                         default='B',
                         nargs='+',
-                        choices=['Basic','ConflictFree','TensorCore'],
+                        choices=['Basic','ConflictFree'],
                         help="variant of the Schwarz smoother vmult operator"
     )
     parser.add_argument('-SMI','--smooth_inv',
-                        default='F',
+                        default='G',
                         nargs='+',
-                        choices=['GLOBAL','FUSED_L','ConflictFree','TensorCore'],
+                        choices=['GLOBAL','ConflictFree'],
                         help="variant of the Schwarz smoother inverse operator"
+    )
+    parser.add_argument('-SOL','--local_solver',
+                        default='K',
+                        nargs='+',
+                        choices=['Exact','Bila','KSVD'],
+                        help="variant of the local solver operator"
     )
     parser.add_argument('-G','--granularity',
                         default='multiple',
@@ -151,6 +157,7 @@ class Parameter:
         self.laplace_prm(options.laplace_type)
         self.smooth_vmult_prm(options.smooth_vmult)
         self.smooth_inv_prm(options.smooth_inv)
+        self.local_solver_prm(options.local_solver)
         self.granularity_prm(options.granularity)
 
     def laplace_prm(self,variant):
@@ -161,18 +168,9 @@ class Parameter:
             if kernel.startswith('B'):
                 kernel_str += r'PSMF::LaplaceVariant::Basic, '
                 count += 1
-            elif kernel.endswith('Cell'):
-                kernel_str += r'PSMF::LaplaceVariant::BasicCell, '
-                count += 1
             elif kernel.endswith('Free'):
                 kernel_str += r'PSMF::LaplaceVariant::ConflictFree, '
                 count += 1
-            elif kernel.endswith('Core'):
-                kernel_str += r'PSMF::LaplaceVariant::TensorCore, '
-                count += 1    
-            elif kernel.endswith('MMA'):
-                kernel_str += r'PSMF::LaplaceVariant::TensorCoreMMA, '
-                count += 1 
         self.laplace_type = ('constexpr std::array<PSMF::LaplaceVariant, ' + str(count) + '>', kernel_str + '}}')
 
     def smooth_vmult_prm(self,variant):
@@ -186,9 +184,6 @@ class Parameter:
             elif kernel.endswith('Free'):
                 kernel_str += r'PSMF::LaplaceVariant::ConflictFree, '
                 count += 1
-            elif kernel.endswith('Core'):
-                kernel_str += r'PSMF::LaplaceVariant::TensorCore, '
-                count += 1    
         self.smooth_vmult = ('constexpr std::array<PSMF::LaplaceVariant, ' + str(count) + '>', kernel_str + '}}')
 
     def smooth_inv_prm(self,variant):
@@ -196,19 +191,29 @@ class Parameter:
         kernel_str = '{{'
         count = 0
         for kernel in variant:
-            if kernel.startswith('GLO'):
+            if kernel.startswith('G'):
                 kernel_str += r'PSMF::SmootherVariant::GLOBAL, '
-                count += 1 
-            elif kernel.startswith('F'):
-                kernel_str += r'PSMF::SmootherVariant::FUSED_L, '
                 count += 1 
             elif kernel.endswith('Free'):
                 kernel_str += r'PSMF::SmootherVariant::ConflictFree, '
                 count += 1
-            elif kernel.endswith('Core'):
-                kernel_str += r'PSMF::SmootherVariant::TensorCore, '
-                count += 1    
         self.smooth_inv = ('constexpr std::array<PSMF::SmootherVariant, ' + str(count) + '>', kernel_str + '}}')
+
+    def local_solver_prm(self,variant):
+        """translate the variant into parameters"""
+        kernel_str = '{{'
+        count = 0
+        for kernel in variant:
+            if kernel.startswith('Ex'):
+                kernel_str += r'PSMF::LocalSolverVariant::Exact, '
+                count += 1
+            elif kernel.endswith('la'):
+                kernel_str += r'PSMF::LocalSolverVariant::Bila, '
+                count += 1
+            elif kernel.startswith('K'):
+                kernel_str += r'PSMF::LocalSolverVariant::KSVD, '
+                count += 1    
+        self.local_solver = ('constexpr std::array<PSMF::LocalSolverVariant, ' + str(count) + '>', kernel_str + '}}')
 
     def granularity_prm(self,variant):
         """translate the variant into parameters"""

@@ -50,8 +50,11 @@ namespace PSMF
     Utilities::CUDA::free(smooth_mass_1d);
     Utilities::CUDA::free(smooth_stiff_1d);
     Utilities::CUDA::free(smooth_bilaplace_1d);
-    Utilities::CUDA::free(eigenvalues);
-    Utilities::CUDA::free(eigenvectors);
+    for (unsigned int i = 0; i < 3; ++i)
+      {
+        Utilities::CUDA::free(eigenvalues[i]);
+        Utilities::CUDA::free(eigenvectors[i]);
+      }
 
 
     ordering_to_type.clear();
@@ -451,8 +454,11 @@ namespace PSMF
 
     constexpr unsigned n_dofs_2d = n_dofs_1d * n_dofs_1d;
 
-    alloc_arrays(&eigenvalues, n_dofs_1d * dim);
-    alloc_arrays(&eigenvectors, n_dofs_2d * dim);
+    for (unsigned int i = 0; i < 3; ++i)
+      {
+        alloc_arrays(&eigenvalues[i], n_dofs_1d * dim);
+        alloc_arrays(&eigenvectors[i], n_dofs_2d * dim);
+      }
     alloc_arrays(&smooth_mass_1d, n_dofs_2d);
     alloc_arrays(&smooth_stiff_1d, n_dofs_2d);
     alloc_arrays(&smooth_bilaplace_1d, n_dofs_2d);
@@ -487,24 +493,27 @@ namespace PSMF
   }
 
   template <int dim, int fe_degree, typename Number>
-  LevelVertexPatch<dim, fe_degree, Number>::Data
+  std::array<typename LevelVertexPatch<dim, fe_degree, Number>::Data, 3>
   LevelVertexPatch<dim, fe_degree, Number>::get_smooth_data(
     unsigned int color) const
   {
-    Data data_copy;
+    std::array<Data, 3> data_copy;
 
-    data_copy.n_dofs_per_dim      = (1 << level) * fe_degree + 1;
-    data_copy.n_patches           = n_patches_smooth[color];
-    data_copy.patch_per_block     = patch_per_block;
-    data_copy.relaxation          = relaxation;
-    data_copy.first_dof           = first_dof_smooth[color];
-    data_copy.l_to_h              = l_to_h;
-    data_copy.h_to_l              = h_to_l;
-    data_copy.eigenvalues         = eigenvalues;
-    data_copy.eigenvectors        = eigenvectors;
-    data_copy.smooth_mass_1d      = smooth_mass_1d;
-    data_copy.smooth_stiff_1d     = smooth_stiff_1d;
-    data_copy.smooth_bilaplace_1d = smooth_bilaplace_1d;
+    for (unsigned int i = 0; i < 3; ++i)
+      {
+        data_copy[i].n_dofs_per_dim      = (1 << level) * fe_degree + 1;
+        data_copy[i].n_patches           = n_patches_smooth[color];
+        data_copy[i].patch_per_block     = patch_per_block;
+        data_copy[i].relaxation          = relaxation;
+        data_copy[i].first_dof           = first_dof_smooth[color];
+        data_copy[i].l_to_h              = l_to_h;
+        data_copy[i].h_to_l              = h_to_l;
+        data_copy[i].eigenvalues         = eigenvalues[i];
+        data_copy[i].eigenvectors        = eigenvectors[i];
+        data_copy[i].smooth_mass_1d      = smooth_mass_1d;
+        data_copy[i].smooth_stiff_1d     = smooth_stiff_1d;
+        data_copy[i].smooth_bilaplace_1d = smooth_bilaplace_1d;
+      }
 
     return data_copy;
   }
@@ -672,11 +681,45 @@ namespace PSMF
       return kronecker_tensor;
     };
 
+    using matrix_type =
+      Tensors::TensorProductMatrix<dim, VectorizedArray<Number>>;
+    using matrix_state = typename matrix_type::State;
+
+    // Bila
+    {
+      std::array<Table<2, VectorizedArray<Number>>, dim> mass;
+      std::array<Table<2, VectorizedArray<Number>>, dim> bilaplace;
+      for (auto d = 0; d < dim; ++d)
+        {
+          mass[d]      = mass_tensor_inv;
+          bilaplace[d] = bilaplace_tensor_inv;
+        }
+
+      std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+        rank1_tensors;
+
+      // rank1_tensors.emplace_back(mass);
+      // rank1_tensors.emplace_back(bilaplace);
+      
+      for (auto direction = 0; direction < dim; ++direction)
+        rank1_tensors.emplace_back(BxMxM(direction));
+
+      matrix_type local_matrices;
+
+      local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
+
+      auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
+      auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
+
+      copy_vals(eigenvalue_tensor, eigenvalues[1]);
+      copy_vecs(eigenvector_tensor, eigenvectors[1]);
+    }
+
 
     // KSVD
-    std::set<unsigned int> ksvd_tensor_indices = {0U, 1U};
-
     {
+      std::set<unsigned int> ksvd_tensor_indices = {0U, 1U};
+
       std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
         rank1_tensors;
 
@@ -718,10 +761,6 @@ namespace PSMF
 
       if (approximation.size() == 2U)
         {
-          using matrix_type =
-            Tensors::TensorProductMatrix<dim, VectorizedArray<Number>>;
-          using matrix_state = typename matrix_type::State;
-
           Number addition_to_min_eigenvalue = 0.025;
 
           matrix_type local_matrices;
@@ -779,11 +818,11 @@ namespace PSMF
               auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
               auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
 
-              auto eigenvalues_ = local_matrices.get_eigenvalues();
-              auto eigenvector_ = local_matrices.get_eigenvectors();
+              copy_vals(eigenvalue_tensor, eigenvalues[2]);
+              copy_vecs(eigenvector_tensor, eigenvectors[2]);
 
-              copy_vals(eigenvalue_tensor, eigenvalues);
-              copy_vecs(eigenvector_tensor, eigenvectors);
+              // auto eigenvalues_ = local_matrices.get_eigenvalues();
+              // auto eigenvector_ = local_matrices.get_eigenvectors();
 
               // print_matrices(eigenvector_);
 

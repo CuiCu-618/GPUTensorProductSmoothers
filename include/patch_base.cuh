@@ -91,6 +91,13 @@ namespace PSMF
     TensorCore
   };
 
+  enum class LocalSolverVariant
+  {
+    Exact,
+    Bila,
+    KSVD
+  };
+
 
   enum class DoFLayout
   {
@@ -300,7 +307,7 @@ namespace PSMF
     /**
      * Return the Data structure associated with @p color for smoothing operator.
      */
-    Data
+    std::array<Data, 3>
     get_smooth_data(unsigned int color) const;
 
     /**
@@ -610,42 +617,17 @@ namespace PSMF
     /**
      * Pointer to 1D eigenvalues for smoothing operator.
      */
-    Number *eigenvalues;
+    std::array<Number *, 3> eigenvalues;
 
     /**
      * Pointer to 1D eigenvectors for smoothing operator.
      */
-    Number *eigenvectors;
+    std::array<Number *, 3> eigenvectors;
   };
 
-  /**
-   * Structure to pass the shared memory into a general user function.
-   * TODO: specialize for cell loop and patch loop
-   */
-  template <int dim, typename Number, bool is_laplace>
-  struct SharedMemData
+  template <typename Number>
+  struct SharedDataBase
   {
-    /**
-     * Constructor.
-     */
-    __device__
-    SharedMemData(Number      *data,
-                  unsigned int n_buff,
-                  unsigned int n_dofs_1d,
-                  unsigned int local_dim)
-    {
-      constexpr unsigned int n = is_laplace ? dim : 1;
-
-      local_src = data;
-      local_dst = local_src + n_buff * local_dim;
-
-      local_mass       = local_dst + n_buff * local_dim;
-      local_derivative = local_mass + n_buff * n_dofs_1d * n_dofs_1d * n;
-      local_bilaplace  = local_derivative + n_buff * n_dofs_1d * n_dofs_1d * n;
-      tmp              = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * n;
-    }
-
-
     /**
      * Shared memory for local and interior src.
      */
@@ -669,7 +651,7 @@ namespace PSMF
     /**
      * Shared memory for computed 1D Laplace matrix.
      */
-    Number *local_derivative;
+    Number *local_laplace;
 
     /**
      * Shared memory for computed 1D biLaplace matrix.
@@ -691,6 +673,121 @@ namespace PSMF
      */
     Number *tmp;
   };
+
+  /**
+   * Structure to pass the shared memory into a general user function.
+   * Used for Bilaplace operator.
+   */
+  template <int dim, typename Number>
+  struct SharedDataOp : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+    using SharedDataBase<Number>::local_mass;
+    using SharedDataBase<Number>::local_laplace;
+    using SharedDataBase<Number>::local_bilaplace;
+    using SharedDataBase<Number>::tmp;
+
+    __device__
+    SharedDataOp(Number      *data,
+                 unsigned int n_buff,
+                 unsigned int n_dofs_1d,
+                 unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+
+      local_mass      = local_dst + n_buff * local_dim;
+      local_laplace   = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim;
+      local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+
+      tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+    }
+  };
+
+  /**
+   * Structure to pass the shared memory into a general user function.
+   * Used for local smoothing operator.
+   */
+  template <int dim,
+            typename Number,
+            SmootherVariant    smoother,
+            LocalSolverVariant local_solver>
+  struct SharedDataSmoother;
+
+  /**
+   * Exact local solver. TODO:
+   */
+  template <int dim, typename Number, SmootherVariant smoother>
+  struct SharedDataSmoother<dim, Number, smoother, LocalSolverVariant::Exact>
+    : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+    using SharedDataBase<Number>::local_mass;
+    using SharedDataBase<Number>::local_laplace;
+    using SharedDataBase<Number>::local_bilaplace;
+    using SharedDataBase<Number>::tmp;
+
+    __device__
+    SharedDataSmoother(Number      *data,
+                       unsigned int n_buff,
+                       unsigned int n_dofs_1d,
+                       unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+
+      local_mass      = local_dst + n_buff * local_dim;
+      local_laplace   = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim;
+      local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+
+      tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+    }
+  };
+
+  /**
+   * Bila or KSVD12 local solver.
+   */
+  template <int dim,
+            typename Number,
+            SmootherVariant    smoother,
+            LocalSolverVariant local_solver>
+  struct SharedDataSmoother : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+    using SharedDataBase<Number>::local_mass;
+    using SharedDataBase<Number>::local_laplace;
+    using SharedDataBase<Number>::local_bilaplace;
+    using SharedDataBase<Number>::tmp;
+
+    __device__
+    SharedDataSmoother(Number      *data,
+                       unsigned int n_buff,
+                       unsigned int n_dofs_1d,
+                       unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+
+      if constexpr (smoother == SmootherVariant::GLOBAL)
+        {
+          local_mass    = local_dst + n_buff * local_dim;
+          local_laplace = local_mass + n_buff * n_dofs_1d * dim;
+          tmp           = local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+        }
+      else
+        {
+          local_mass      = local_dst + n_buff * local_dim;
+          local_laplace   = local_mass + n_buff * n_dofs_1d * n_dofs_1d;
+          local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d;
+          // TODO: should be able to use less shared memory
+          tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * (dim - 1);
+        }
+    }
+  };
+
 
   /**
    * This function determines number of patches per block at compile time.

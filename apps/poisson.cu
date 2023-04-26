@@ -114,14 +114,12 @@ namespace Step64
     void
     solve_mg(unsigned int n_mg_cycles);
 
-    template <PSMF::LaplaceVariant  laplace,
-              PSMF::LaplaceVariant  smooth_vmult,
-              PSMF::SmootherVariant smooth_inv>
+    template <PSMF::LocalSolverVariant local_solver,
+              PSMF::LaplaceVariant     laplace,
+              PSMF::LaplaceVariant     smooth_vmult,
+              PSMF::SmootherVariant    smooth_inv>
     void
-    do_solve(unsigned int k,
-             unsigned int j,
-             unsigned int i,
-             unsigned int call_count);
+    do_solve(unsigned int k, unsigned int call_count);
 
     Triangulation<dim>                  triangulation;
     std::shared_ptr<FiniteElement<dim>> fe;
@@ -159,8 +157,7 @@ namespace Step64
     fout.open(filename + ".log", std::ios_base::out);
     pcout = std::make_shared<ConditionalOStream>(fout, true);
 
-    info_table.resize(CT::LAPLACE_TYPE_.size() * CT::SMOOTH_VMULT_.size() *
-                      CT::SMOOTH_INV_.size());
+    info_table.resize(CT::LOCAL_SOLVER_.size());
   }
 
   template <int dim, int fe_degree>
@@ -278,18 +275,18 @@ namespace Step64
   }
 
   template <int dim, int fe_degree>
-  template <PSMF::LaplaceVariant  laplace,
-            PSMF::LaplaceVariant  smooth_vmult,
-            PSMF::SmootherVariant smooth_inv>
+  template <PSMF::LocalSolverVariant local_solver,
+            PSMF::LaplaceVariant     laplace,
+            PSMF::LaplaceVariant     smooth_vmult,
+            PSMF::SmootherVariant    smooth_inv>
   void
   LaplaceProblem<dim, fe_degree>::do_solve(unsigned int k,
-                                           unsigned int j,
-                                           unsigned int i,
                                            unsigned int call_count)
   {
     PSMF::MultigridSolver<dim,
                           fe_degree,
                           full_number,
+                          local_solver,
                           laplace,
                           smooth_vmult,
                           smooth_inv,
@@ -303,12 +300,12 @@ namespace Step64
              pcout,
              1);
 
-    *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
-           << LaplaceToString(CT::SMOOTH_VMULT_[j]) << " "
-           << SmootherToString(CT::SMOOTH_INV_[i]) << "]\n";
+    *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
+           << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+           << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+           << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << "]\n";
 
-    unsigned int index =
-      (k * CT::SMOOTH_VMULT_.size() + j) * CT::SMOOTH_INV_.size() + i;
+    unsigned int index = k;
 
     info_table[index].add_value("level", triangulation.n_global_levels());
     info_table[index].add_value("cells", triangulation.n_global_active_cells());
@@ -379,16 +376,43 @@ namespace Step64
     using LA = PSMF::LaplaceVariant;
     using SM = PSMF::SmootherVariant;
 
-    do_solve<CT::LAPLACE_TYPE_[0], CT::SMOOTH_VMULT_[0], CT::SMOOTH_INV_[0]>(
-      0, 0, 0, call_count);
+    // do_solve<CT::LOCAL_SOLVER_[0],
+    //          CT::LAPLACE_TYPE_[0],
+    //          CT::SMOOTH_VMULT_[0],
+    //          CT::SMOOTH_INV_[0]>(0, 0, 0, call_count);
 
-    // for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
-    //   for (unsigned int j = 0; j < CT::SMOOTH_VMULT_.size(); ++j)
-    //     for (unsigned int i = 0; i < CT::SMOOTH_INV_.size(); ++i)
-    //       {
-    //         if (LAPLACE_TYPE_[i] == LA::Basic)
-
-    //       }
+    for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+      {
+        switch (CT::LOCAL_SOLVER_[k])
+          {
+            case PSMF::LocalSolverVariant::Exact:
+              {
+                do_solve<PSMF::LocalSolverVariant::Exact,
+                         CT::LAPLACE_TYPE_[0],
+                         CT::SMOOTH_VMULT_[0],
+                         CT::SMOOTH_INV_[0]>(k, call_count);
+                break;
+              }
+            case PSMF::LocalSolverVariant::Bila:
+              {
+                do_solve<PSMF::LocalSolverVariant::Bila,
+                         CT::LAPLACE_TYPE_[0],
+                         CT::SMOOTH_VMULT_[0],
+                         CT::SMOOTH_INV_[0]>(k, call_count);
+                break;
+              }
+            case PSMF::LocalSolverVariant::KSVD:
+              {
+                do_solve<PSMF::LocalSolverVariant::KSVD,
+                         CT::LAPLACE_TYPE_[0],
+                         CT::SMOOTH_VMULT_[0],
+                         CT::SMOOTH_INV_[0]>(k, call_count);
+                break;
+              }
+            default:
+              AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+          }
+      }
 
 
 
@@ -413,23 +437,20 @@ namespace Step64
             *pcout << "Max size reached, terminating." << std::endl;
             *pcout << std::endl;
 
-            for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
-              for (unsigned int j = 0; j < CT::SMOOTH_VMULT_.size(); ++j)
-                for (unsigned int i = 0; i < CT::SMOOTH_INV_.size(); ++i)
-                  {
-                    unsigned int index = (k * CT::SMOOTH_VMULT_.size() + j) *
-                                           CT::SMOOTH_INV_.size() +
-                                         i;
+            for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+              {
+                unsigned int index = k;
 
-                    std::ostringstream oss;
+                std::ostringstream oss;
 
-                    oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
-                        << LaplaceToString(CT::SMOOTH_VMULT_[j]) << " "
-                        << SmootherToString(CT::SMOOTH_INV_[i]) << "]\n";
-                    info_table[index].write_text(oss);
+                oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
+                    << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+                    << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+                    << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << "]\n";
+                info_table[index].write_text(oss);
 
-                    *pcout << oss.str() << std::endl;
-                  }
+                *pcout << oss.str() << std::endl;
+              }
 
             return;
           }

@@ -64,6 +64,7 @@
 
 SMO_MACRO(Smoother, GLOBAL, FUSED_L, ConflictFree, TensorCore);
 LA_MACRO(Laplace, Basic, BasicCell, ConflictFree, TensorCore, TensorCoreMMA);
+ENUM_MACRO(LocalSolver, Exact, Bila, KSVD);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);
 ENUM_MACRO(Granularity, none, user_define, multiple);
 
@@ -85,6 +86,7 @@ namespace Util
     std::string str_laplace_variant      = "";
     std::string str_smooth_vmult_variant = "";
     std::string str_smooth_inv_variant   = "";
+    std::string str_local_solver_variant = "";
 
     for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
       {
@@ -101,6 +103,11 @@ namespace Util
         str_smooth_inv_variant += SmootherToString(CT::SMOOTH_INV_[k]);
         str_smooth_inv_variant += "_";
       }
+    for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+      {
+        str_local_solver_variant += LocalSolverToString(CT::LOCAL_SOLVER_[k]);
+        str_local_solver_variant += "_";
+      }
     const auto str_dof_layout  = DoFLayoutToString(CT::DOF_LAYOUT_);
     const auto str_granularity = GranularityToString(CT::GRANULARITY_);
 
@@ -112,6 +119,7 @@ namespace Util
     oss << "_" << str_laplace_variant;
     oss << str_smooth_vmult_variant;
     oss << str_smooth_inv_variant;
+    oss << str_local_solver_variant;
     oss << str_granularity;
     oss << "_" << value_type;
     oss << "_" << CT::N_SMOOTH_STEPS_ << "s";
@@ -173,11 +181,16 @@ namespace Util
     for (unsigned int k = 0; k < CT::SMOOTH_INV_.size(); ++k)
       oss << SmootherToString(CT::SMOOTH_INV_[k]) << " ";
     oss << std::endl;
+    oss << "Local Solver Variant:       ";
+    for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+      oss << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << " ";
+    oss << std::endl;
     oss << "Granularity Scheme:             "
         << GranularityToString(CT::GRANULARITY_) << std::endl
         << "Maximum size:                   " << CT::MAX_SIZES_ << std::endl
         << "Number of MG cycles in V-cycle: " << 1 << std::endl
-        << "Number of smoothing steps:      " << CT::N_SMOOTH_STEPS_ << std::endl
+        << "Number of smoothing steps:      " << CT::N_SMOOTH_STEPS_
+        << std::endl
         << std::endl;
 
 

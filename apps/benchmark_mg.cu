@@ -88,7 +88,9 @@ private:
   template <PSMF::LaplaceVariant kernel>
   void
   do_Ax();
-  template <PSMF::LaplaceVariant smooth_vmult, PSMF::SmootherVariant smooth_inv>
+  template <PSMF::LocalSolverVariant local_solver,
+            PSMF::LaplaceVariant     smooth_vmult,
+            PSMF::SmootherVariant    smooth_inv>
   void
   do_smooth();
 
@@ -379,7 +381,9 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
 }
 
 template <int dim, int fe_degree>
-template <PSMF::LaplaceVariant smooth_vmult, PSMF::SmootherVariant smooth_inv>
+template <PSMF::LocalSolverVariant local_solver,
+          PSMF::LaplaceVariant     smooth_vmult,
+          PSMF::SmootherVariant    smooth_inv>
 void
 LaplaceProblem<dim, fe_degree>::do_smooth()
 {
@@ -389,8 +393,12 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   MatrixTypeDP matrix_dp;
   matrix_dp.initialize(mfdata_dp, dof_handler, maxlevel);
 
-  using SmootherTypeDP =
-    PSMF::PatchSmoother<MatrixTypeDP, dim, fe_degree, smooth_vmult, smooth_inv>;
+  using SmootherTypeDP = PSMF::PatchSmoother<MatrixTypeDP,
+                                             dim,
+                                             fe_degree,
+                                             local_solver,
+                                             smooth_vmult,
+                                             smooth_inv>;
   SmootherTypeDP                          smooth_dp;
   typename SmootherTypeDP::AdditionalData smoother_data_dp;
   smoother_data_dp.data         = mfdata_dp;
@@ -426,8 +434,12 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   MatrixTypeSP matrix_sp;
   matrix_sp.initialize(mfdata_sp, dof_handler, maxlevel);
 
-  using SmootherTypeSP =
-    PSMF::PatchSmoother<MatrixTypeSP, dim, fe_degree, smooth_vmult, smooth_inv>;
+  using SmootherTypeSP = PSMF::PatchSmoother<MatrixTypeSP,
+                                             dim,
+                                             fe_degree,
+                                             local_solver,
+                                             smooth_vmult,
+                                             smooth_inv>;
   SmootherTypeSP                          smooth_sp;
   typename SmootherTypeSP::AdditionalData smoother_data_sp;
   smoother_data_sp.data         = mfdata_sp;
@@ -468,16 +480,38 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
             switch (CT::SMOOTH_INV_[j])
               {
                 case PSMF::SmootherVariant::GLOBAL:
-                  do_smooth<PSMF::LaplaceVariant::Basic,
-                            PSMF::SmootherVariant::GLOBAL>();
-                  break;
-                case PSMF::SmootherVariant::FUSED_L:
-                  do_smooth<PSMF::LaplaceVariant::Basic,
-                            PSMF::SmootherVariant::FUSED_L>();
+                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+                    switch (CT::LOCAL_SOLVER_[k])
+                      {
+                        case PSMF::LocalSolverVariant::Exact:
+                          do_smooth<PSMF::LocalSolverVariant::Exact,
+                                    PSMF::LaplaceVariant::Basic,
+                                    PSMF::SmootherVariant::GLOBAL>();
+                          break;
+                        case PSMF::LocalSolverVariant::Bila:
+                        case PSMF::LocalSolverVariant::KSVD:
+                          do_smooth<PSMF::LocalSolverVariant::KSVD,
+                                    PSMF::LaplaceVariant::Basic,
+                                    PSMF::SmootherVariant::GLOBAL>();
+                          break;
+                      }
                   break;
                 case PSMF::SmootherVariant::ConflictFree:
-                  do_smooth<PSMF::LaplaceVariant::Basic,
-                            PSMF::SmootherVariant::ConflictFree>();
+                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+                    switch (CT::LOCAL_SOLVER_[k])
+                      {
+                        case PSMF::LocalSolverVariant::Exact:
+                          do_smooth<PSMF::LocalSolverVariant::Exact,
+                                    PSMF::LaplaceVariant::Basic,
+                                    PSMF::SmootherVariant::ConflictFree>();
+                          break;
+                        case PSMF::LocalSolverVariant::Bila:
+                        case PSMF::LocalSolverVariant::KSVD:
+                          do_smooth<PSMF::LocalSolverVariant::KSVD,
+                                    PSMF::LaplaceVariant::Basic,
+                                    PSMF::SmootherVariant::ConflictFree>();
+                          break;
+                      }
                   break;
               }
           break;
@@ -486,34 +520,38 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
             switch (CT::SMOOTH_INV_[j])
               {
                 case PSMF::SmootherVariant::GLOBAL:
-                  do_smooth<PSMF::LaplaceVariant::ConflictFree,
-                            PSMF::SmootherVariant::GLOBAL>();
-                  break;
-                case PSMF::SmootherVariant::FUSED_L:
-                  do_smooth<PSMF::LaplaceVariant::ConflictFree,
-                            PSMF::SmootherVariant::FUSED_L>();
-                  break;
-                case PSMF::SmootherVariant::ConflictFree:
-                  do_smooth<PSMF::LaplaceVariant::ConflictFree,
-                            PSMF::SmootherVariant::ConflictFree>();
-                  break;
-              }
-          break;
-        case PSMF::LaplaceVariant::TensorCore:
-          for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
-            switch (CT::SMOOTH_INV_[j])
-              {
-                case PSMF::SmootherVariant::GLOBAL:
-                  do_smooth<PSMF::LaplaceVariant::TensorCore,
-                            PSMF::SmootherVariant::GLOBAL>();
-                  break;
-                case PSMF::SmootherVariant::FUSED_L:
-                  do_smooth<PSMF::LaplaceVariant::TensorCore,
-                            PSMF::SmootherVariant::FUSED_L>();
+                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+                    switch (CT::LOCAL_SOLVER_[k])
+                      {
+                        case PSMF::LocalSolverVariant::Exact:
+                          do_smooth<PSMF::LocalSolverVariant::Exact,
+                                    PSMF::LaplaceVariant::ConflictFree,
+                                    PSMF::SmootherVariant::GLOBAL>();
+                          break;
+                        case PSMF::LocalSolverVariant::Bila:
+                        case PSMF::LocalSolverVariant::KSVD:
+                          do_smooth<PSMF::LocalSolverVariant::KSVD,
+                                    PSMF::LaplaceVariant::ConflictFree,
+                                    PSMF::SmootherVariant::GLOBAL>();
+                          break;
+                      }
                   break;
                 case PSMF::SmootherVariant::ConflictFree:
-                  do_smooth<PSMF::LaplaceVariant::TensorCore,
-                            PSMF::SmootherVariant::ConflictFree>();
+                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+                    switch (CT::LOCAL_SOLVER_[k])
+                      {
+                        case PSMF::LocalSolverVariant::Exact:
+                          do_smooth<PSMF::LocalSolverVariant::Exact,
+                                    PSMF::LaplaceVariant::ConflictFree,
+                                    PSMF::SmootherVariant::ConflictFree>();
+                          break;
+                        case PSMF::LocalSolverVariant::Bila:
+                        case PSMF::LocalSolverVariant::KSVD:
+                          do_smooth<PSMF::LocalSolverVariant::KSVD,
+                                    PSMF::LaplaceVariant::ConflictFree,
+                                    PSMF::SmootherVariant::ConflictFree>();
+                          break;
+                      }
                   break;
               }
           break;
