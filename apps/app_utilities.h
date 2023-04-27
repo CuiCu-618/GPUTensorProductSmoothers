@@ -181,7 +181,7 @@ namespace Util
     for (unsigned int k = 0; k < CT::SMOOTH_INV_.size(); ++k)
       oss << SmootherToString(CT::SMOOTH_INV_[k]) << " ";
     oss << std::endl;
-    oss << "Local Solver Variant:       ";
+    oss << "Local Solver Variant:           ";
     for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
       oss << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << " ";
     oss << std::endl;
