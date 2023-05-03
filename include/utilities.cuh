@@ -18,6 +18,7 @@
 
 #include <deal.II/hp/fe_values.h>
 
+#include <execution>
 #include <vector>
 
 using namespace dealii;
@@ -162,7 +163,10 @@ namespace Util
       }
 
     ComparePointwiseLexicographic<spacedim> comparator;
-    std::sort(support_point_list.begin(), support_point_list.end(), comparator);
+    std::sort(std::execution::par,
+              support_point_list.begin(),
+              support_point_list.end(),
+              comparator);
     for (types::global_dof_index i = 0; i < n_dofs; ++i)
       new_indices[support_point_list[i].second] = i;
   }
@@ -221,7 +225,10 @@ namespace Util
             }
       }
     ComparePointwiseLexicographic<spacedim> comparator;
-    std::sort(support_point_list.begin(), support_point_list.end(), comparator);
+    std::sort(std::execution::par,
+              support_point_list.begin(),
+              support_point_list.end(),
+              comparator);
     for (types::global_dof_index i = 0; i < n_dofs; ++i)
       new_indices[support_point_list[i].second] = i;
   }
