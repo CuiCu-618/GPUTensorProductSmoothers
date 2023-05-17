@@ -64,7 +64,7 @@
 
 SMO_MACRO(Smoother, GLOBAL, FUSED_L, ConflictFree, TensorCore);
 LA_MACRO(Laplace, Basic, BasicCell, ConflictFree, TensorCore, TensorCoreMMA);
-ENUM_MACRO(LocalSolver, Exact, Bila, KSVD);
+SMO_MACRO(LocalSolver, Exact, Bila, KSVD, NN);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);
 ENUM_MACRO(Granularity, none, user_define, multiple);
 

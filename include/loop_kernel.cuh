@@ -12,6 +12,8 @@
 #ifndef LOOP_KERNEL_CUH
 #define LOOP_KERNEL_CUH
 
+#include <type_traits>
+
 #include "evaluate_kernel.cuh"
 #include "patch_base.cuh"
 
@@ -130,16 +132,97 @@ namespace PSMF
       }
   }
 
-  // TODO: Exact solver
   template <int dim,
             int fe_degree,
             typename Number,
             LocalSolverVariant local_solver>
-  __global__ void
-  loop_kernel_global(
-    const Number                                                 *src,
-    Number                                                       *dst,
-    const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
+  __global__
+    typename std::enable_if<local_solver == LocalSolverVariant::Exact>::type
+    loop_kernel_global(
+      const Number                                                 *src,
+      Number                                                       *dst,
+      const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
+  {
+    constexpr unsigned int n_dofs_1d = 2 * fe_degree - 1;
+    constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+    constexpr unsigned int n_dofs_z  = dim == 2 ? 1 : n_dofs_1d;
+
+    const unsigned int n_dofs_per_dim  = gpu_data.n_dofs_per_dim;
+    const unsigned int patch_per_block = gpu_data.patch_per_block;
+    const unsigned int local_patch     = threadIdx.x / n_dofs_1d;
+    const unsigned int patch       = local_patch + patch_per_block * blockIdx.x;
+    const unsigned int local_tid_x = threadIdx.x % n_dofs_1d;
+    const unsigned int linear_tid_x = threadIdx.y * n_dofs_1d + local_tid_x;
+
+    SharedDataSmoother<dim, Number, SmootherVariant::GLOBAL, local_solver>
+      shared_data(get_shared_data_ptr<Number>(),
+                  patch_per_block,
+                  n_dofs_1d,
+                  local_dim);
+
+    if (patch < gpu_data.n_patches)
+      {
+        // #pragma unroll
+        for (unsigned int z = 0; z < n_dofs_z; ++z)
+          {
+            const unsigned int index = local_patch * local_dim +
+                                       z * n_dofs_1d * n_dofs_1d +
+                                       threadIdx.y * n_dofs_1d + local_tid_x;
+
+            const unsigned int global_dof_indices =
+              (z + dim - 2) * n_dofs_per_dim * n_dofs_per_dim +
+              (threadIdx.y + 1) * n_dofs_per_dim + local_tid_x + 1 +
+              gpu_data.first_dof[patch];
+
+            shared_data.local_src[index] = src[global_dof_indices];
+
+            shared_data.local_dst[index] = dst[global_dof_indices];
+          }
+
+        for (unsigned int row = 0; row < local_dim; ++row)
+          {
+            for (unsigned int z = 0; z < n_dofs_z; ++z)
+              {
+                auto val = gpu_data.eigenvalues[row * local_dim + z * n_dofs_z +
+                                                linear_tid_x] *
+                           shared_data.local_src[local_patch * local_dim +
+                                                 z * n_dofs_z + linear_tid_x];
+
+                atomicAdd(&shared_data.local_dst[local_patch * local_dim + row],
+                          val);
+              }
+          }
+
+        __syncthreads();
+
+        // #pragma unroll
+        for (unsigned int z = 0; z < n_dofs_z; ++z)
+          {
+            const unsigned int index = local_patch * local_dim +
+                                       z * n_dofs_1d * n_dofs_1d +
+                                       threadIdx.y * n_dofs_1d + local_tid_x;
+
+            const unsigned int global_dof_indices =
+              (z + dim - 2) * n_dofs_per_dim * n_dofs_per_dim +
+              (threadIdx.y + 1) * n_dofs_per_dim + local_tid_x + 1 +
+              gpu_data.first_dof[patch];
+
+            dst[global_dof_indices] =
+              shared_data.local_dst[index] * gpu_data.relaxation;
+          }
+      }
+  }
+
+  template <int dim,
+            int fe_degree,
+            typename Number,
+            LocalSolverVariant local_solver>
+  __global__
+    typename std::enable_if<local_solver != LocalSolverVariant::Exact>::type
+    loop_kernel_global(
+      const Number                                                 *src,
+      Number                                                       *dst,
+      const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
   {
     constexpr unsigned int n_dofs_1d           = 2 * fe_degree - 1;
     constexpr unsigned int local_dim           = Util::pow(n_dofs_1d, dim);

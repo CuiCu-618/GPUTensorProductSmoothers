@@ -9,6 +9,8 @@
  *
  */
 
+#include <fstream>
+
 #include "loop_kernel.cuh"
 
 namespace PSMF
@@ -50,7 +52,9 @@ namespace PSMF
     Utilities::CUDA::free(smooth_mass_1d);
     Utilities::CUDA::free(smooth_stiff_1d);
     Utilities::CUDA::free(smooth_bilaplace_1d);
-    for (unsigned int i = 0; i < 3; ++i)
+
+    Utilities::CUDA::free(eigenvalues[0]);
+    for (unsigned int i = 1; i < 4; ++i)
       {
         Utilities::CUDA::free(eigenvalues[i]);
         Utilities::CUDA::free(eigenvectors[i]);
@@ -454,7 +458,8 @@ namespace PSMF
 
     constexpr unsigned n_dofs_2d = n_dofs_1d * n_dofs_1d;
 
-    for (unsigned int i = 0; i < 3; ++i)
+    alloc_arrays(&eigenvalues[0], Util::pow(Util::pow(n_dofs_1d, dim), 2));
+    for (unsigned int i = 1; i < 4; ++i)
       {
         alloc_arrays(&eigenvalues[i], n_dofs_1d * dim);
         alloc_arrays(&eigenvectors[i], n_dofs_2d * dim);
@@ -493,13 +498,13 @@ namespace PSMF
   }
 
   template <int dim, int fe_degree, typename Number>
-  std::array<typename LevelVertexPatch<dim, fe_degree, Number>::Data, 3>
+  std::array<typename LevelVertexPatch<dim, fe_degree, Number>::Data, 4>
   LevelVertexPatch<dim, fe_degree, Number>::get_smooth_data(
     unsigned int color) const
   {
-    std::array<Data, 3> data_copy;
+    std::array<Data, 4> data_copy;
 
-    for (unsigned int i = 0; i < 3; ++i)
+    for (unsigned int i = 0; i < 4; ++i)
       {
         data_copy[i].n_dofs_per_dim      = (1 << level) * fe_degree + 1;
         data_copy[i].n_patches           = n_patches_smooth[color];
@@ -685,6 +690,45 @@ namespace PSMF
       Tensors::TensorProductMatrix<dim, VectorizedArray<Number>>;
     using matrix_state = typename matrix_type::State;
 
+    // Exact
+    {
+      std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+        rank1_tensors;
+
+      for (auto direction = 0; direction < dim; ++direction)
+        rank1_tensors.emplace_back(BxMxM(direction));
+
+      for (auto direction1 = 0; direction1 < dim; ++direction1)
+        for (auto direction2 = 0; direction2 < dim; ++direction2)
+          if (direction1 != direction2)
+            rank1_tensors.emplace_back(LxLxM(direction1, direction2));
+
+      AssertDimension(rank1_tensors.size(), 2 * dim);
+
+      matrix_type local_matrices;
+      local_matrices.reinit(rank1_tensors);
+
+      auto exact_inverse = local_matrices.as_inverse_table();
+
+      auto *vals = new Number[exact_inverse.n_elements()];
+
+      std::transform(exact_inverse.begin(),
+                     exact_inverse.end(),
+                     vals,
+                     [](auto m) -> Number { return m.value()[0]; });
+
+      cudaError_t error_code =
+        cudaMemcpy(eigenvalues[0],
+                   vals,
+                   exact_inverse.n_elements() * sizeof(Number),
+                   cudaMemcpyHostToDevice);
+      AssertCuda(error_code);
+
+      delete[] vals;
+    }
+
+
+
     // Bila
     {
       std::array<Table<2, VectorizedArray<Number>>, dim> mass;
@@ -700,7 +744,7 @@ namespace PSMF
 
       // rank1_tensors.emplace_back(mass);
       // rank1_tensors.emplace_back(bilaplace);
-      
+
       for (auto direction = 0; direction < dim; ++direction)
         rank1_tensors.emplace_back(BxMxM(direction));
 
@@ -840,6 +884,91 @@ namespace PSMF
               // std::cout << std::endl;
             }
         }
+    }
+
+    // Neural Network
+    {
+      std::string filenamea0 =
+        "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a0_interior_Q" +
+        std::to_string(fe_degree) + "_L" + std::to_string(level) + ".txt";
+      std::string filenamea1 =
+        "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a1_interior_Q" +
+        std::to_string(fe_degree) + "_L" + std::to_string(level) + ".txt";
+      std::string filenamem0 =
+        "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m0_interior_Q" +
+        std::to_string(fe_degree) + "_L" + std::to_string(level) + ".txt";
+      std::string filenamem1 =
+        "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m1_interior_Q" +
+        std::to_string(fe_degree) + "_L" + std::to_string(level) + ".txt";
+
+      std::ifstream filea0(filenamea0);
+      std::ifstream filea1(filenamea1);
+      std::ifstream filem0(filenamem0);
+      std::ifstream filem1(filenamem1);
+
+      constexpr unsigned int n_dofs_2d = Util::pow(2 * fe_degree - 1, 2);
+
+
+      auto read_nn = [&](auto &file) {
+        Table<2, VectorizedArray<Number>> mat(2 * fe_degree - 1,
+                                              2 * fe_degree - 1);
+        if (file.is_open())
+          {
+            double tmp[n_dofs_2d];
+
+            std::istream_iterator<double> fileIter(file);
+            std::copy_n(fileIter, n_dofs_2d, tmp);
+
+            std::transform(tmp,
+                           tmp + n_dofs_2d,
+                           mat.begin(),
+                           [](auto m) -> VectorizedArray<Number> {
+                             return make_vectorized_array(m);
+                           });
+
+            file.close();
+          }
+        else
+          std::cout << "Error opening file!" << std::endl;
+
+
+        return mat;
+      };
+
+      std::array<Table<2, VectorizedArray<Number>>, dim> t1;
+      std::array<Table<2, VectorizedArray<Number>>, dim> t2;
+
+      t1[0] = read_nn(filea1);
+      t1[1] = read_nn(filem0);
+      t2[0] = read_nn(filem1);
+      t2[1] = read_nn(filea0);
+
+      std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+        rank1_tensors;
+
+      rank1_tensors.emplace_back(t1);
+      rank1_tensors.emplace_back(t2);
+
+      matrix_type local_matrices;
+
+      local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
+
+      auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
+      auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
+
+      copy_vals(eigenvalue_tensor, eigenvalues[3]);
+      copy_vecs(eigenvector_tensor, eigenvectors[3]);
+
+      // for (unsigned int i = 0; i < dim; ++i)
+      //   {
+      //     for (unsigned int j = 0; j < eigenvalue_tensor[i].size(); ++j)
+      //       std::cout << eigenvalue_tensor[i][j] << " ";
+      //     std::cout << std::endl;
+      //   }
+      // std::cout << std::endl;
+
+      // print_matrices(eigenvector_tensor[0]);
+      // print_matrices(eigenvector_tensor[1]);
     }
   }
 

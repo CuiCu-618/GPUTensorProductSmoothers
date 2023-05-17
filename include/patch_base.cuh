@@ -95,7 +95,8 @@ namespace PSMF
   {
     Exact,
     Bila,
-    KSVD
+    KSVD,
+    NN
   };
 
 
@@ -307,7 +308,7 @@ namespace PSMF
     /**
      * Return the Data structure associated with @p color for smoothing operator.
      */
-    std::array<Data, 3>
+    std::array<Data, 4>
     get_smooth_data(unsigned int color) const;
 
     /**
@@ -379,7 +380,6 @@ namespace PSMF
     std::size_t
     memory_consumption() const;
 
-  private:
     /**
      * Helper function. Assemble 1d mass matrices.
      */
@@ -398,6 +398,7 @@ namespace PSMF
     std::array<Table<2, VectorizedArray<Number>>, 4>
     assemble_bilaplace_tensor() const;
 
+  private:
     /**
      * Helper function. Setup color arrays for collecting data.
      */
@@ -617,12 +618,12 @@ namespace PSMF
     /**
      * Pointer to 1D eigenvalues for smoothing operator.
      */
-    std::array<Number *, 3> eigenvalues;
+    std::array<Number *, 4> eigenvalues;
 
     /**
      * Pointer to 1D eigenvectors for smoothing operator.
      */
-    std::array<Number *, 3> eigenvectors;
+    std::array<Number *, 4> eigenvectors;
   };
 
   template <typename Number>

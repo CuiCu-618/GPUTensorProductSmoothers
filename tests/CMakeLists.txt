@@ -12,6 +12,7 @@ INCLUDE_DIRECTORIES(
 
 SET( SOURCE_FILES
         biharm_op.cu
+        get_1d_matrices.cu
         )
 
 FOREACH ( sourcefile ${SOURCE_FILES} )

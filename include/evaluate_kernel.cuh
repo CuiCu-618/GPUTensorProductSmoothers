@@ -196,68 +196,65 @@ namespace PSMF
 
 
 
-    template <typename T, int n_dofs_1d, typename Number>
-    struct TPEvaluatorBase<T, n_dofs_1d, Number,
-    LaplaceVariant::ConflictFree, 2>
+  template <typename T, int n_dofs_1d, typename Number>
+  struct TPEvaluatorBase<T, n_dofs_1d, Number, LaplaceVariant::ConflictFree, 2>
+  {
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *laplace_matrix,
+          const Number *bilaplace_matrix,
+          Number       *tmp)
     {
-      /**
-       * Default constructor.
-       */
-      __device__
-      TPEvaluatorBase() = default;
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, laplace_matrix, bilaplace_matrix, tmp);
+    }
 
-      /**
-       * Implements a matrix-vector product for Laplacian.
-       */
-      __device__ void
-      vmult(Number       *dst,
-            const Number *src,
-            const Number *mass_matrix,
-            const Number *laplace_matrix,
-            const Number *bilaplace_matrix,
-            Number       *tmp)
-      {
-        static_cast<T *>(this)->vmult_impl(
-          dst, src, mass_matrix, laplace_matrix, bilaplace_matrix, tmp);
-      }
+    template <int direction, bool add, bool sub = false, bool doubled = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const unsigned int row = threadIdx.y;
+      const unsigned int col = threadIdx.x % n_dofs_1d;
 
-      template <int direction, bool add, bool sub = false, bool doubled = false>
-      __device__ void
-      apply(const Number *shape_data, const Number *in, Number *out)
-      {
-        const unsigned int row = threadIdx.y;
-        const unsigned int col = threadIdx.x % n_dofs_1d;
+      Number pval = 0;
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      // #pragma unroll
+      for (unsigned int k = 0; k < n_dofs_1d; ++k)
+        {
+          const unsigned int shape_idx =
+            (direction == 0) ? (col * n_dofs_1d + k) : (row * n_dofs_1d + k);
 
-        Number pval = 0;
-        // kernel product: A kdot src, [N x N] * [N^dim, 1]
-        // #pragma unroll
-        for (unsigned int k = 0; k < n_dofs_1d; ++k)
-          {
-            const unsigned int shape_idx =
-              (direction == 0) ? (col * n_dofs_1d + k) : (row * n_dofs_1d +
-              k);
+          const unsigned int source_idx =
+            (direction == 0) ? (row * n_dofs_1d + k) : (k * n_dofs_1d + col);
 
-            const unsigned int source_idx =
-              (direction == 0) ? (row * n_dofs_1d + k) : (k * n_dofs_1d +
-              col);
-
-            pval += shape_data[shape_idx] * in[source_idx];
-          }
+          pval += shape_data[shape_idx] * in[source_idx];
+        }
 
 
-        const unsigned int destination_idx = row * n_dofs_1d + col;
+      const unsigned int destination_idx = row * n_dofs_1d + col;
 
-        if (doubled)
-          pval *= 2;
+      if (doubled)
+        pval *= 2;
 
-        if (add)
-          out[destination_idx] += pval;
-        else if (sub)
-          out[destination_idx] -= pval;
-        else
-          out[destination_idx] = pval;
-      }
-    };
+      if (add)
+        out[destination_idx] += pval;
+      else if (sub)
+        out[destination_idx] -= pval;
+      else
+        out[destination_idx] = pval;
+    }
+  };
 
   //   template <typename T, int n_dofs_1d, typename Number>
   //   struct TPEvaluatorBase<T, n_dofs_1d, Number,

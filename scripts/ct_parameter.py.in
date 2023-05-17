@@ -104,7 +104,7 @@ def parse_args():
     parser.add_argument('-SOL','--local_solver',
                         default='K',
                         nargs='+',
-                        choices=['Exact','Bila','KSVD'],
+                        choices=['Exact','Bila','KSVD','NN'],
                         help="variant of the local solver operator"
     )
     parser.add_argument('-G','--granularity',
@@ -212,7 +212,10 @@ class Parameter:
                 count += 1
             elif kernel.startswith('K'):
                 kernel_str += r'PSMF::LocalSolverVariant::KSVD, '
-                count += 1    
+                count += 1   
+            elif kernel.endswith('NN'):
+                kernel_str += r'PSMF::LocalSolverVariant::NN, '
+                count += 1 
         self.local_solver = ('constexpr std::array<PSMF::LocalSolverVariant, ' + str(count) + '>', kernel_str + '}}')
 
     def granularity_prm(self,variant):
