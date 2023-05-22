@@ -12,6 +12,8 @@
 #ifndef LAPLACE_OPERATOR_CUH
 #define LAPLACE_OPERATOR_CUH
 
+#include <deal.II/fe/fe_interface_values.h>
+
 #include "patch_base.cuh"
 
 using namespace dealii;
@@ -123,11 +125,150 @@ namespace PSMF
       const Function<dim, Number> &exact_solution,
       const unsigned int           mg_level) const
     {
-      (void)dst;
-      (void)src;
-      (void)rhs_function;
-      (void)exact_solution;
-      (void)mg_level;
+      dst = 0.;
+      // src.update_ghost_values();
+
+      const unsigned int n_dofs = src.size();
+
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::Host>
+        system_rhs_host(n_dofs);
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
+        system_rhs_dev(n_dofs);
+
+      LinearAlgebra::ReadWriteVector<Number> rw_vector(n_dofs);
+
+      AffineConstraints<Number> constraints;
+      constraints.clear();
+      VectorTools::interpolate_boundary_values(*dof_handler,
+                                               0,
+                                               exact_solution,
+                                               constraints);
+      constraints.close();
+
+      const QGauss<dim>      quadrature_formula(fe_degree + 1);
+      FEValues<dim>          fe_values(dof_handler->get_fe(),
+                              quadrature_formula,
+                              update_values | update_quadrature_points |
+                                update_JxW_values);
+      FEInterfaceValues<dim> fe_interface_values(
+        dof_handler->get_fe(),
+        QGauss<dim - 1>(fe_degree + 1),
+        update_values | update_gradients | update_quadrature_points |
+          update_hessians | update_JxW_values | update_normal_vectors);
+
+      const unsigned int dofs_per_cell =
+        dof_handler->get_fe().n_dofs_per_cell();
+
+      const unsigned int        n_q_points = quadrature_formula.size();
+      Vector<Number>            cell_rhs(dofs_per_cell);
+      std::vector<unsigned int> local_dof_indices(dofs_per_cell);
+      std::vector<Number>       rhs_values(n_q_points);
+
+      auto begin = dof_handler->begin_mg(mg_level);
+      auto end   = dof_handler->end_mg(mg_level);
+
+      for (auto cell = begin; cell != end; ++cell)
+        if (cell->is_locally_owned_on_level())
+          {
+            cell_rhs = 0;
+            fe_values.reinit(cell);
+            rhs_function.value_list(fe_values.get_quadrature_points(),
+                                    rhs_values);
+
+            for (unsigned int q_index = 0; q_index < n_q_points; ++q_index)
+              {
+                for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                  cell_rhs(i) += (fe_values.shape_value(i, q_index) *
+                                  rhs_values[q_index] * fe_values.JxW(q_index));
+              }
+
+            cell->get_mg_dof_indices(local_dof_indices);
+            constraints.distribute_local_to_global(cell_rhs,
+                                                   local_dof_indices,
+                                                   system_rhs_host);
+          }
+
+      for (auto cell = begin; cell != end; ++cell)
+        if (cell->is_locally_owned_on_level())
+          {
+            for (const unsigned int face_no : cell->face_indices())
+              if (cell->at_boundary(face_no))
+                {
+                  fe_interface_values.reinit(cell, face_no);
+
+                  const unsigned int n_interface_dofs =
+                    fe_interface_values.n_current_interface_dofs();
+                  Vector<Number> cell_rhs_face(n_interface_dofs);
+                  cell_rhs_face = 0;
+
+                  const auto &q_points =
+                    fe_interface_values.get_quadrature_points();
+                  const std::vector<double> &JxW =
+                    fe_interface_values.get_JxW_values();
+                  const std::vector<Tensor<1, dim>> &normals =
+                    fe_interface_values.get_normal_vectors();
+
+                  std::vector<Tensor<1, dim>> exact_gradients(q_points.size());
+                  exact_solution.gradient_list(q_points, exact_gradients);
+
+                  const unsigned int p = fe_degree;
+                  const auto         h = cell->extent_in_direction(
+                    GeometryInfo<dim>::unit_normal_direction[face_no]);
+                  const auto   one_over_h   = (0.5 / h) + (0.5 / h);
+                  const auto   gamma        = p == 0 ? 1 : p * (p + 1);
+                  const double gamma_over_h = 2.0 * gamma * one_over_h;
+
+                  for (unsigned int qpoint = 0; qpoint < q_points.size();
+                       ++qpoint)
+                    {
+                      const auto &n = normals[qpoint];
+
+                      for (unsigned int i = 0; i < n_interface_dofs; ++i)
+                        {
+                          const double av_hessian_i_dot_n_dot_n =
+                            (fe_interface_values.average_of_shape_hessians(
+                               i, qpoint) *
+                             n * n);
+                          const double jump_grad_i_dot_n =
+                            (fe_interface_values.jump_in_shape_gradients(
+                               i, qpoint) *
+                             n);
+                          cell_rhs_face(i) +=
+                            (-av_hessian_i_dot_n_dot_n * // - {grad^2 v n n }
+                               (exact_gradients[qpoint] *
+                                n)                       //   (grad u_exact . n)
+                             +                           // +
+                             gamma_over_h                //  gamma/h
+                               * jump_grad_i_dot_n       // [grad v n]
+                               * (exact_gradients[qpoint] *
+                                  n)                     // (grad u_exact . n)
+                             ) *
+                            JxW[qpoint];                 // dx
+                        }
+                    }
+
+                  auto dof_indices =
+                    fe_interface_values.get_interface_dof_indices();
+                  constraints.distribute_local_to_global(cell_rhs_face,
+                                                         dof_indices,
+                                                         system_rhs_host);
+                }
+          }
+
+      system_rhs_host.compress(VectorOperation::add);
+      rw_vector.import(system_rhs_host, VectorOperation::insert);
+      system_rhs_dev.import(rw_vector, VectorOperation::insert);
+
+      // system_rhs_host = 0.;
+      // system_rhs_host[10] = 1.;
+      // rw_vector.import(system_rhs_host, VectorOperation::insert);
+      // system_rhs_dev.import(rw_vector, VectorOperation::insert);
+
+      // vmult(dst, system_rhs_dev);
+      // dst.print(std::cout);
+
+      vmult(dst, src);
+      dst.sadd(-1., system_rhs_dev);
     }
 
     unsigned int

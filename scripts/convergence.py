@@ -8,16 +8,16 @@ files_2d_d2 = []
 # files_2d_f = []
 
 for i in range(2, 8):
-    files_2d_d1.append(f'../build_biharm/TESTING_ALL/poisson_2D_Q{i}_Basic_Basic_GLOBAL_Bila_KSVD_multiple_double_1s.log')
-    files_2d_d2.append(f'../build_biharm/TESTING_ALL/poisson_2D_Q{i}_Basic_Basic_GLOBAL_Bila_KSVD_multiple_double_2s.log')
+    files_2d_d1.append(f'../build_biharm/TESTING_ALL/biharm_2D_Q{i}_Basic_Basic_GLOBAL_Exact_Bila_KSVD_multiple_double_1s.log')
+    files_2d_d2.append(f'../build_biharm/TESTING_ALL/biharm_2D_Q{i}_Basic_Basic_GLOBAL_Exact_Bila_KSVD_multiple_double_2s.log')
     # files_2d_f.append(f'../build_DG/TESTING_FLOAT_SERIAL/poisson_2D_DGQ{i}_1prcs_1cell_ConflictFree_ConflictFree_GLOBAL_ConflictFree_multiple_mixed.log')
 
 data_2d_d1 = read_covergence_data(files_2d_d1)
 data_2d_d2 = read_covergence_data(files_2d_d2)
 # data_2d_f = read_covergence_data(files_2d_f)
 
-write_convergence_table("../build_biharm/TESTING_ALL/table_2d_1", data_2d_d1, "frac")
-write_convergence_table("../build_biharm/TESTING_ALL/table_2d_2", data_2d_d2, "frac")
+write_convergence_table("../build_biharm/TESTING_ALL/table_2d_1", data_2d_d1, 3, "frac")
+write_convergence_table("../build_biharm/TESTING_ALL/table_2d_2", data_2d_d2, 3, "frac")
 
 # files_3d_d = []
 # files_3d_f = []

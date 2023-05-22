@@ -860,11 +860,12 @@ namespace PSMF
       eval;
     __syncthreads();
 
-    eval.apply_inverse(&shared_data->local_dst[local_patch * local_dim],
-                       &shared_data->local_src[local_patch * local_dim],
-                       shared_data->local_mass,
-                       shared_data->local_laplace,
-                       &shared_data->tmp[local_patch * local_dim * (dim - 1)]);
+    eval.apply_inverse(
+      &shared_data->local_dst[local_patch * local_dim],
+      &shared_data->local_src[local_patch * local_dim],
+      &shared_data->local_mass[local_patch * n_dofs_1d * dim],
+      &shared_data->local_laplace[local_patch * n_dofs_1d * n_dofs_1d * dim],
+      &shared_data->tmp[local_patch * local_dim * (dim - 1)]);
     __syncthreads();
   }
 

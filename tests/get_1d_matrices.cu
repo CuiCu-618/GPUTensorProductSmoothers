@@ -28,7 +28,7 @@ run()
 
   Triangulation<dim> triangulation;
   GridGenerator::hyper_cube(triangulation, 0., 1.);
-  triangulation.refine_global(10);
+  triangulation.refine_global(7);
 
   DoFHandler<dim>   dof_handler(triangulation);
   MGConstrainedDoFs mg_constrained_dofs;
@@ -43,14 +43,16 @@ run()
 
       auto mass_tensor      = mfdata.assemble_mass_tensor().back();
       auto laplace_tensor   = mfdata.assemble_laplace_tensor().back();
-      auto bilaplace_tensor = mfdata.assemble_bilaplace_tensor().back();
+      auto bilaplace_tensor = mfdata.assemble_bilaplace_tensor();
 
-      auto print_matrices = [&](std::string filename, auto matrix) {
+      auto print_matrices = [&](std::string filename, auto matrix, auto pos) {
         filename += std::to_string(dim);
         filename += "D_Q";
         filename += std::to_string(degree);
         filename += "_L";
         filename += std::to_string(level);
+        filename += "_pos";
+        filename += std::to_string(pos);
         filename += ".txt";
 
         std::ofstream out;
@@ -66,9 +68,10 @@ run()
         out.close();
       };
 
-      print_matrices("mass_", mass_tensor);
-      print_matrices("laplace_", laplace_tensor);
-      print_matrices("bilaplace_", bilaplace_tensor);
+      print_matrices("mass_", mass_tensor, 0);
+      print_matrices("laplace_", laplace_tensor, 0);
+      for (unsigned int i = 0; i < 3; ++i)
+        print_matrices("bilaplace_", bilaplace_tensor[i + 3], i);
     }
 }
 
@@ -105,11 +108,11 @@ read_nn()
 int
 main()
 {
-  run<2, 2>();
-  run<2, 3>();
-  run<2, 4>();
-  run<2, 5>();
-  run<2, 6>();
+  // run<2, 2>();
+  // run<2, 3>();
+  // run<2, 4>();
+  // run<2, 5>();
+  // run<2, 6>();
   run<2, 7>();
 
   // read_nn();

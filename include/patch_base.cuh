@@ -395,7 +395,7 @@ namespace PSMF
     /**
      * Helper function. Assemble 1d bilaplace matrices.
      */
-    std::array<Table<2, VectorizedArray<Number>>, 4>
+    std::array<Table<2, VectorizedArray<Number>>, 6>
     assemble_bilaplace_tensor() const;
 
   private:
@@ -531,6 +531,7 @@ namespace PSMF
      * Vector of pointer to patch type: left, middle, right.
      */
     std::vector<unsigned int *> patch_type;
+    std::vector<unsigned int *> patch_type_smooth;
 
     /**
      * Vector of patch type: left, middle, right.

@@ -9,6 +9,8 @@
  *
  */
 
+#include <deal.II/base/graph_coloring.h>
+
 #include <fstream>
 
 #include "loop_kernel.cuh"
@@ -45,6 +47,10 @@ namespace PSMF
     for (auto &patch_type_color_ptr : patch_type)
       Utilities::CUDA::free(patch_type_color_ptr);
     patch_type.clear();
+
+    for (auto &patch_type_color_ptr : patch_type_smooth)
+      Utilities::CUDA::free(patch_type_color_ptr);
+    patch_type_smooth.clear();
 
     Utilities::CUDA::free(laplace_mass_1d);
     Utilities::CUDA::free(laplace_stiff_1d);
@@ -235,6 +241,25 @@ namespace PSMF
   }
 
   template <int dim, int fe_degree, typename Number>
+  std::vector<types::global_dof_index>
+  get_face_conflicts(
+    const typename LevelVertexPatch<dim, fe_degree, Number>::PatchIterator
+      &patch)
+  {
+    std::vector<types::global_dof_index> conflicts;
+    for (auto &cell : *patch)
+      {
+        for (unsigned int face_no = 0;
+             face_no < GeometryInfo<dim>::faces_per_cell;
+             ++face_no)
+          {
+            conflicts.push_back(cell->face(face_no)->index());
+          }
+      }
+    return conflicts;
+  }
+
+  template <int dim, int fe_degree, typename Number>
   void
   LevelVertexPatch<dim, fe_degree, Number>::reinit(
     const DoFHandler<dim>   &mg_dof,
@@ -251,11 +276,6 @@ namespace PSMF
 
     dof_handler = &mg_dof;
     level       = mg_level;
-
-    if (use_coloring)
-      n_colors = regular_vpatch_size;
-    else
-      n_colors = 1;
 
     switch (granularity_scheme)
       {
@@ -285,21 +305,38 @@ namespace PSMF
 
     // coloring
     graph_ptr_colored.clear();
-    graph_ptr_colored.resize(regular_vpatch_size);
-    for (auto patch = cell_collections.begin(); patch != cell_collections.end();
-         ++patch)
+    if (1)
       {
-        auto first_cell = (*patch)[0];
+        graph_ptr_colored.resize(regular_vpatch_size);
+        for (auto patch = cell_collections.begin();
+             patch != cell_collections.end();
+             ++patch)
+          {
+            auto first_cell = (*patch)[0];
 
-        graph_ptr_colored[first_cell->parent()->child_iterator_to_index(
-                            first_cell)]
-          .push_back(patch);
+            graph_ptr_colored[first_cell->parent()->child_iterator_to_index(
+                                first_cell)]
+              .push_back(patch);
+          }
+      }
+    else
+      {
+        const auto fun = [&](const PatchIterator &filter) {
+          return get_face_conflicts<dim, fe_degree, Number>(filter);
+        };
+
+        graph_ptr_colored = std::move(GraphColoring::make_graph_coloring(
+          cell_collections.cbegin(), cell_collections.cend(), fun));
       }
 
+    if (use_coloring)
+      n_colors = graph_ptr_colored.size();
+    else
+      n_colors = 1;
 
     setup_color_arrays(n_colors);
 
-    for (unsigned int i = 0; i < regular_vpatch_size; ++i)
+    for (unsigned int i = 0; i < graph_ptr_colored.size(); ++i)
       {
         auto n_patches      = graph_ptr_colored[i].size();
         n_patches_smooth[i] = n_patches;
@@ -317,12 +354,19 @@ namespace PSMF
           get_patch_data(*patch, p_id);
 
         alloc_arrays(&first_dof_smooth[i], n_patches * 1);
+        alloc_arrays(&patch_type_smooth[i], n_patches * dim);
 
         cudaError_t error_code =
           cudaMemcpy(first_dof_smooth[i],
                      first_dof_host.data(),
                      1 * n_patches * sizeof(unsigned int),
                      cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+
+        error_code = cudaMemcpy(patch_type_smooth[i],
+                                patch_type_host.data(),
+                                dim * n_patches * sizeof(unsigned int),
+                                cudaMemcpyHostToDevice);
         AssertCuda(error_code);
       }
 
@@ -458,15 +502,16 @@ namespace PSMF
 
     constexpr unsigned n_dofs_2d = n_dofs_1d * n_dofs_1d;
 
-    alloc_arrays(&eigenvalues[0], Util::pow(Util::pow(n_dofs_1d, dim), 2));
+    alloc_arrays(&eigenvalues[0],
+                 Util::pow(Util::pow(n_dofs_1d, dim), 2) * Util::pow(3, dim));
     for (unsigned int i = 1; i < 4; ++i)
       {
-        alloc_arrays(&eigenvalues[i], n_dofs_1d * dim);
-        alloc_arrays(&eigenvectors[i], n_dofs_2d * dim);
+        alloc_arrays(&eigenvalues[i], n_dofs_1d * dim * Util::pow(3, dim));
+        alloc_arrays(&eigenvectors[i], n_dofs_2d * dim * Util::pow(3, dim));
       }
-    alloc_arrays(&smooth_mass_1d, n_dofs_2d);
-    alloc_arrays(&smooth_stiff_1d, n_dofs_2d);
-    alloc_arrays(&smooth_bilaplace_1d, n_dofs_2d);
+    alloc_arrays(&smooth_mass_1d, n_dofs_2d * 3);
+    alloc_arrays(&smooth_stiff_1d, n_dofs_2d * 3);
+    alloc_arrays(&smooth_bilaplace_1d, n_dofs_2d * 3);
     alloc_arrays(&laplace_mass_1d, n_dofs_2d * 3);
     alloc_arrays(&laplace_stiff_1d, n_dofs_2d * 3);
     alloc_arrays(&bilaplace_stiff_1d, n_dofs_2d * 3);
@@ -511,6 +556,7 @@ namespace PSMF
         data_copy[i].patch_per_block     = patch_per_block;
         data_copy[i].relaxation          = relaxation;
         data_copy[i].first_dof           = first_dof_smooth[color];
+        data_copy[i].patch_type          = patch_type_smooth[color];
         data_copy[i].l_to_h              = l_to_h;
         data_copy[i].h_to_l              = h_to_l;
         data_copy[i].eigenvalues         = eigenvalues[i];
@@ -532,7 +578,7 @@ namespace PSMF
   {
     op.setup_kernel(patch_per_block);
 
-    for (unsigned int i = 0; i < regular_vpatch_size; ++i)
+    for (unsigned int i = 0; i < graph_ptr_colored.size(); ++i)
       if (n_patches_smooth[i] > 0)
         {
           op.loop_kernel(src,
@@ -576,41 +622,46 @@ namespace PSMF
     auto laplace_tensor   = assemble_laplace_tensor();
     auto bilaplace_tensor = assemble_bilaplace_tensor();
 
-    auto copy_mats = [](auto tensor, auto dst) {
+    auto copy_mats = [](auto tensor, auto dst, auto shift) {
       constexpr unsigned int n_dofs_2d = Util::pow(2 * fe_degree + 1, 2);
 
-      auto mat = new Number[n_dofs_2d];
-
-      std::transform(tensor.begin(), tensor.end(), mat, [](auto m) -> Number {
-        return m.value()[0];
-      });
+      auto mat = new Number[n_dofs_2d * 3];
+      for (unsigned int i = 0; i < 3; ++i)
+        std::transform(tensor[i + shift].begin(),
+                       tensor[i + shift].end(),
+                       &mat[n_dofs_2d],
+                       [](auto m) -> Number { return m.value()[0]; });
 
       cudaError_t error_code = cudaMemcpy(dst,
                                           mat,
-                                          n_dofs_2d * sizeof(Number),
+                                          3 * n_dofs_2d * sizeof(Number),
                                           cudaMemcpyHostToDevice);
       AssertCuda(error_code);
 
       delete[] mat;
     };
 
-    copy_mats(mass_tensor.back(), smooth_mass_1d);
-    copy_mats(laplace_tensor.back(), smooth_stiff_1d);
-    copy_mats(bilaplace_tensor.back(), smooth_bilaplace_1d);
+    copy_mats(mass_tensor, smooth_mass_1d, 0);
+    copy_mats(laplace_tensor, smooth_stiff_1d, 0);
+    copy_mats(bilaplace_tensor, smooth_bilaplace_1d, 3);
 
-    auto interior = [](auto matrix) {
-      Table<2, VectorizedArray<Number>> dst(matrix.back().n_rows() - 2,
-                                            matrix.back().n_cols() - 2);
+    auto interior = [](auto matrix, auto shift) {
+      std::array<Table<2, VectorizedArray<Number>>, 3> dst;
+      for (unsigned int m = 0; m < 3; ++m)
+        {
+          dst[m].reinit(matrix[m + shift].n_rows() - 2,
+                        matrix[m + shift].n_cols() - 2);
 
-      for (unsigned int i = 0; i < matrix.back().n_rows() - 2; ++i)
-        for (unsigned int j = 0; j < matrix.back().n_cols() - 2; ++j)
-          dst(i, j) = matrix.back()(i + 1, j + 1);
+          for (unsigned int i = 0; i < matrix[m + shift].n_rows() - 2; ++i)
+            for (unsigned int j = 0; j < matrix[m + shift].n_cols() - 2; ++j)
+              dst[m](i, j) = matrix[m + shift](i + 1, j + 1);
+        }
       return dst;
     };
 
-    auto mass_tensor_inv      = interior(mass_tensor);
-    auto laplace_tensor_inv   = interior(laplace_tensor);
-    auto bilaplace_tensor_inv = interior(bilaplace_tensor);
+    auto mass_tensor_inv      = interior(mass_tensor, 0);
+    auto laplace_tensor_inv   = interior(laplace_tensor, 0);
+    auto bilaplace_tensor_inv = interior(bilaplace_tensor, 3);
 
 
     // auto print_matrices = [](auto matrix) {
@@ -623,11 +674,11 @@ namespace PSMF
     //   std::cout << std::endl;
     // };
 
-    // print_matrices(mass_tensor_inv);
-    // print_matrices(laplace_tensor_inv);
-    // print_matrices(bilaplace_tensor_inv);
+    // print_matrices(mass_tensor_inv.back());
+    // print_matrices(laplace_tensor_inv.back());
+    // print_matrices(bilaplace_tensor_inv.back());
 
-    auto copy_vals = [](auto tensor, auto dst) {
+    auto copy_vals = [](auto tensor, auto dst, auto shift) {
       constexpr unsigned int n_dofs_1d = Util::pow(2 * fe_degree - 1, 1);
 
       auto mat = new Number[n_dofs_1d * dim];
@@ -637,7 +688,7 @@ namespace PSMF
                        &mat[n_dofs_1d * i],
                        [](auto m) -> Number { return m[0]; });
 
-      cudaError_t error_code = cudaMemcpy(dst,
+      cudaError_t error_code = cudaMemcpy(dst + shift * n_dofs_1d * dim,
                                           mat,
                                           dim * n_dofs_1d * sizeof(Number),
                                           cudaMemcpyHostToDevice);
@@ -646,7 +697,7 @@ namespace PSMF
       delete[] mat;
     };
 
-    auto copy_vecs = [](auto tensor, auto dst) {
+    auto copy_vecs = [](auto tensor, auto dst, auto shift) {
       constexpr unsigned int n_dofs_2d = Util::pow(2 * fe_degree - 1, 2);
 
       auto mat = new Number[n_dofs_2d * dim];
@@ -656,7 +707,7 @@ namespace PSMF
                        &mat[n_dofs_2d * i],
                        [](auto m) -> Number { return m.value()[0]; });
 
-      cudaError_t error_code = cudaMemcpy(dst,
+      cudaError_t error_code = cudaMemcpy(dst + shift * n_dofs_2d * dim,
                                           mat,
                                           dim * n_dofs_2d * sizeof(Number),
                                           cudaMemcpyHostToDevice);
@@ -667,11 +718,12 @@ namespace PSMF
 
     /// store rank1 tensors of separable Kronecker representation
     /// BxMxM + MxBxM + MxMxB
-    const auto &BxMxM = [&](const int direction) {
+    const auto &BxMxM = [&](const int direction, auto indices) {
       std::array<Table<2, VectorizedArray<Number>>, dim> kronecker_tensor;
       for (auto d = 0; d < dim; ++d)
-        kronecker_tensor[d] =
-          d == direction ? bilaplace_tensor_inv : mass_tensor_inv;
+        kronecker_tensor[d] = d == direction ?
+                                bilaplace_tensor_inv[indices[d]] :
+                                mass_tensor_inv[2];
       return kronecker_tensor;
     };
 
@@ -681,8 +733,8 @@ namespace PSMF
       std::array<Table<2, VectorizedArray<Number>>, dim> kronecker_tensor;
       for (auto d = 0; d < dim; ++d)
         kronecker_tensor[d] = (d == direction1 || d == direction2) ?
-                                laplace_tensor_inv :
-                                mass_tensor_inv;
+                                laplace_tensor_inv[2] :
+                                mass_tensor_inv[2];
       return kronecker_tensor;
     };
 
@@ -690,286 +742,304 @@ namespace PSMF
       Tensors::TensorProductMatrix<dim, VectorizedArray<Number>>;
     using matrix_state = typename matrix_type::State;
 
-    // Exact
-    {
-      std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-        rank1_tensors;
+    constexpr unsigned dim_z = dim == 2 ? 1 : 3;
 
-      for (auto direction = 0; direction < dim; ++direction)
-        rank1_tensors.emplace_back(BxMxM(direction));
-
-      for (auto direction1 = 0; direction1 < dim; ++direction1)
-        for (auto direction2 = 0; direction2 < dim; ++direction2)
-          if (direction1 != direction2)
-            rank1_tensors.emplace_back(LxLxM(direction1, direction2));
-
-      AssertDimension(rank1_tensors.size(), 2 * dim);
-
-      matrix_type local_matrices;
-      local_matrices.reinit(rank1_tensors);
-
-      auto exact_inverse = local_matrices.as_inverse_table();
-
-      auto *vals = new Number[exact_inverse.n_elements()];
-
-      std::transform(exact_inverse.begin(),
-                     exact_inverse.end(),
-                     vals,
-                     [](auto m) -> Number { return m.value()[0]; });
-
-      cudaError_t error_code =
-        cudaMemcpy(eigenvalues[0],
-                   vals,
-                   exact_inverse.n_elements() * sizeof(Number),
-                   cudaMemcpyHostToDevice);
-      AssertCuda(error_code);
-
-      delete[] vals;
-    }
-
-
-
-    // Bila
-    {
-      std::array<Table<2, VectorizedArray<Number>>, dim> mass;
-      std::array<Table<2, VectorizedArray<Number>>, dim> bilaplace;
-      for (auto d = 0; d < dim; ++d)
-        {
-          mass[d]      = mass_tensor_inv;
-          bilaplace[d] = bilaplace_tensor_inv;
-        }
-
-      std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-        rank1_tensors;
-
-      // rank1_tensors.emplace_back(mass);
-      // rank1_tensors.emplace_back(bilaplace);
-
-      for (auto direction = 0; direction < dim; ++direction)
-        rank1_tensors.emplace_back(BxMxM(direction));
-
-      matrix_type local_matrices;
-
-      local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
-
-      auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
-      auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
-
-      copy_vals(eigenvalue_tensor, eigenvalues[1]);
-      copy_vecs(eigenvector_tensor, eigenvectors[1]);
-    }
-
-
-    // KSVD
-    {
-      std::set<unsigned int> ksvd_tensor_indices = {0U, 1U};
-
-      std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-        rank1_tensors;
-
-      for (auto direction = 0; direction < dim; ++direction)
-        rank1_tensors.emplace_back(BxMxM(direction));
-
-      for (auto direction1 = 0; direction1 < dim; ++direction1)
-        for (auto direction2 = 0; direction2 < dim; ++direction2)
-          if (direction1 != direction2)
-            rank1_tensors.emplace_back(LxLxM(direction1, direction2));
-
-      AssertDimension(rank1_tensors.size(), dim * dim);
-
-      // KSVD
-      std::array<std::size_t, dim> rows, columns;
-      for (auto d = 0U; d < dim; ++d)
-        {
-          const auto &A_d = rank1_tensors.front()[d];
-          rows[d]         = A_d.size(0);
-          columns[d]      = A_d.size(1);
-        }
-
-      const auto ksvd_rank = *(ksvd_tensor_indices.rbegin()) + 1;
-      AssertIndexRange(ksvd_rank, rank1_tensors.size() + 1);
-      auto ksvd_tensors =
-        Tensors::make_zero_rank1_tensors<dim, VectorizedArray<Number>>(
-          ksvd_rank, rows, columns);
-
-      const auto &ksvd_singular_values =
-        compute_ksvd(rank1_tensors, ksvd_tensors, 5);
-
-      std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-        approximation;
-      for (auto i = 0U; i < ksvd_tensors.size(); ++i)
-        if (ksvd_tensor_indices.find(i) != ksvd_tensor_indices.cend())
-          approximation.emplace_back(ksvd_tensors[i]);
-
-      AssertDimension(ksvd_tensor_indices.size(), approximation.size());
-
-      if (approximation.size() == 2U)
-        {
-          Number addition_to_min_eigenvalue = 0.025;
-
-          matrix_type local_matrices;
-
-          /// first tensor must contain s.p.d. matrices ("mass matrices")
-          typename matrix_type::AdditionalData additional_data;
-          additional_data.state = matrix_state::ranktwo;
-
-          local_matrices.reinit(approximation, additional_data);
-
-          const auto &tensor_of_eigenvalues =
-            local_matrices.get_eigenvalue_tensor();
-          const auto eigenvalues_ksvd1 =
-            Tensors::kronecker_product<dim, VectorizedArray<Number>>(
-              tensor_of_eigenvalues);
-
-          /// if the rank-2 KSVD isn't positive definite we scale the
-          /// second tensor of matrices by a factor \alpha (with 0 <
-          /// \alpha < 1), thus obtaing an approximation that is better
-          /// than the best rank-1 approximation but worse than the best
-          /// rank-2 approximation. \alpha is computed at negligible costs
-          /// due to the specific eigendecomposition with tensor structure
-          if (ksvd_tensor_indices == std::set<unsigned int>{0U, 1U})
+    for (unsigned int i = 0; i < dim_z; ++i)
+      for (unsigned int j = 0; j < 3; ++j)
+        for (unsigned int k = 0; k < 3; ++k)
+          {
+            std::vector<unsigned int> indices{k, j, i};
+            // Exact
             {
-              VectorizedArray<Number> alpha(1.);
-              for (auto lane = 0U; lane < VectorizedArray<Number>::size();
-                   ++lane)
-                {
-                  // std::cout << "eigenvalues of KSVD[1]:\n"
-                  //           <<
-                  //           vector_to_string(alignedvector_to_vector(eigenvalues_ksvd1,
-                  //           lane))
-                  //           << std::endl;
-                  const auto min_elem =
-                    std::min_element(eigenvalues_ksvd1.begin(),
-                                     eigenvalues_ksvd1.end(),
-                                     [&](const auto &lhs, const auto &rhs) {
-                                       return lhs[lane] < rhs[lane];
-                                     });
-                  const Number lambda_min = (*min_elem)[lane];
+              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+                rank1_tensors;
 
-                  /// \alpha = -1 / ((1 + \epsilon) * \lambda_{min})
-                  if (lambda_min < -0.99) // KSVD isn't positive definite
-                    alpha[lane] /=
-                      -(1. + addition_to_min_eigenvalue) * lambda_min;
-                  if (alpha[lane] > 1.)
-                    alpha[lane] = 0.99;
-                }
+              for (auto direction = 0; direction < dim; ++direction)
+                rank1_tensors.emplace_back(BxMxM(direction, indices));
 
-              // std::cout << "alpha: " << varray_to_string(alpha) <<
-              // std::endl;
-              Tensors::scaling<dim>(alpha, approximation.at(1U));
-              local_matrices.reinit(approximation, additional_data);
+              for (auto direction1 = 0; direction1 < dim; ++direction1)
+                for (auto direction2 = 0; direction2 < dim; ++direction2)
+                  if (direction1 != direction2)
+                    rank1_tensors.emplace_back(LxLxM(direction1, direction2));
+
+              AssertDimension(rank1_tensors.size(), 2 * dim);
+
+              matrix_type local_matrices;
+              local_matrices.reinit(rank1_tensors);
+
+              auto exact_inverse = local_matrices.as_inverse_table();
+
+              auto *vals = new Number[exact_inverse.n_elements()];
+
+              std::transform(exact_inverse.begin(),
+                             exact_inverse.end(),
+                             vals,
+                             [](auto m) -> Number { return m.value()[0]; });
+
+              cudaError_t error_code =
+                cudaMemcpy(eigenvalues[0] +
+                             (k + j * 3 + i * 9) * exact_inverse.n_elements(),
+                           vals,
+                           exact_inverse.n_elements() * sizeof(Number),
+                           cudaMemcpyHostToDevice);
+              AssertCuda(error_code);
+
+              delete[] vals;
+            }
+
+
+            // Bila
+            {
+              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+                rank1_tensors;
+
+              for (auto direction = 0; direction < dim; ++direction)
+                rank1_tensors.emplace_back(BxMxM(direction, indices));
+
+              matrix_type local_matrices;
+
+              local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
 
               auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
               auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
 
-              copy_vals(eigenvalue_tensor, eigenvalues[2]);
-              copy_vecs(eigenvector_tensor, eigenvectors[2]);
+              copy_vals(eigenvalue_tensor, eigenvalues[1], k + j * 3 + i * 9);
+              copy_vecs(eigenvector_tensor, eigenvectors[1], k + j * 3 + i * 9);
+            }
 
-              // auto eigenvalues_ = local_matrices.get_eigenvalues();
-              // auto eigenvector_ = local_matrices.get_eigenvectors();
 
-              // print_matrices(eigenvector_);
+
+            // KSVD
+            {
+              std::set<unsigned int> ksvd_tensor_indices = {0U, 1U};
+
+              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+                rank1_tensors;
+
+              for (auto direction = 0; direction < dim; ++direction)
+                rank1_tensors.emplace_back(BxMxM(direction, indices));
+
+              for (auto direction1 = 0; direction1 < dim; ++direction1)
+                for (auto direction2 = 0; direction2 < dim; ++direction2)
+                  if (direction1 != direction2)
+                    rank1_tensors.emplace_back(LxLxM(direction1, direction2));
+
+              AssertDimension(rank1_tensors.size(), dim * dim);
+
+              // KSVD
+              std::array<std::size_t, dim> rows, columns;
+              for (auto d = 0U; d < dim; ++d)
+                {
+                  const auto &A_d = rank1_tensors.front()[d];
+                  rows[d]         = A_d.size(0);
+                  columns[d]      = A_d.size(1);
+                }
+
+              const auto ksvd_rank = *(ksvd_tensor_indices.rbegin()) + 1;
+              AssertIndexRange(ksvd_rank, rank1_tensors.size() + 1);
+              auto ksvd_tensors =
+                Tensors::make_zero_rank1_tensors<dim, VectorizedArray<Number>>(
+                  ksvd_rank, rows, columns);
+
+              const auto &ksvd_singular_values =
+                compute_ksvd(rank1_tensors, ksvd_tensors, 5);
+
+              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+                approximation;
+              for (auto n = 0U; n < ksvd_tensors.size(); ++n)
+                if (ksvd_tensor_indices.find(n) != ksvd_tensor_indices.cend())
+                  approximation.emplace_back(ksvd_tensors[n]);
+
+              AssertDimension(ksvd_tensor_indices.size(), approximation.size());
+
+              if (approximation.size() == 2U)
+                {
+                  Number addition_to_min_eigenvalue = 0.025;
+
+                  matrix_type local_matrices;
+
+                  /// first tensor must contain s.p.d. matrices ("mass
+                  /// matrices")
+                  typename matrix_type::AdditionalData additional_data;
+                  additional_data.state = matrix_state::ranktwo;
+
+                  local_matrices.reinit(approximation, additional_data);
+
+                  const auto &tensor_of_eigenvalues =
+                    local_matrices.get_eigenvalue_tensor();
+                  const auto eigenvalues_ksvd1 =
+                    Tensors::kronecker_product<dim, VectorizedArray<Number>>(
+                      tensor_of_eigenvalues);
+
+                  /// if the rank-2 KSVD isn't positive definite we scale the
+                  /// second tensor of matrices by a factor \alpha (with 0 <
+                  /// \alpha < 1), thus obtaing an approximation that is better
+                  /// than the best rank-1 approximation but worse than the best
+                  /// rank-2 approximation. \alpha is computed at negligible
+                  /// costs due to the specific eigendecomposition with tensor
+                  /// structure
+                  if (ksvd_tensor_indices == std::set<unsigned int>{0U, 1U})
+                    {
+                      VectorizedArray<Number> alpha(1.);
+                      for (auto lane = 0U;
+                           lane < VectorizedArray<Number>::size();
+                           ++lane)
+                        {
+                          // std::cout << "eigenvalues of KSVD[1]:\n"
+                          //           <<
+                          //           vector_to_string(alignedvector_to_vector(eigenvalues_ksvd1,
+                          //           lane))
+                          //           << std::endl;
+                          const auto min_elem =
+                            std::min_element(eigenvalues_ksvd1.begin(),
+                                             eigenvalues_ksvd1.end(),
+                                             [&](const auto &lhs,
+                                                 const auto &rhs) {
+                                               return lhs[lane] < rhs[lane];
+                                             });
+                          const Number lambda_min = (*min_elem)[lane];
+
+                          /// \alpha = -1 / ((1 + \epsilon) * \lambda_{min})
+                          if (lambda_min <
+                              -0.99) // KSVD isn't positive definite
+                            alpha[lane] /=
+                              -(1. + addition_to_min_eigenvalue) * lambda_min;
+                          if (alpha[lane] > 1.)
+                            alpha[lane] = 0.99;
+                        }
+
+                      // std::cout << "alpha: " << varray_to_string(alpha) <<
+                      // std::endl;
+                      Tensors::scaling<dim>(alpha, approximation.at(1U));
+                      local_matrices.reinit(approximation, additional_data);
+
+                      auto eigenvalue_tensor =
+                        local_matrices.get_eigenvalue_tensor();
+                      auto eigenvector_tensor =
+                        local_matrices.get_eigenvector_tensor();
+
+                      copy_vals(eigenvalue_tensor,
+                                eigenvalues[2],
+                                k + j * 3 + i * 9);
+                      copy_vecs(eigenvector_tensor,
+                                eigenvectors[2],
+                                k + j * 3 + i * 9);
+
+                      // auto eigenvalues_ = local_matrices.get_eigenvalues();
+                      // auto eigenvector_ = local_matrices.get_eigenvectors();
+
+                      // print_matrices(eigenvector_);
+
+                      // print_matrices(eigenvector_tensor[0]);
+                      // print_matrices(eigenvector_tensor[1]);
+
+                      // for (unsigned int j = 0; j < eigenvalues_.size(); ++j)
+                      //   std::cout << eigenvalues_[j] << " ";
+                      // std::cout << std::endl;
+
+                      // for (unsigned int i = 0; i < dim; ++i)
+                      //   for (unsigned int j = 0; j <
+                      //   eigenvalue_tensor[i].size();
+                      //   ++j)
+                      //     std::cout << eigenvalue_tensor[i][j] << " ";
+                      // std::cout << std::endl;
+                    }
+                }
+            }
+
+
+            // Neural Network
+            {
+              // TODO: 3d
+              std::string filenamea0 =
+                "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a0_interior_Q" +
+                std::to_string(fe_degree) + "_L" + std::to_string(level) + "_" +
+                std::to_string(k) + "_" + std::to_string(j) + ".txt";
+              std::string filenamea1 =
+                "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a1_interior_Q" +
+                std::to_string(fe_degree) + "_L" + std::to_string(level) + "_" +
+                std::to_string(k) + "_" + std::to_string(j) + ".txt";
+              std::string filenamem0 =
+                "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m0_interior_Q" +
+                std::to_string(fe_degree) + "_L" + std::to_string(level) + "_" +
+                std::to_string(k) + "_" + std::to_string(j) + ".txt";
+              std::string filenamem1 =
+                "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m1_interior_Q" +
+                std::to_string(fe_degree) + "_L" + std::to_string(level) + "_" +
+                std::to_string(k) + "_" + std::to_string(j) + ".txt";
+
+              std::ifstream filea0(filenamea0);
+              std::ifstream filea1(filenamea1);
+              std::ifstream filem0(filenamem0);
+              std::ifstream filem1(filenamem1);
+
+              constexpr unsigned int n_dofs_2d =
+                Util::pow(2 * fe_degree - 1, 2);
+
+
+              auto read_nn = [&](auto &file) {
+                Table<2, VectorizedArray<Number>> mat(2 * fe_degree - 1,
+                                                      2 * fe_degree - 1);
+                if (file.is_open())
+                  {
+                    Number tmp[n_dofs_2d];
+
+                    std::istream_iterator<Number> fileIter(file);
+                    std::copy_n(fileIter, n_dofs_2d, tmp);
+
+                    std::transform(tmp,
+                                   tmp + n_dofs_2d,
+                                   mat.begin(),
+                                   [](auto m) -> VectorizedArray<Number> {
+                                     return make_vectorized_array(m);
+                                   });
+
+                    file.close();
+                  }
+                else
+                  std::cout << "Error opening file!" << std::endl;
+
+
+                return mat;
+              };
+
+              std::array<Table<2, VectorizedArray<Number>>, dim> t1;
+              std::array<Table<2, VectorizedArray<Number>>, dim> t2;
+
+              t1[0] = read_nn(filea1);
+              t1[1] = read_nn(filem0);
+              t2[0] = read_nn(filem1);
+              t2[1] = read_nn(filea0);
+
+              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+                rank1_tensors;
+
+              rank1_tensors.emplace_back(t1);
+              rank1_tensors.emplace_back(t2);
+
+              matrix_type local_matrices;
+
+              local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
+
+              auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
+              auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
+
+              copy_vals(eigenvalue_tensor, eigenvalues[3], k + j * 3);
+              copy_vecs(eigenvector_tensor, eigenvectors[3], k + j * 3);
+
+              // for (unsigned int i = 0; i < dim; ++i)
+              //   {
+              //     for (unsigned int j = 0; j < eigenvalue_tensor[i].size();
+              //     ++j)
+              //       std::cout << eigenvalue_tensor[i][j] << " ";
+              //     std::cout << std::endl;
+              //   }
+              // std::cout << std::endl;
 
               // print_matrices(eigenvector_tensor[0]);
               // print_matrices(eigenvector_tensor[1]);
-
-              // for (unsigned int j = 0; j < eigenvalues_.size(); ++j)
-              //   std::cout << eigenvalues_[j] << " ";
-              // std::cout << std::endl;
-
-              // for (unsigned int i = 0; i < dim; ++i)
-              //   for (unsigned int j = 0; j < eigenvalue_tensor[i].size();
-              //   ++j)
-              //     std::cout << eigenvalue_tensor[i][j] << " ";
-              // std::cout << std::endl;
             }
-        }
-    }
-
-    // Neural Network
-    {
-      std::string filenamea0 =
-        "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a0_interior_Q" +
-        std::to_string(fe_degree) + "_L" + std::to_string(level) + ".txt";
-      std::string filenamea1 =
-        "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a1_interior_Q" +
-        std::to_string(fe_degree) + "_L" + std::to_string(level) + ".txt";
-      std::string filenamem0 =
-        "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m0_interior_Q" +
-        std::to_string(fe_degree) + "_L" + std::to_string(level) + ".txt";
-      std::string filenamem1 =
-        "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m1_interior_Q" +
-        std::to_string(fe_degree) + "_L" + std::to_string(level) + ".txt";
-
-      std::ifstream filea0(filenamea0);
-      std::ifstream filea1(filenamea1);
-      std::ifstream filem0(filenamem0);
-      std::ifstream filem1(filenamem1);
-
-      constexpr unsigned int n_dofs_2d = Util::pow(2 * fe_degree - 1, 2);
-
-
-      auto read_nn = [&](auto &file) {
-        Table<2, VectorizedArray<Number>> mat(2 * fe_degree - 1,
-                                              2 * fe_degree - 1);
-        if (file.is_open())
-          {
-            double tmp[n_dofs_2d];
-
-            std::istream_iterator<double> fileIter(file);
-            std::copy_n(fileIter, n_dofs_2d, tmp);
-
-            std::transform(tmp,
-                           tmp + n_dofs_2d,
-                           mat.begin(),
-                           [](auto m) -> VectorizedArray<Number> {
-                             return make_vectorized_array(m);
-                           });
-
-            file.close();
           }
-        else
-          std::cout << "Error opening file!" << std::endl;
-
-
-        return mat;
-      };
-
-      std::array<Table<2, VectorizedArray<Number>>, dim> t1;
-      std::array<Table<2, VectorizedArray<Number>>, dim> t2;
-
-      t1[0] = read_nn(filea1);
-      t1[1] = read_nn(filem0);
-      t2[0] = read_nn(filem1);
-      t2[1] = read_nn(filea0);
-
-      std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-        rank1_tensors;
-
-      rank1_tensors.emplace_back(t1);
-      rank1_tensors.emplace_back(t2);
-
-      matrix_type local_matrices;
-
-      local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
-
-      auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
-      auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
-
-      copy_vals(eigenvalue_tensor, eigenvalues[3]);
-      copy_vecs(eigenvector_tensor, eigenvectors[3]);
-
-      // for (unsigned int i = 0; i < dim; ++i)
-      //   {
-      //     for (unsigned int j = 0; j < eigenvalue_tensor[i].size(); ++j)
-      //       std::cout << eigenvalue_tensor[i][j] << " ";
-      //     std::cout << std::endl;
-      //   }
-      // std::cout << std::endl;
-
-      // print_matrices(eigenvector_tensor[0]);
-      // print_matrices(eigenvector_tensor[1]);
-    }
   }
 
 
@@ -1118,7 +1188,7 @@ namespace PSMF
   }
 
   template <int dim, int fe_degree, typename Number>
-  std::array<Table<2, VectorizedArray<Number>>, 4>
+  std::array<Table<2, VectorizedArray<Number>>, 6>
   LevelVertexPatch<dim, fe_degree, Number>::assemble_bilaplace_tensor() const
   {
     constexpr int n_cell_dofs  = fe_degree + 1;
@@ -1209,7 +1279,6 @@ namespace PSMF
     auto cell_middle_0 = cell_bilaplace(1, 0);
     auto cell_middle_1 = cell_bilaplace(1, 1);
     auto cell_right    = cell_bilaplace(2, 0);
-    auto cell          = cell_bilaplace(3, 0);
 
     auto patch_bilaplace = [&](auto left, auto right) {
       Table<2, Number> patch_bi(n_patch_dofs, n_patch_dofs);
@@ -1241,13 +1310,21 @@ namespace PSMF
     auto patch0 = patch_bilaplace(cell_left, cell_middle_1);
     auto patch1 = patch_bilaplace(cell_middle_0, cell_middle_1);
     auto patch2 = patch_bilaplace(cell_middle_0, cell_right);
-    auto patch3 = patch_bilaplace(cell, cell);
+
+    auto cell_middle = cell_bilaplace(3, 0);
+
+    auto patch3 = patch_bilaplace(cell_left, cell_middle);
+    auto patch4 = patch_bilaplace(cell_middle, cell_middle);
+    auto patch5 = patch_bilaplace(cell_middle, cell_right);
 
     if (level == 1)
-      patch2 = patch_bilaplace(cell_left, cell_right);
+      {
+        patch2 = patch_bilaplace(cell_left, cell_right);
+        patch5 = patch_bilaplace(cell_left, cell_right);
+      }
 
-    std::array<Table<2, VectorizedArray<Number>>, 4> bilaplace_matrices;
-    for (unsigned int d = 0; d < 4; ++d)
+    std::array<Table<2, VectorizedArray<Number>>, 6> bilaplace_matrices;
+    for (unsigned int d = 0; d < 6; ++d)
       {
         bilaplace_matrices[d].reinit(n_patch_dofs, n_patch_dofs);
         if (d == 0)
@@ -1278,6 +1355,20 @@ namespace PSMF
                          [](Number i) -> VectorizedArray<Number> {
                            return make_vectorized_array(i);
                          });
+        else if (d == 4)
+          std::transform(patch4.begin(),
+                         patch4.end(),
+                         bilaplace_matrices[d].begin(),
+                         [](Number i) -> VectorizedArray<Number> {
+                           return make_vectorized_array(i);
+                         });
+        else if (d == 5)
+          std::transform(patch5.begin(),
+                         patch5.end(),
+                         bilaplace_matrices[d].begin(),
+                         [](Number i) -> VectorizedArray<Number> {
+                           return make_vectorized_array(i);
+                         });
       }
 
     return bilaplace_matrices;
@@ -1295,10 +1386,11 @@ namespace PSMF
     this->patch_id.resize(n_colors);
     this->patch_type.resize(n_colors);
 
-    this->n_patches_smooth.resize(regular_vpatch_size);
-    this->grid_dim_smooth.resize(regular_vpatch_size);
-    this->block_dim_smooth.resize(regular_vpatch_size);
-    this->first_dof_smooth.resize(regular_vpatch_size);
+    this->n_patches_smooth.resize(graph_ptr_colored.size());
+    this->grid_dim_smooth.resize(graph_ptr_colored.size());
+    this->block_dim_smooth.resize(graph_ptr_colored.size());
+    this->first_dof_smooth.resize(graph_ptr_colored.size());
+    this->patch_type_smooth.resize(graph_ptr_colored.size());
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -1319,7 +1411,7 @@ namespace PSMF
         block_dim_laplace[i] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
       }
 
-    for (unsigned int i = 0; i < regular_vpatch_size; ++i)
+    for (unsigned int i = 0; i < graph_ptr_colored.size(); ++i)
       {
         auto         n_patches = n_patches_smooth[i];
         const double apply_n_blocks =

@@ -23,7 +23,10 @@
 #include <deal.II/lac/solver_gmres.h>
 
 #include <deal.II/multigrid/mg_coarse.h>
+#include <deal.II/multigrid/mg_matrix.h>
 #include <deal.II/multigrid/mg_smoother.h>
+#include <deal.II/multigrid/mg_tools.h>
+#include <deal.II/multigrid/multigrid.h>
 
 #include <functional>
 
@@ -179,14 +182,20 @@ namespace PSMF
     using MatrixType = LaplaceOperator<dim, fe_degree, Number, lapalace_kernel>;
     using MatrixType2 =
       LaplaceOperator<dim, fe_degree, Number2, lapalace_kernel>;
-    using SmootherType    = PatchSmoother<MatrixType2,
+    using SmootherType       = PatchSmoother<MatrixType2,
                                        dim,
                                        fe_degree,
                                        local_solver,
                                        smooth_vmult,
                                        smooth_inverse>;
-    using MatrixFreeType  = LevelVertexPatch<dim, fe_degree, Number>;
-    using MatrixFreeType2 = LevelVertexPatch<dim, fe_degree, Number2>;
+    using SmootherTypeCoarse = PatchSmoother<MatrixType2,
+                                             dim,
+                                             fe_degree,
+                                             LocalSolverVariant::Exact,
+                                             smooth_vmult,
+                                             smooth_inverse>;
+    using MatrixFreeType     = LevelVertexPatch<dim, fe_degree, Number>;
+    using MatrixFreeType2    = LevelVertexPatch<dim, fe_degree, Number2>;
 
     MultigridSolver(
       const DoFHandler<dim>                                 &dof_handler,
@@ -243,49 +252,51 @@ namespace PSMF
       if (CT::SETS_ == "error_analysis")
         for (unsigned int level = minlevel; level <= maxlevel; ++level)
           {
-            Quadrature<dim - 1> face_quad(
-              dof_handler.get_fe().get_unit_face_support_points());
-            FEFaceValues<dim>                    fe_values(mapping,
-                                        dof_handler.get_fe(),
-                                        face_quad,
-                                        update_quadrature_points);
-            std::vector<types::global_dof_index> face_dof_indices(
-              dof_handler.get_fe().dofs_per_face);
+            // Quadrature<dim - 1> face_quad(
+            //   dof_handler.get_fe().get_unit_face_support_points());
+            // FEFaceValues<dim>                    fe_values(mapping,
+            //                             dof_handler.get_fe(),
+            //                             face_quad,
+            //                             update_quadrature_points);
+            // std::vector<types::global_dof_index> face_dof_indices(
+            //   dof_handler.get_fe().dofs_per_face);
 
-            typename DoFHandler<dim>::cell_iterator cell =
-                                                      dof_handler.begin(level),
-                                                    endc =
-                                                      dof_handler.end(level);
-            for (; cell != endc; ++cell)
-              if (cell->level_subdomain_id() !=
-                  numbers::artificial_subdomain_id)
-                for (unsigned int face_no = 0;
-                     face_no < GeometryInfo<dim>::faces_per_cell;
-                     ++face_no)
-                  if (cell->at_boundary(face_no))
-                    {
-                      const typename DoFHandler<dim>::face_iterator face =
-                        cell->face(face_no);
-                      face->get_mg_dof_indices(level, face_dof_indices);
-                      fe_values.reinit(cell, face_no);
-                      for (unsigned int i = 0; i < face_dof_indices.size(); ++i)
-                        if (dof_handler.locally_owned_mg_dofs(level).is_element(
-                              face_dof_indices[i]))
-                          {
-                            const double value = analytic_solution.value(
-                              fe_values.quadrature_point(i));
-                            if (value != 0.0)
-                              inhomogeneous_bc[level][face_dof_indices[i]] =
-                                value;
-                          }
-                    }
+            // typename DoFHandler<dim>::cell_iterator cell =
+            //                                           dof_handler.begin(level),
+            //                                         endc =
+            //                                           dof_handler.end(level);
+            // for (; cell != endc; ++cell)
+            //   if (cell->level_subdomain_id() !=
+            //       numbers::artificial_subdomain_id)
+            //     for (unsigned int face_no = 0;
+            //          face_no < GeometryInfo<dim>::faces_per_cell;
+            //          ++face_no)
+            //       if (cell->at_boundary(face_no))
+            //         {
+            //           const typename DoFHandler<dim>::face_iterator face =
+            //             cell->face(face_no);
+            //           face->get_mg_dof_indices(level, face_dof_indices);
+            //           fe_values.reinit(cell, face_no);
+            //           for (unsigned int i = 0; i < face_dof_indices.size();
+            //           ++i)
+            //             if
+            //             (dof_handler.locally_owned_mg_dofs(level).is_element(
+            //                   face_dof_indices[i]))
+            //               {
+            //                 const double value = analytic_solution.value(
+            //                   fe_values.quadrature_point(i));
+            //                 if (value != 0.0)
+            //                   inhomogeneous_bc[level][face_dof_indices[i]] =
+            //                     value;
+            //               }
+            //         }
           }
 
 
       {
         // evaluate the right hand side in the equation, including the
         // residual from the inhomogeneous boundary conditions
-        set_inhomogeneous_bc<false>(maxlevel);
+        // set_inhomogeneous_bc<false>(maxlevel);
         rhs[maxlevel] = 0.;
         if (CT::SETS_ == "error_analysis")
           matrix_dp[maxlevel].compute_residual(rhs[maxlevel],
@@ -300,15 +311,22 @@ namespace PSMF
 
       {
         MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
+        MGLevelObject<typename SmootherTypeCoarse::AdditionalData>
+          smoother_data_coarse;
         smoother_data.resize(minlevel, maxlevel);
+        smoother_data_coarse.resize(minlevel, maxlevel);
         for (unsigned int level = minlevel; level <= maxlevel; ++level)
           {
             smoother_data[level].data         = mfdata[level];
             smoother_data[level].n_iterations = CT::N_SMOOTH_STEPS_;
+
+            smoother_data_coarse[level].data         = mfdata[level];
+            smoother_data_coarse[level].n_iterations = CT::N_SMOOTH_STEPS_;
           }
 
         mg_smoother.initialize(matrix, smoother_data);
-        mg_coarse.initialize(mg_smoother);
+        mg_smoother_coarse.initialize(matrix, smoother_data_coarse);
+        mg_coarse.initialize(mg_smoother_coarse);
       }
     }
 
@@ -380,7 +398,7 @@ namespace PSMF
       std::string comp_name = "";
 
       const unsigned int n_dofs = dof_handler->n_dofs();
-      const unsigned int n_mv   = n_dofs < 10000000 ? 100 : 20;
+      const unsigned int n_mv   = n_dofs < 10000000 ? 20 : 4;
 
       auto tester = [&](auto kernel) {
         Timer              time;
@@ -831,6 +849,10 @@ namespace PSMF
     /**
      * The coarse solver
      */
+
+    MGSmootherPrecondition<MatrixType2, SmootherTypeCoarse, VectorType2>
+      mg_smoother_coarse;
+
     MGCoarseGridApplySmoother<VectorType2> mg_coarse;
 
     // MGCoarseFromSmoother<VectorType2, MGLevelObject<SmootherType>> coarse;
@@ -880,13 +902,19 @@ namespace PSMF
     using VectorType =
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>;
     using MatrixType = LaplaceOperator<dim, fe_degree, Number, lapalace_kernel>;
-    using SmootherType   = PatchSmoother<MatrixType,
+    using SmootherType       = PatchSmoother<MatrixType,
                                        dim,
                                        fe_degree,
                                        local_solver,
                                        smooth_vmult,
                                        smooth_inverse>;
-    using MatrixFreeType = LevelVertexPatch<dim, fe_degree, Number>;
+    using SmootherTypeCoarse = PatchSmoother<MatrixType,
+                                             dim,
+                                             fe_degree,
+                                             LocalSolverVariant::Exact,
+                                             smooth_vmult,
+                                             smooth_inverse>;
+    using MatrixFreeType     = LevelVertexPatch<dim, fe_degree, Number>;
 
     MultigridSolver(
       const DoFHandler<dim>                                &dof_handler,
@@ -932,42 +960,44 @@ namespace PSMF
       if (CT::SETS_ == "error_analysis")
         for (unsigned int level = minlevel; level <= maxlevel; ++level)
           {
-            Quadrature<dim - 1> face_quad(
-              dof_handler.get_fe().get_unit_face_support_points());
-            FEFaceValues<dim>                    fe_values(mapping,
-                                        dof_handler.get_fe(),
-                                        face_quad,
-                                        update_quadrature_points);
-            std::vector<types::global_dof_index> face_dof_indices(
-              dof_handler.get_fe().dofs_per_face);
+            // Quadrature<dim - 1> face_quad(
+            //   dof_handler.get_fe().get_unit_face_support_points());
+            // FEFaceValues<dim>                    fe_values(mapping,
+            //                             dof_handler.get_fe(),
+            //                             face_quad,
+            //                             update_quadrature_points);
+            // std::vector<types::global_dof_index> face_dof_indices(
+            //   dof_handler.get_fe().dofs_per_face);
 
-            typename DoFHandler<dim>::cell_iterator cell =
-                                                      dof_handler.begin(level),
-                                                    endc =
-                                                      dof_handler.end(level);
-            for (; cell != endc; ++cell)
-              if (cell->level_subdomain_id() !=
-                  numbers::artificial_subdomain_id)
-                for (unsigned int face_no = 0;
-                     face_no < GeometryInfo<dim>::faces_per_cell;
-                     ++face_no)
-                  if (cell->at_boundary(face_no))
-                    {
-                      const typename DoFHandler<dim>::face_iterator face =
-                        cell->face(face_no);
-                      face->get_mg_dof_indices(level, face_dof_indices);
-                      fe_values.reinit(cell, face_no);
-                      for (unsigned int i = 0; i < face_dof_indices.size(); ++i)
-                        if (dof_handler.locally_owned_mg_dofs(level).is_element(
-                              face_dof_indices[i]))
-                          {
-                            const double value = analytic_solution.value(
-                              fe_values.quadrature_point(i));
-                            if (value != 0.0)
-                              inhomogeneous_bc[level][face_dof_indices[i]] =
-                                value;
-                          }
-                    }
+            // typename DoFHandler<dim>::cell_iterator cell =
+            //                                           dof_handler.begin(level),
+            //                                         endc =
+            //                                           dof_handler.end(level);
+            // for (; cell != endc; ++cell)
+            //   if (cell->level_subdomain_id() !=
+            //       numbers::artificial_subdomain_id)
+            //     for (unsigned int face_no = 0;
+            //          face_no < GeometryInfo<dim>::faces_per_cell;
+            //          ++face_no)
+            //       if (cell->at_boundary(face_no))
+            //         {
+            //           const typename DoFHandler<dim>::face_iterator face =
+            //             cell->face(face_no);
+            //           face->get_mg_dof_indices(level, face_dof_indices);
+            //           fe_values.reinit(cell, face_no);
+            //           for (unsigned int i = 0; i < face_dof_indices.size();
+            //           ++i)
+            //             if
+            //             (dof_handler.locally_owned_mg_dofs(level).is_element(
+            //                   face_dof_indices[i]))
+            //               {
+            //                 const double value = analytic_solution.value(
+            //                   fe_values.quadrature_point(i));
+            //                 if (value != 0.0)
+            //                   inhomogeneous_bc[level][face_dof_indices[i]] =
+            //                     value;
+            //               }
+            //         }
           }
 
       for (int level = maxlevel; level >= minlevel; --level)
@@ -991,15 +1021,22 @@ namespace PSMF
 
       {
         MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
+        MGLevelObject<typename SmootherTypeCoarse::AdditionalData>
+          smoother_data_coarse;
         smoother_data.resize(minlevel, maxlevel);
+        smoother_data_coarse.resize(minlevel, maxlevel);
         for (unsigned int level = minlevel; level <= maxlevel; ++level)
           {
             smoother_data[level].data         = mfdata_dp[level];
             smoother_data[level].n_iterations = CT::N_SMOOTH_STEPS_;
+
+            smoother_data_coarse[level].data         = mfdata_dp[level];
+            smoother_data_coarse[level].n_iterations = CT::N_SMOOTH_STEPS_;
           }
 
         mg_smoother.initialize(matrix, smoother_data);
-        mg_coarse.initialize(mg_smoother);
+        mg_smoother_coarse.initialize(matrix, smoother_data_coarse);
+        mg_coarse.initialize(mg_smoother_coarse);
       }
     }
 
@@ -1013,7 +1050,7 @@ namespace PSMF
       std::string comp_name = "";
 
       const unsigned int n_dofs = dof_handler->n_dofs();
-      const unsigned int n_mv   = n_dofs < 10000000 ? 100 : 20;
+      const unsigned int n_mv   = n_dofs < 10000000 ? 20 : 4;
 
       auto tester = [&](auto kernel) {
         Timer              time;
@@ -1164,6 +1201,14 @@ namespace PSMF
       dst = solution[maxlevel];
     }
 
+    // Return the solution vector for further processing
+    const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &
+    get_solution()
+    {
+      // set_inhomogeneous_bc<false>(maxlevel);
+      return solution[maxlevel];
+    }
+
     // Solve with the conjugate gradient method preconditioned by the V-cycle
     // (invoking this->vmult) and return the number of iterations and the
     // reduction rate per GMRES iteration
@@ -1171,6 +1216,19 @@ namespace PSMF
     solve()
     {
       *pcout << "Solving...\n";
+
+      mg::Matrix<VectorType> mg_matrix(matrix);
+
+      Multigrid<VectorType> mg(mg_matrix,
+                               mg_coarse,
+                               *transfer,
+                               mg_smoother,
+                               mg_smoother,
+                               minlevel,
+                               maxlevel);
+
+      PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>
+        preconditioner_mg(*dof_handler, mg, *transfer);
 
       std::string solver_name = "GMRES";
 
@@ -1192,7 +1250,7 @@ namespace PSMF
           solver.solve(matrix[maxlevel],
                        solution[maxlevel],
                        rhs[maxlevel],
-                       *this);
+                       preconditioner_mg);
 
           best_time = std::min(time.wall_time(), best_time);
         }
@@ -1497,6 +1555,9 @@ namespace PSMF
     /**
      * The coarse solver
      */
+    MGSmootherPrecondition<MatrixType, SmootherTypeCoarse, VectorType>
+      mg_smoother_coarse;
+
     MGCoarseGridApplySmoother<VectorType> mg_coarse;
     // MGCoarseFromSmoother<VectorType, MGLevelObject<SmootherType>> coarse;
 

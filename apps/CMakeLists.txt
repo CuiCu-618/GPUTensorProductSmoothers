@@ -11,7 +11,7 @@ INCLUDE_DIRECTORIES(
 )
 
 SET( SOURCE_FILES
-        poisson.cu
+        biharm.cu
         benchmark_mg.cu
         )
 

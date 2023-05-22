@@ -119,7 +119,7 @@ def parse_args():
                         help="number type for the multigrid v-cycle"
     )
     parser.add_argument('-SETS','--test_sets',
-                        default='none',
+                        default='error_analysis',
                         type=str,
                         choices=['none','kernel','error_analysis','vnum'],
                         help="sets of experiments used for comparsion"

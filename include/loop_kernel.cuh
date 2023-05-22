@@ -179,14 +179,20 @@ namespace PSMF
             shared_data.local_dst[index] = dst[global_dof_indices];
           }
 
+        constexpr unsigned int matrix_size = Util::pow(local_dim, 2);
+        unsigned int           patch_type  = 0;
+        for (unsigned int d = 0; d < dim; ++d)
+          patch_type += gpu_data.patch_type[patch * dim + d] * Util::pow(3, d);
         for (unsigned int row = 0; row < local_dim; ++row)
           {
             for (unsigned int z = 0; z < n_dofs_z; ++z)
               {
-                auto val = gpu_data.eigenvalues[row * local_dim + z * n_dofs_z +
-                                                linear_tid_x] *
-                           shared_data.local_src[local_patch * local_dim +
-                                                 z * n_dofs_z + linear_tid_x];
+                auto val =
+                  gpu_data
+                    .eigenvalues[patch_type * matrix_size + row * local_dim +
+                                 z * n_dofs_z + linear_tid_x] *
+                  shared_data.local_src[local_patch * local_dim + z * n_dofs_z +
+                                        linear_tid_x];
 
                 atomicAdd(&shared_data.local_dst[local_patch * local_dim + row],
                           val);
@@ -243,14 +249,25 @@ namespace PSMF
 
     if (patch < gpu_data.n_patches)
       {
+        constexpr unsigned int matrix_size = Util::pow(local_dim, 2);
+        unsigned int           patch_type  = 0;
+        for (unsigned int d = 0; d < dim; ++d)
+          patch_type += gpu_data.patch_type[patch * dim + d] * Util::pow(3, d);
+
         for (unsigned int d = 0; d < dim; ++d)
           {
-            shared_data.local_mass[d * n_dofs_1d + local_tid_x] =
-              gpu_data.eigenvalues[d * n_dofs_1d + local_tid_x];
             shared_data
-              .local_laplace[(d * n_dofs_1d + threadIdx.y) * n_dofs_1d +
-                             local_tid_x] =
-              gpu_data.eigenvectors[(d * n_dofs_1d + threadIdx.y) * n_dofs_1d +
+              .local_mass[(local_patch * dim + d) * n_dofs_1d + local_tid_x] =
+              gpu_data
+                .eigenvalues[(patch_type * dim + d) * n_dofs_1d + local_tid_x];
+
+            shared_data.local_laplace[((local_patch * dim + d) * n_dofs_1d +
+                                       threadIdx.y) *
+                                        n_dofs_1d +
+                                      local_tid_x] =
+              gpu_data.eigenvectors[((patch_type * dim + d) * n_dofs_1d +
+                                     threadIdx.y) *
+                                      n_dofs_1d +
                                     local_tid_x];
           }
 
