@@ -190,9 +190,10 @@ namespace PSMF
                 auto val =
                   gpu_data
                     .eigenvalues[patch_type * matrix_size + row * local_dim +
-                                 z * n_dofs_z + linear_tid_x] *
-                  shared_data.local_src[local_patch * local_dim + z * n_dofs_z +
-                                        linear_tid_x];
+                                 z * n_dofs_1d * n_dofs_1d + linear_tid_x] *
+                  shared_data
+                    .local_src[local_patch * local_dim +
+                               z * n_dofs_1d * n_dofs_1d + linear_tid_x];
 
                 atomicAdd(&shared_data.local_dst[local_patch * local_dim + row],
                           val);
