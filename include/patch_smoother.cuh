@@ -206,6 +206,19 @@ namespace PSMF
                                                  dst);
             break;
           }
+        case SmootherVariant::Exact:
+          {
+            LocalSmoother<dim, fe_degree, Number, kernel, dof_layout>
+              local_smoother(n_dofs_per_dim);
+
+            LocalSmoother_inverse<dim, fe_degree, Number, kernel, dof_layout>
+              local_smoother_inverse(n_dofs_per_dim);
+            level_vertex_patch.patch_loop(local_smoother,
+                                          src,
+                                          dst,
+                                          local_smoother_inverse);
+            break;
+          }
         case SmootherVariant::SEPERATE:
           {
             LocalSmoother<dim, fe_degree, Number, kernel, dof_layout>

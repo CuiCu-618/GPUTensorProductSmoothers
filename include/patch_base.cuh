@@ -61,7 +61,12 @@ namespace PSMF
     /**
      * only boundary dofs needed.
      */
-    FUSED_BD
+    FUSED_BD,
+
+    /**
+     * apply the inverse in matrix form
+     */
+    Exact
   };
 
 

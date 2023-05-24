@@ -75,7 +75,7 @@ namespace PSMF
     level       = matrix_free->get_mg_level();
 
     if (kernel == SmootherVariant::SEPERATE ||
-        kernel == SmootherVariant::GLOBAL)
+        kernel == SmootherVariant::GLOBAL || kernel == SmootherVariant::Exact)
       matrix_free->initialize_dof_vector(tmp);
 
     switch (granularity_scheme)
@@ -108,7 +108,11 @@ namespace PSMF
     constexpr unsigned n_dofs_1d = 2 * fe_degree + 1;
     constexpr unsigned n_dofs_2d = n_dofs_1d * n_dofs_1d;
 
-    alloc_arrays(&eigenvalues, n_dofs_1d);
+    // if (kernel == SmootherVariant::Exact)
+    alloc_arrays(&eigenvalues,
+                 n_dofs_in + Util::pow(Util::pow(n_dofs_in, dim), 2));
+    // else
+    //   alloc_arrays(&eigenvalues, n_dofs_1d);
     alloc_arrays(&eigenvectors, n_dofs_2d);
     alloc_arrays(&global_mass_1d, n_dofs_2d);
     alloc_arrays(&global_derivative_1d, n_dofs_2d);
@@ -160,6 +164,9 @@ namespace PSMF
   {
     switch (kernel)
       {
+        case SmootherVariant::Exact:
+          patch_loop_seperate(func, func_inv, src, dst);
+          break;
         case SmootherVariant::SEPERATE:
           patch_loop_seperate(func, func_inv, src, dst);
           break;
@@ -588,6 +595,20 @@ namespace PSMF
     tensor_product.get_eigenvalues(eigenval);
     tensor_product.get_eigenvectors(eigenvec);
 
+    auto exact_inverse = tensor_product.inverse_matrix_to_table();
+
+    // auto print_matrices = [](auto matrix) {
+    //   for (auto m = 0U; m < matrix.size(1); ++m)
+    //     {
+    //       for (auto n = 0U; n < matrix.size(0); ++n)
+    //         std::cout << matrix(m, n) << " ";
+    //       std::cout << std::endl;
+    //     }
+    //   std::cout << std::endl;
+    // };
+
+    // print_matrices(exact_inverse);
+
     constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
 
     auto *mass    = new Number[n_dofs_1d * n_dofs_1d * dim];
@@ -620,9 +641,26 @@ namespace PSMF
 
     cudaError_t error_code = cudaMemcpy(eigenvalues,
                                         values,
-                                        n_dofs_1d * sizeof(Number),
+                                        (n_dofs_1d - 2) * sizeof(Number),
                                         cudaMemcpyHostToDevice);
     AssertCuda(error_code);
+
+    {
+      auto *vals = new Number[exact_inverse.n_elements()];
+
+      std::transform(exact_inverse.begin(),
+                     exact_inverse.end(),
+                     vals,
+                     [](const Number m) -> Number { return m; });
+
+      error_code = cudaMemcpy(eigenvalues + n_dofs_1d - 2,
+                              vals,
+                              exact_inverse.n_elements() * sizeof(Number),
+                              cudaMemcpyHostToDevice);
+      AssertCuda(error_code);
+
+      delete[] vals;
+    }
 
     error_code = cudaMemcpy(eigenvectors,
                             vectors,
@@ -992,6 +1030,11 @@ namespace PSMF
           block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
           break;
         case SmootherVariant::SEPERATE:
+          block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
+          block_dim_inv[color] =
+            dim3(patch_per_block * n_dofs_1d_inv, n_dofs_1d_inv);
+          break;
+        case SmootherVariant::Exact:
           block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
           block_dim_inv[color] =
             dim3(patch_per_block * n_dofs_1d_inv, n_dofs_1d_inv);

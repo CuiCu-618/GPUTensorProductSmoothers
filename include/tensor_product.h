@@ -49,6 +49,9 @@ namespace PSMF
     get_eigenvectors(
       std::array<dealii::Table<2, Number>, dim> &eigenvectors) const;
 
+    dealii::Table<2, Number>
+    inverse_matrix_to_table() const;
+
   private:
     dealii::MatrixFree<1, Number> matrix_free_1d;
   };
@@ -253,6 +256,31 @@ namespace PSMF
     std::array<dealii::Table<2, Number>, dim> &eigenvectors) const
   {
     eigenvectors = this->eigenvectors;
+  }
+
+
+  template <int dim, int fe_degree, typename Number, int n_rows_1d>
+  dealii::Table<2, Number>
+  TensorProductData<dim, fe_degree, Number, n_rows_1d>::
+    inverse_matrix_to_table() const
+  {
+    dealii::Table<2, Number>      table(this->m(), this->n());
+    dealii::AlignedVector<Number> e_j(this->n());
+    dealii::AlignedVector<Number> col_j(this->m());
+    for (unsigned int j = 0; j < this->n(); ++j)
+      {
+        e_j.fill(static_cast<Number>(0.));
+        col_j.fill(static_cast<Number>(0.));
+        e_j[j] = static_cast<Number>(1.);
+        const auto e_j_view =
+          dealii::make_array_view<const Number>(e_j.begin(), e_j.end());
+        const auto col_j_view =
+          dealii::make_array_view<Number>(col_j.begin(), col_j.end());
+        this->apply_inverse(col_j_view, e_j_view);
+        for (unsigned int i = 0; i < this->m(); ++i)
+          table(i, j) = col_j[i];
+      }
+    return table;
   }
 } // namespace PSMF
 

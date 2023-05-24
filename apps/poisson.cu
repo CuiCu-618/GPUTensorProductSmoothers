@@ -329,6 +329,25 @@ namespace Step64
       {
         switch (CT::KERNEL_TYPE_[k])
           {
+            case PSMF::SmootherVariant::Exact:
+              {
+                PSMF::MultigridSolver<dim,
+                                      fe_degree,
+                                      CT::DOF_LAYOUT_,
+                                      full_number,
+                                      PSMF::SmootherVariant::Exact,
+                                      vcycle_number>
+                  solver(dof_handler,
+                         matrix_dp,
+                         matrix,
+                         transfer,
+                         Functions::ZeroFunction<dim, full_number>(),
+                         Functions::ConstantFunction<dim, full_number>(1.),
+                         pcout,
+                         n_mg_cycles);
+                do_solver(solver, k);
+                break;
+              }
             case PSMF::SmootherVariant::GLOBAL:
               {
                 PSMF::MultigridSolver<dim,

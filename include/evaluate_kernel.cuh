@@ -1399,7 +1399,24 @@ namespace PSMF
                                                kernel,
                                                dof_layout>::Data *gpu_data,
                SharedMemData<dim, Number, kernel> *shared_data) const
-    {}
+    {
+      constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+
+      TPEvaluator_vmult<n_dofs_1d,
+                        Number,
+                        dim,
+                        SmootherVariant::SEPERATE,
+                        DoFLayout::Q>
+        eval;
+      __syncthreads();
+
+      eval.vmult(&shared_data->local_src[patch * local_dim],
+                 &shared_data->local_dst[patch * local_dim],
+                 shared_data->local_mass,
+                 shared_data->local_derivative,
+                 &shared_data->temp[patch * local_dim * (dim - 1)]);
+      __syncthreads();
+    }
 
     unsigned int ndofs_per_dim;
   };
@@ -1491,6 +1508,44 @@ namespace PSMF
                                                kernel,
                                                dof_layout>::Data *gpu_data,
                SharedMemData<dim, Number, kernel> *shared_data) const
+    {}
+
+    unsigned int ndofs_per_dim;
+  };
+
+  template <int dim, int fe_degree, typename Number>
+  class LocalSmoother_inverse<dim,
+                              fe_degree,
+                              Number,
+                              SmootherVariant::GLOBAL,
+                              DoFLayout::Q>
+  {
+  public:
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree - 1;
+
+    LocalSmoother_inverse()
+      : ndofs_per_dim(0)
+    {}
+
+    LocalSmoother_inverse(unsigned int ndofs_per_dim)
+      : ndofs_per_dim(ndofs_per_dim)
+    {}
+
+    __device__ inline unsigned int
+    get_ndofs()
+    {
+      return ndofs_per_dim;
+    }
+
+    __device__ void
+    operator()(
+      const unsigned int                                   patch,
+      const typename LevelVertexPatch<dim,
+                                      fe_degree,
+                                      Number,
+                                      SmootherVariant::GLOBAL,
+                                      DoFLayout::Q>::Data *gpu_data,
+      SharedMemData<dim, Number, SmootherVariant::GLOBAL> *shared_data) const
     {
       const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
 
@@ -1498,7 +1553,63 @@ namespace PSMF
                           Number,
                           dim,
                           SmootherVariant::SEPERATE,
-                          dof_layout>
+                          DoFLayout::Q>
+        eval;
+      __syncthreads();
+
+      // local inverse
+      eval.apply_inverse(&shared_data->local_dst[patch * local_dim],
+                         &shared_data->local_src[patch * local_dim],
+                         shared_data->local_mass,
+                         shared_data->local_derivative,
+                         &shared_data->temp[patch * local_dim]);
+      __syncthreads();
+    }
+
+    unsigned int ndofs_per_dim;
+  };
+
+  template <int dim, int fe_degree, typename Number>
+  class LocalSmoother_inverse<dim,
+                              fe_degree,
+                              Number,
+                              SmootherVariant::SEPERATE,
+                              DoFLayout::Q>
+  {
+  public:
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree - 1;
+
+    LocalSmoother_inverse()
+      : ndofs_per_dim(0)
+    {}
+
+    LocalSmoother_inverse(unsigned int ndofs_per_dim)
+      : ndofs_per_dim(ndofs_per_dim)
+    {}
+
+    __device__ inline unsigned int
+    get_ndofs()
+    {
+      return ndofs_per_dim;
+    }
+
+    __device__ void
+    operator()(
+      const unsigned int                                     patch,
+      const typename LevelVertexPatch<dim,
+                                      fe_degree,
+                                      Number,
+                                      SmootherVariant::SEPERATE,
+                                      DoFLayout::Q>::Data   *gpu_data,
+      SharedMemData<dim, Number, SmootherVariant::SEPERATE> *shared_data) const
+    {
+      const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+
+      TPEvaluator_inverse<n_dofs_1d,
+                          Number,
+                          dim,
+                          SmootherVariant::SEPERATE,
+                          DoFLayout::Q>
         eval;
       __syncthreads();
 
