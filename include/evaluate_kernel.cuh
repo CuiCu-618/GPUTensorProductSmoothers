@@ -589,6 +589,83 @@ namespace PSMF
     }
   };
 
+  template <int kernel_size, typename Number>
+  struct TPEvaluator_inverse<kernel_size,
+                             Number,
+                             2,
+                             SmootherVariant::NN,
+                             DoFLayout::Q>
+  {
+    /**
+     *  Constructor.
+     */
+    __device__
+    TPEvaluator_inverse()
+    {}
+
+    /**
+     * Apply inverse to @p src.
+     */
+    __device__ void
+    apply_inverse(Number       *dst,
+                  Number       *src,
+                  const Number *eigenvalues,
+                  const Number *eigenvectors,
+                  Number       *temp)
+    {
+      const unsigned int local_tid_x = threadIdx.x % kernel_size;
+
+      apply<0, true>(eigenvectors, src, temp);
+      __syncthreads();
+      apply<1, true>(&eigenvectors[kernel_size * kernel_size], temp, src);
+      __syncthreads();
+      src[threadIdx.y * kernel_size + local_tid_x] /=
+        (eigenvalues[kernel_size + threadIdx.y] + eigenvalues[local_tid_x]);
+      __syncthreads();
+      apply<0, false>(eigenvectors, src, temp);
+      __syncthreads();
+      apply<1, false, true>(&eigenvectors[kernel_size * kernel_size],
+                            temp,
+                            dst);
+    }
+
+    /**
+     * apply 1d @p shape_data vector to @p in.
+     */
+    template <int direction, bool contract_over_rows, bool add = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int row = threadIdx.y;
+      const int col = threadIdx.x % kernel_size;
+
+      Number pval = 0;
+
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      // #pragma unroll
+      for (unsigned int k = 0; k < kernel_size; ++k)
+        {
+          const unsigned int shape_idx =
+            contract_over_rows ? k * kernel_size + row : row * kernel_size + k;
+
+          const unsigned int source_idx = (direction == 0) ?
+                                            (col * kernel_size + k) :
+                                            (k * kernel_size + col);
+
+          pval += shape_data[shape_idx] * in[source_idx];
+        }
+
+
+      const unsigned int destination_idx = (direction == 0) ?
+                                             (col * kernel_size + row) :
+                                             (row * kernel_size + col);
+      if (add)
+        out[destination_idx] += pval;
+      else
+        out[destination_idx] = pval;
+    }
+  };
+
 
   template <int kernel_size, typename Number>
   struct TPEvaluator_inverse<kernel_size,
@@ -1553,6 +1630,62 @@ namespace PSMF
                           Number,
                           dim,
                           SmootherVariant::SEPERATE,
+                          DoFLayout::Q>
+        eval;
+      __syncthreads();
+
+      // local inverse
+      eval.apply_inverse(&shared_data->local_dst[patch * local_dim],
+                         &shared_data->local_src[patch * local_dim],
+                         shared_data->local_mass,
+                         shared_data->local_derivative,
+                         &shared_data->temp[patch * local_dim]);
+      __syncthreads();
+    }
+
+    unsigned int ndofs_per_dim;
+  };
+
+  template <int dim, int fe_degree, typename Number>
+  class LocalSmoother_inverse<dim,
+                              fe_degree,
+                              Number,
+                              SmootherVariant::NN,
+                              DoFLayout::Q>
+  {
+  public:
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree - 1;
+
+    LocalSmoother_inverse()
+      : ndofs_per_dim(0)
+    {}
+
+    LocalSmoother_inverse(unsigned int ndofs_per_dim)
+      : ndofs_per_dim(ndofs_per_dim)
+    {}
+
+    __device__ inline unsigned int
+    get_ndofs()
+    {
+      return ndofs_per_dim;
+    }
+
+    __device__ void
+    operator()(
+      const unsigned int                                   patch,
+      const typename LevelVertexPatch<dim,
+                                      fe_degree,
+                                      Number,
+                                      SmootherVariant::NN,
+                                      DoFLayout::Q>::Data *gpu_data,
+      SharedMemData<dim, Number, SmootherVariant::NN>     *shared_data) const
+    {
+      const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+
+      TPEvaluator_inverse<n_dofs_1d,
+                          Number,
+                          dim,
+                          SmootherVariant::NN,
                           DoFLayout::Q>
         eval;
       __syncthreads();

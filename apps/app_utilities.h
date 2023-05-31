@@ -17,23 +17,24 @@
 #include "ct_parameter.h"
 #include "git_version.h"
 
-#define SMO_MACRO(name, v1, v2, v3, v4, v5, v6, v7, v8)                   \
-  enum class name                                                         \
-  {                                                                       \
-    v1,                                                                   \
-    v2,                                                                   \
-    v3,                                                                   \
-    v4,                                                                   \
-    v5,                                                                   \
-    v6,                                                                   \
-    v7,                                                                   \
-    v8,                                                                   \
-  };                                                                      \
-  const char *name##Strings[] = {#v1, #v2, #v3, #v4, #v5, #v6, #v7, #v8}; \
-  template <typename T>                                                   \
-  constexpr const char *name##ToString(T value)                           \
-  {                                                                       \
-    return name##Strings[static_cast<int>(value)];                        \
+#define SMO_MACRO(name, v1, v2, v3, v4, v5, v6, v7, v8, v9)                    \
+  enum class name                                                              \
+  {                                                                            \
+    v1,                                                                        \
+    v2,                                                                        \
+    v3,                                                                        \
+    v4,                                                                        \
+    v5,                                                                        \
+    v6,                                                                        \
+    v7,                                                                        \
+    v8,                                                                        \
+    v9,                                                                        \
+  };                                                                           \
+  const char *name##Strings[] = {#v1, #v2, #v3, #v4, #v5, #v6, #v7, #v8, #v9}; \
+  template <typename T>                                                        \
+  constexpr const char *name##ToString(T value)                                \
+  {                                                                            \
+    return name##Strings[static_cast<int>(value)];                             \
   }
 
 #define ENUM_MACRO(name, v1, v2, v3)               \
@@ -58,7 +59,8 @@ SMO_MACRO(Smoother,
           FUSED_3D,
           FUSED_CF,
           FUSED_BD,
-          Exact);
+          Exact,
+          NN);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);
 ENUM_MACRO(Granularity, none, user_define, multiple);
 

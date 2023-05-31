@@ -3,6 +3,8 @@
  * Created by Cu Cui on 2022/3/28.
  */
 
+#include <fstream>
+
 #include "loop_kernel.cuh"
 
 namespace PSMF
@@ -75,7 +77,8 @@ namespace PSMF
     level       = matrix_free->get_mg_level();
 
     if (kernel == SmootherVariant::SEPERATE ||
-        kernel == SmootherVariant::GLOBAL || kernel == SmootherVariant::Exact)
+        kernel == SmootherVariant::GLOBAL || kernel == SmootherVariant::Exact ||
+        kernel == SmootherVariant::NN)
       matrix_free->initialize_dof_vector(tmp);
 
     switch (granularity_scheme)
@@ -110,10 +113,11 @@ namespace PSMF
 
     // if (kernel == SmootherVariant::Exact)
     alloc_arrays(&eigenvalues,
-                 n_dofs_in + Util::pow(Util::pow(n_dofs_in, dim), 2));
+                 n_dofs_in + Util::pow(Util::pow(n_dofs_in, dim), 2) +
+                   dim * n_dofs_in);
     // else
     //   alloc_arrays(&eigenvalues, n_dofs_1d);
-    alloc_arrays(&eigenvectors, n_dofs_2d);
+    alloc_arrays(&eigenvectors, n_dofs_2d + dim * n_dofs_2d);
     alloc_arrays(&global_mass_1d, n_dofs_2d);
     alloc_arrays(&global_derivative_1d, n_dofs_2d);
 
@@ -164,6 +168,9 @@ namespace PSMF
   {
     switch (kernel)
       {
+        case SmootherVariant::NN:
+          patch_loop_seperate(func, func_inv, src, dst);
+          break;
         case SmootherVariant::Exact:
           patch_loop_seperate(func, func_inv, src, dst);
           break;
@@ -374,7 +381,7 @@ namespace PSMF
       // local_src, local_dst, local_residual
       mem += 2 * patch_per_block * local_dim * sizeof(Number);
       // local_mass, local_derivative
-      mem += 2 * 1 * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
+      mem += (dim + 1) * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
       // temp
       mem += (dim - 1) * patch_per_block * local_dim * sizeof(Number);
 
@@ -389,7 +396,8 @@ namespace PSMF
       // local_src, local_dst, local_residual
       mem += 2 * patch_per_block * local_dim * sizeof(Number);
       // local_eigenvectors, local_eigenvalues
-      mem += 2 * 1 * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
+      mem += dim * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
+      mem += n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
       // temp
       mem += patch_per_block * local_dim * sizeof(Number);
 
@@ -679,6 +687,103 @@ namespace PSMF
                             n_dofs_1d * n_dofs_1d * sizeof(Number),
                             cudaMemcpyHostToDevice);
     AssertCuda(error_code);
+
+    // Neural Network
+    {
+      // TODO: 3d
+      std::string filenamea0 =
+        "/export/home/cucui/CLionProjects/python-project-template/poisson/TensorProduct/a0_interior_2D_Q" +
+        std::to_string(fe_degree) + ".txt";
+      std::string filenamea1 =
+        "/export/home/cucui/CLionProjects/python-project-template/poisson/TensorProduct/a1_interior_2D_Q" +
+        std::to_string(fe_degree) + ".txt";
+      std::string filenamem0 =
+        "/export/home/cucui/CLionProjects/python-project-template/poisson/TensorProduct/m0_interior_2D_Q" +
+        std::to_string(fe_degree) + ".txt";
+      std::string filenamem1 =
+        "/export/home/cucui/CLionProjects/python-project-template/poisson/TensorProduct/m1_interior_2D_Q" +
+        std::to_string(fe_degree) + ".txt";
+
+      std::ifstream filea0(filenamea0);
+      std::ifstream filea1(filenamea1);
+      std::ifstream filem0(filenamem0);
+      std::ifstream filem1(filenamem1);
+
+      constexpr unsigned int n_dofs_in = 2 * fe_degree - 1;
+      constexpr unsigned int n_dofs_2d = Util::pow(n_dofs_in, 2);
+
+
+      auto read_nn = [&](auto &file) {
+        Table<2, Number> mat(n_dofs_in, n_dofs_in);
+        if (file.is_open())
+          {
+            Number tmp[n_dofs_2d];
+
+            std::istream_iterator<Number> fileIter(file);
+            std::copy_n(fileIter, n_dofs_2d, tmp);
+
+            std::transform(tmp,
+                           tmp + n_dofs_2d,
+                           mat.begin(),
+                           [](auto m) -> Number { return m; });
+
+            file.close();
+          }
+        else
+          std::cout << "Error opening file!" << std::endl;
+
+
+        return mat;
+      };
+
+      std::array<Table<2, Number>, dim> t1;
+      std::array<Table<2, Number>, dim> t2;
+
+      t1[0] = read_nn(filem1);
+      t1[1] = read_nn(filem0);
+      t2[0] = read_nn(filea1);
+      t2[1] = read_nn(filea0);
+
+      TensorProductData<dim, fe_degree, Number> tensor_product_inv;
+      tensor_product_inv.reinit(t1, t2);
+
+      std::array<AlignedVector<Number>, dim> eigenval_inv;
+      std::array<Table<2, Number>, dim>      eigenvec_inv;
+      tensor_product_inv.get_eigenvalues(eigenval_inv);
+      tensor_product_inv.get_eigenvectors(eigenvec_inv);
+
+      auto *values_inv  = new Number[n_dofs_in * dim];
+      auto *vectors_inv = new Number[n_dofs_2d * dim];
+
+      for (int d = 0; d < dim; ++d)
+        {
+          std::transform(eigenval_inv[d].begin(),
+                         eigenval_inv[d].end(),
+                         &values_inv[n_dofs_in * d],
+                         [](const Number m) -> Number { return m; });
+
+          std::transform(eigenvec_inv[d].begin(),
+                         eigenvec_inv[d].end(),
+                         &vectors_inv[n_dofs_2d * d],
+                         [](const Number m) -> Number { return m; });
+        }
+
+      error_code = cudaMemcpy(eigenvalues + n_dofs_in +
+                                Util::pow(Util::pow(n_dofs_in, dim), 2),
+                              values_inv,
+                              n_dofs_in * dim * sizeof(Number),
+                              cudaMemcpyHostToDevice);
+      AssertCuda(error_code);
+
+      error_code = cudaMemcpy(eigenvectors + n_dofs_2d,
+                              vectors_inv,
+                              n_dofs_2d * dim * sizeof(Number),
+                              cudaMemcpyHostToDevice);
+      AssertCuda(error_code);
+
+      delete[] values_inv;
+      delete[] vectors_inv;
+    }
 
 
     constexpr unsigned int n_dofs_in = 2 * fe_degree - 1;
@@ -1035,6 +1140,11 @@ namespace PSMF
             dim3(patch_per_block * n_dofs_1d_inv, n_dofs_1d_inv);
           break;
         case SmootherVariant::Exact:
+          block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
+          block_dim_inv[color] =
+            dim3(patch_per_block * n_dofs_1d_inv, n_dofs_1d_inv);
+          break;
+        case SmootherVariant::NN:
           block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
           block_dim_inv[color] =
             dim3(patch_per_block * n_dofs_1d_inv, n_dofs_1d_inv);

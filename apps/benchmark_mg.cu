@@ -392,28 +392,28 @@ LaplaceProblem<dim, fe_degree>::do_smooth(unsigned int p)
       info_table[2].add_value("Speedup", base_time_dp / best_time);
     }
 
-  // *pcout << "Benchmarking Smoother in single precision...\n";
+  *pcout << "Benchmarking Smoother in single precision...\n";
 
   // SP
-  // using SmootherTypeSP =
-  //   PSMF::PatchSmoother<MatrixTypeSP, dim, fe_degree, kernel, CT::DOF_LAYOUT_>;
-  // SmootherTypeSP                          smooth_sp;
-  // typename SmootherTypeSP::AdditionalData additional_data_;
-  // additional_data_.relaxation         = 1.;
-  // additional_data_.patch_per_block    = p * 2;
-  // additional_data_.granularity_scheme = CT::GRANULARITY_;
-  // smooth_sp.initialize(mg_matrices, additional_data_);
+  using SmootherTypeSP =
+    PSMF::PatchSmoother<MatrixTypeSP, dim, fe_degree, kernel, CT::DOF_LAYOUT_>;
+  SmootherTypeSP                          smooth_sp;
+  typename SmootherTypeSP::AdditionalData additional_data_;
+  additional_data_.relaxation         = 1.;
+  additional_data_.patch_per_block    = p * 2;
+  additional_data_.granularity_scheme = CT::GRANULARITY_;
+  smooth_sp.initialize(mg_matrices, additional_data_);
 
-  // for (unsigned int i = 0; i < N; ++i)
-  //   {
-  //     time.restart();
-  //     for (unsigned int i = 0; i < n_mv; ++i)
-  //       {
-  //         smooth_sp.step(solution_sp, system_rhs_sp);
-  //         cudaDeviceSynchronize();
-  //       }
-  //     best_time2 = std::min(time.wall_time() / n_mv, best_time2);
-  //   }
+  for (unsigned int i = 0; i < N; ++i)
+    {
+      time.restart();
+      for (unsigned int i = 0; i < n_mv; ++i)
+        {
+          smooth_sp.step(solution_sp, system_rhs_sp);
+          cudaDeviceSynchronize();
+        }
+      best_time2 = std::min(time.wall_time() / n_mv, best_time2);
+    }
 
   // std::cout << solution_sp.l2_norm() << std::endl;
   info_table[3].add_value("Name",
@@ -463,6 +463,9 @@ LaplaceProblem<dim, fe_degree>::bench_smooth(unsigned int p)
           break;
         case PSMF::SmootherVariant::Exact:
           do_smooth<PSMF::SmootherVariant::Exact>();
+          break;
+        case PSMF::SmootherVariant::NN:
+          do_smooth<PSMF::SmootherVariant::NN>();
           break;
         default:
           AssertThrow(false, ExcMessage("Invalid Smoother Variant."));

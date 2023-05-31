@@ -66,7 +66,12 @@ namespace PSMF
     /**
      * apply the inverse in matrix form
      */
-    Exact
+    Exact,
+
+    /**
+     * Neural Network
+     */
+    NN
   };
 
 
@@ -559,6 +564,72 @@ namespace PSMF
      * Shared memory for computed 1D eigenvectors.
      */
     Number *local_eigenvectors;
+
+    /**
+     * Shared memory for internal buffer.
+     */
+    Number *temp;
+  };
+
+  /**
+   * Structure to pass the shared memory into a general user function.
+   */
+  template <int dim, typename Number>
+  struct SharedMemData<dim, Number, SmootherVariant::NN>
+  {
+    /**
+     * Constructor.
+     */
+    __device__
+    SharedMemData(Number      *data,
+                  unsigned int n_buff,
+                  unsigned int n_dofs_1d,
+                  unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+
+      local_mass       = local_dst + n_buff * local_dim;
+      local_derivative = local_mass + 1 * n_dofs_1d * n_dofs_1d * 1;
+      temp             = local_derivative + 1 * n_dofs_1d * n_dofs_1d * dim;
+    }
+
+    __device__
+    SharedMemData(Number      *data,
+                  unsigned int n_buff,
+                  unsigned int n_dofs_1d,
+                  unsigned int n_dofs_in,
+                  unsigned int n_bound_dofs,
+                  unsigned int n_inner_dofs)
+    {}
+
+    Number *mass_ii;
+    Number *mass_ib;
+    Number *mass_I;
+
+    Number *der_ii;
+    Number *der_ib;
+    Number *der_I;
+
+    /**
+     * Shared memory for local and interior src.
+     */
+    Number *local_src;
+
+    /**
+     * Shared memory for local and interior dst.
+     */
+    Number *local_dst;
+
+    /**
+     * Shared memory for computed 1D mass matrix.
+     */
+    Number *local_mass;
+
+    /**
+     * Shared memory for computed 1D Laplace matrix.
+     */
+    Number *local_derivative;
 
     /**
      * Shared memory for internal buffer.
