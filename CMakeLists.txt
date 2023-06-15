@@ -111,7 +111,8 @@ ENDIF()
 # Set the source files to be compiled
 SET( TARGET_SRC
         source/cuda_mg_transfer.cu
-        source/cuda_vector.cu)
+        source/cuda_vector.cu
+        source/transfer_internal.cc)
 
 # Set the include directory and the name of the project
 INCLUDE_DIRECTORIES(

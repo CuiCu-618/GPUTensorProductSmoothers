@@ -29,6 +29,7 @@
 #include <deal.II/multigrid/mg_transfer_internal.h>
 
 #include "cuda_vector.cuh"
+#include "transfer_internal.h"
 #include "utilities.cuh"
 
 using namespace dealii;
@@ -256,6 +257,9 @@ namespace PSMF
      */
     std::vector<CudaVector<unsigned int>> level_dof_indices;
 
+    std::vector<CudaVector<unsigned int>> level_dof_indices_parent;
+    std::vector<CudaVector<unsigned int>> level_dof_indices_child;
+
     /**
      * A variable storing the connectivity from parent to child cell numbers
      * for each level.
@@ -274,6 +278,12 @@ namespace PSMF
      */
     LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
       prolongation_matrix_1d;
+
+    std::vector<LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>>
+      transfer_matrix_val;
+
+    std::vector<CudaVector<unsigned int>> transfer_matrix_row_ptr;
+    std::vector<CudaVector<unsigned int>> transfer_matrix_col_idx;
 
     /**
      * For continuous elements, restriction is not additive and we need to
@@ -327,6 +337,14 @@ namespace PSMF
      */
     SmartPointer<const MGConstrainedDoFs, MGTransferCUDA<dim, Number>>
       mg_constrained_dofs;
+
+    /**
+     * Setup the embedding (prolongation) matrix.
+     */
+    void
+    setup_prolongatino_matrix(
+      const DoFHandler<dim>                          &mg_dof,
+      std::vector<PSMF::internal::CSRMatrix<Number>> &transfer_matrix);
 
     /**
      * Internal function to fill copy_indice.
@@ -394,6 +412,185 @@ namespace PSMF
     AssertCudaKernel();
   }
 
+  namespace internal
+  { // Sets up most of the internal data structures of the
+    // MGTransferCUDA class
+    template <int dim, typename Number>
+    void
+    setup_transfer(
+      const DoFHandler<dim>   &dof_handler,
+      const MGConstrainedDoFs *mg_constrained_dofs,
+      const std::vector<std::shared_ptr<const Utilities::MPI::Partitioner>>
+                                             &external_partitioners,
+      ElementInfo<Number>                    &elem_info,
+      std::vector<std::vector<unsigned int>> &level_dof_indices_parent,
+      std::vector<std::vector<unsigned int>> &level_dof_indices_child,
+      std::vector<unsigned int>              &n_owned_level_cells,
+      std::vector<std::vector<Number>>       &weights_on_refined,
+      std::vector<Table<2, unsigned int>>    &copy_indices_global_mine,
+      MGLevelObject<std::shared_ptr<const Utilities::MPI::Partitioner>>
+        &target_partitioners)
+    {
+      level_dof_indices_parent.clear();
+      level_dof_indices_child.clear();
+      n_owned_level_cells.clear();
+      weights_on_refined.clear();
+
+      // we collect all child DoFs of a mother cell together. For faster
+      // tensorized operations, we align the degrees of freedom
+      // lexicographically. We distinguish FE_Q elements and FE_DGQ elements
+
+      const ::Triangulation<dim> &tria = dof_handler.get_triangulation();
+
+      // ---------- 1. Extract info about the finite element
+      elem_info.reinit(dof_handler);
+
+      // ---------- 2. Extract and match dof indices between child and parent
+      const unsigned int n_levels = tria.n_global_levels();
+      level_dof_indices_parent.resize(n_levels);
+      level_dof_indices_child.resize(n_levels);
+      n_owned_level_cells.resize(n_levels - 1);
+
+      const unsigned int n_child_cell_dofs = elem_info.n_child_cell_dofs;
+
+      std::vector<types::global_dof_index> local_dof_indices(
+        dof_handler.get_fe().n_dofs_per_cell());
+
+      AssertDimension(target_partitioners.max_level(), n_levels - 1);
+      Assert(external_partitioners.empty() ||
+               external_partitioners.size() == n_levels,
+             ExcDimensionMismatch(external_partitioners.size(), n_levels));
+
+      for (unsigned int level = n_levels - 1; level > 0; --level)
+        {
+          unsigned int                         counter = 0;
+          std::vector<types::global_dof_index> child_level_dof_indices;
+          std::vector<types::global_dof_index> ghosted_level_dofs;
+
+          // step 2.1: loop over the cells on the coarse side
+          typename ::DoFHandler<dim>::cell_iterator cell,
+            endc = dof_handler.end(level - 1);
+          for (cell = dof_handler.begin(level - 1); cell != endc; ++cell)
+            {
+              // need to look into a cell if it has children and it is locally
+              // owned
+              if (!cell->has_children())
+                continue;
+
+              bool consider_cell =
+                (tria.locally_owned_subdomain() ==
+                   numbers::invalid_subdomain_id ||
+                 cell->level_subdomain_id() == tria.locally_owned_subdomain());
+
+              if (!consider_cell)
+                continue;
+
+              counter++;
+
+              // step 2.2: loop through children and append the dof indices to
+              // the appropriate list. We need separate lists for the owned
+              // coarse cell case (which will be part of
+              // restriction/prolongation between level-1 and level) and the
+              // remote case (which needs to store DoF indices for the
+              // operations between level and level+1).
+              AssertDimension(cell->n_children(),
+                              GeometryInfo<dim>::max_children_per_cell);
+
+              // const std::size_t start_index =
+              // parent_level_dof_indices.size();
+              // parent_level_dof_indices.resize(
+              //   start_index + dof_handler.get_fe().n_dofs_per_cell());
+              // for (unsigned int i = 0; i < local_dof_indices.size(); ++i)
+              //   parent_level_dof_indices[start_index + i] =
+              //     local_dof_indices[i];
+
+              cell->get_mg_dof_indices(local_dof_indices);
+              for (auto ind : local_dof_indices)
+                level_dof_indices_parent[level - 1].push_back(ind);
+
+              std::unordered_set<unsigned int> s;
+              for (unsigned int c = 0;
+                   c < GeometryInfo<dim>::max_children_per_cell;
+                   ++c)
+                {
+                  if (!consider_cell)
+                    continue;
+                  cell->child(c)->get_mg_dof_indices(local_dof_indices);
+
+                  resolve_identity_constraints(mg_constrained_dofs,
+                                               level,
+                                               local_dof_indices);
+
+                  const IndexSet &owned_level_dofs =
+                    dof_handler.locally_owned_mg_dofs(level);
+                  for (const auto local_dof_index : local_dof_indices)
+                    if (!owned_level_dofs.is_element(local_dof_index))
+                      ghosted_level_dofs.push_back(local_dof_index);
+
+                  for (auto ind : local_dof_indices)
+                    if (s.count(ind) == 0)
+                      {
+                        child_level_dof_indices.push_back(ind);
+                        s.insert(ind);
+                      }
+                }
+              // n_child_cell_dofs = s.size();
+            }
+          n_owned_level_cells[level - 1] = counter;
+
+          reinit_level_partitioner(dof_handler.locally_owned_mg_dofs(level),
+                                   ghosted_level_dofs,
+                                   external_partitioners.empty() ?
+                                     nullptr :
+                                     external_partitioners[level],
+                                   tria.get_communicator(),
+                                   target_partitioners[level],
+                                   copy_indices_global_mine[level]);
+
+          copy_indices_to_mpi_local_numbers(*target_partitioners[level],
+                                            child_level_dof_indices,
+                                            level_dof_indices_child[level]);
+        }
+
+      // for (auto &level_dof_indices : level_dof_indices_child)
+      //   {
+      //     for (auto ind : level_dof_indices)
+      //       std::cout << ind << " ";
+      //     std::cout << std::endl;
+      //   }
+
+      // ----------- 3. compute weights to make restriction additive
+
+      // get the valence of the individual components and compute the weights
+      // as the inverse of the valence
+      weights_on_refined.resize(n_levels - 1);
+      for (unsigned int level = 1; level < n_levels; ++level)
+        {
+          LinearAlgebra::distributed::Vector<Number> touch_count(
+            target_partitioners[level]);
+          for (unsigned int c = 0; c < n_owned_level_cells[level - 1]; ++c)
+            for (unsigned int j = 0; j < elem_info.n_child_cell_dofs; ++j)
+              touch_count.local_element(
+                level_dof_indices_child[level][elem_info.n_child_cell_dofs * c +
+                                               j]) += Number(1.);
+          touch_count.compress(VectorOperation::add);
+          touch_count.update_ghost_values();
+
+          weights_on_refined[level - 1].resize(n_owned_level_cells[level - 1] *
+                                               elem_info.n_child_cell_dofs);
+          for (unsigned int c = 0; c < n_owned_level_cells[level - 1]; ++c)
+            for (unsigned int j = 0; j < n_child_cell_dofs; ++j)
+              {
+                weights_on_refined[level - 1][c * n_child_cell_dofs + j] =
+                  Number(1.) /
+                  touch_count.local_element(
+                    level_dof_indices_child[level]
+                                           [elem_info.n_child_cell_dofs * c +
+                                            j]);
+              }
+        }
+    }
+  } // namespace internal
 
 } // namespace PSMF
 

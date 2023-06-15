@@ -949,96 +949,98 @@ namespace PSMF
 
 
             // Neural Network
-            {
-              // TODO: 3d
-              std::string filenamea0 =
-                "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a0_interior_Q" +
-                std::to_string(fe_degree) + "_L" + std::to_string(level) + "_" +
-                std::to_string(k) + "_" + std::to_string(j) + ".txt";
-              std::string filenamea1 =
-                "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a1_interior_Q" +
-                std::to_string(fe_degree) + "_L" + std::to_string(level) + "_" +
-                std::to_string(k) + "_" + std::to_string(j) + ".txt";
-              std::string filenamem0 =
-                "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m0_interior_Q" +
-                std::to_string(fe_degree) + "_L" + std::to_string(level) + "_" +
-                std::to_string(k) + "_" + std::to_string(j) + ".txt";
-              std::string filenamem1 =
-                "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m1_interior_Q" +
-                std::to_string(fe_degree) + "_L" + std::to_string(level) + "_" +
-                std::to_string(k) + "_" + std::to_string(j) + ".txt";
+            if (fe_degree == 7) // TODO:
+              {
+                // TODO: 3d
+                std::string filenamea0 =
+                  "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a0_interior_Q" +
+                  std::to_string(fe_degree) + "_L" + std::to_string(level) +
+                  "_" + std::to_string(k) + "_" + std::to_string(j) + ".txt";
+                std::string filenamea1 =
+                  "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a1_interior_Q" +
+                  std::to_string(fe_degree) + "_L" + std::to_string(level) +
+                  "_" + std::to_string(k) + "_" + std::to_string(j) + ".txt";
+                std::string filenamem0 =
+                  "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m0_interior_Q" +
+                  std::to_string(fe_degree) + "_L" + std::to_string(level) +
+                  "_" + std::to_string(k) + "_" + std::to_string(j) + ".txt";
+                std::string filenamem1 =
+                  "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m1_interior_Q" +
+                  std::to_string(fe_degree) + "_L" + std::to_string(level) +
+                  "_" + std::to_string(k) + "_" + std::to_string(j) + ".txt";
 
-              std::ifstream filea0(filenamea0);
-              std::ifstream filea1(filenamea1);
-              std::ifstream filem0(filenamem0);
-              std::ifstream filem1(filenamem1);
+                std::ifstream filea0(filenamea0);
+                std::ifstream filea1(filenamea1);
+                std::ifstream filem0(filenamem0);
+                std::ifstream filem1(filenamem1);
 
-              constexpr unsigned int n_dofs_2d =
-                Util::pow(2 * fe_degree - 1, 2);
-
-
-              auto read_nn = [&](auto &file) {
-                Table<2, VectorizedArray<Number>> mat(2 * fe_degree - 1,
-                                                      2 * fe_degree - 1);
-                if (file.is_open())
-                  {
-                    Number tmp[n_dofs_2d];
-
-                    std::istream_iterator<Number> fileIter(file);
-                    std::copy_n(fileIter, n_dofs_2d, tmp);
-
-                    std::transform(tmp,
-                                   tmp + n_dofs_2d,
-                                   mat.begin(),
-                                   [](auto m) -> VectorizedArray<Number> {
-                                     return make_vectorized_array(m);
-                                   });
-
-                    file.close();
-                  }
-                else
-                  std::cout << "Error opening file!" << std::endl;
+                constexpr unsigned int n_dofs_2d =
+                  Util::pow(2 * fe_degree - 1, 2);
 
 
-                return mat;
-              };
+                auto read_nn = [&](auto &file) {
+                  Table<2, VectorizedArray<Number>> mat(2 * fe_degree - 1,
+                                                        2 * fe_degree - 1);
+                  if (file.is_open())
+                    {
+                      Number tmp[n_dofs_2d];
 
-              std::array<Table<2, VectorizedArray<Number>>, dim> t1;
-              std::array<Table<2, VectorizedArray<Number>>, dim> t2;
+                      std::istream_iterator<Number> fileIter(file);
+                      std::copy_n(fileIter, n_dofs_2d, tmp);
 
-              t1[0] = read_nn(filea1);
-              t1[1] = read_nn(filem0);
-              t2[0] = read_nn(filem1);
-              t2[1] = read_nn(filea0);
+                      std::transform(tmp,
+                                     tmp + n_dofs_2d,
+                                     mat.begin(),
+                                     [](auto m) -> VectorizedArray<Number> {
+                                       return make_vectorized_array(m);
+                                     });
 
-              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-                rank1_tensors;
+                      file.close();
+                    }
+                  else
+                    std::cout << "Error opening file!" << std::endl;
 
-              rank1_tensors.emplace_back(t1);
-              rank1_tensors.emplace_back(t2);
 
-              matrix_type local_matrices;
+                  return mat;
+                };
 
-              local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
+                std::array<Table<2, VectorizedArray<Number>>, dim> t1;
+                std::array<Table<2, VectorizedArray<Number>>, dim> t2;
 
-              auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
-              auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
+                t1[0] = read_nn(filea1);
+                t1[1] = read_nn(filem0);
+                t2[0] = read_nn(filem1);
+                t2[1] = read_nn(filea0);
 
-              copy_vals(eigenvalue_tensor, eigenvalues[3], k + j * 3);
-              copy_vecs(eigenvector_tensor, eigenvectors[3], k + j * 3);
+                std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+                  rank1_tensors;
 
-              // for (unsigned int i = 0; i < dim; ++i)
-              //   {
-              //     for (unsigned int j = 0; j < eigenvalue_tensor[i].size();
-              //     ++j)
-              //       std::cout << eigenvalue_tensor[i][j] << " ";
-              //     std::cout << std::endl;
-              //   }
-              // std::cout << std::endl;
+                rank1_tensors.emplace_back(t1);
+                rank1_tensors.emplace_back(t2);
 
-              // print_matrices(eigenvector_tensor[0]);
-              // print_matrices(eigenvector_tensor[1]);
-            }
+                matrix_type local_matrices;
+
+                local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
+
+                auto eigenvalue_tensor = local_matrices.get_eigenvalue_tensor();
+                auto eigenvector_tensor =
+                  local_matrices.get_eigenvector_tensor();
+
+                copy_vals(eigenvalue_tensor, eigenvalues[3], k + j * 3);
+                copy_vecs(eigenvector_tensor, eigenvectors[3], k + j * 3);
+
+                // for (unsigned int i = 0; i < dim; ++i)
+                //   {
+                //     for (unsigned int j = 0; j < eigenvalue_tensor[i].size();
+                //     ++j)
+                //       std::cout << eigenvalue_tensor[i][j] << " ";
+                //     std::cout << std::endl;
+                //   }
+                // std::cout << std::endl;
+
+                // print_matrices(eigenvector_tensor[0]);
+                // print_matrices(eigenvector_tensor[1]);
+              }
           }
   }
 

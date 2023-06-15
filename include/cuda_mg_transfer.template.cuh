@@ -12,6 +12,8 @@
 #ifndef MG_TRANSFER_TEMPLATE_CUH
 #define MG_TRANSFER_TEMPLATE_CUH
 
+#include <deal.II/grid/grid_generator.h>
+
 #include "cuda_mg_transfer.cuh"
 #include "cuda_vector.cuh"
 
@@ -28,13 +30,15 @@ namespace PSMF
   class MGTransferHelper
   {
   protected:
-    static constexpr unsigned int n_coarse = fe_degree + 1;
-    static constexpr unsigned int n_fine   = fe_degree * 2 + 1;
+    static constexpr unsigned int n_coarse = Util::pow(fe_degree + 1, dim);
+    static constexpr unsigned int n_fine   = Util::pow(2 * fe_degree + 1, dim);
     static constexpr unsigned int M        = 2;
 
     Number             *values;
     const Number       *weights;
     const Number       *shape_values;
+    const unsigned int *row_ptr;
+    const unsigned int *col_idx;
     const unsigned int *dof_indices_coarse;
     const unsigned int *dof_indices_fine;
 
@@ -42,162 +46,55 @@ namespace PSMF
     MGTransferHelper(Number             *buf,
                      const Number       *w,
                      const Number       *shvals,
+                     const unsigned int *row_ptr_,
+                     const unsigned int *col_idx_,
                      const unsigned int *idx_coarse,
                      const unsigned int *idx_fine)
       : values(buf)
       , weights(w)
       , shape_values(shvals)
+      , row_ptr(row_ptr_)
+      , col_idx(col_idx_)
       , dof_indices_coarse(idx_coarse)
       , dof_indices_fine(idx_fine)
     {}
 
-    template <TransferVariant transfer_type, int dir>
-    __device__ void
-    reduce(const Number *my_shvals)
-    {
-      // multiplicity of large and small size
-      constexpr bool         prol  = transfer_type == PROLONGATION;
-      constexpr unsigned int n_src = prol ? n_coarse : n_fine;
-
-      // in direction of reduction (dir and threadIdx.x respectively), always
-      // read from 1 location, and write to M (typically 2). in other
-      // directions, either read M or 1 and write same number.
-      constexpr unsigned int M1 = prol ? M : 1;
-      constexpr unsigned int M2 =
-        prol ? (dir > 0 ? M : 1) : ((dir > 0 || dim < 2) ? 1 : M);
-      constexpr unsigned int M3 =
-        prol ? (dir > 1 ? M : 1) : ((dir > 1 || dim < 3) ? 1 : M);
-
-      const bool last_thread_x = threadIdx.x == (n_coarse - 1);
-      const bool last_thread_y = threadIdx.y == (n_coarse - 1);
-      const bool last_thread_z = threadIdx.z == (n_coarse - 1);
-
-      Number tmp[M1 * M2 * M3];
-
-#pragma unroll
-      for (int m3 = 0; m3 < M3; ++m3)
-        {
-#pragma unroll
-          for (int m2 = 0; m2 < M2; ++m2)
-            {
-#pragma unroll
-              for (int m1 = 0; m1 < M1; ++m1)
-                {
-                  tmp[m1 + M1 * (m2 + M2 * m3)] = 0;
-
-                  for (int i = 0; i < n_src; ++i)
-                    {
-                      const unsigned int x = i;
-                      const unsigned int y = m2 + M2 * threadIdx.y;
-                      const unsigned int z = m3 + M3 * threadIdx.z;
-                      const unsigned int idx =
-                        (dir == 0 ? x + n_fine * (y + n_fine * z) :
-                         dir == 1 ? y + n_fine * (x + n_fine * z) :
-                                    y + n_fine * (z + n_fine * x));
-                      // unless we are the last thread in a direction AND we
-                      // are updating any value after the first one, go ahead
-                      if (((m1 == 0) || !last_thread_x) &&
-                          ((m2 == 0) || !last_thread_y) &&
-                          ((m3 == 0) || !last_thread_z))
-                        {
-                          tmp[m1 + M1 * (m2 + M2 * m3)] +=
-                            my_shvals[m1 * n_src + i] * values[idx];
-                        }
-                    }
-                }
-            }
-        }
-      __syncthreads();
-
-#pragma unroll
-      for (int m3 = 0; m3 < M3; ++m3)
-        {
-#pragma unroll
-          for (int m2 = 0; m2 < M2; ++m2)
-            {
-#pragma unroll
-              for (int m1 = 0; m1 < M1; ++m1)
-                {
-                  const unsigned int x = m1 + M1 * threadIdx.x;
-                  const unsigned int y = m2 + M2 * threadIdx.y;
-                  const unsigned int z = m3 + M3 * threadIdx.z;
-                  const unsigned int idx =
-                    (dir == 0 ? x + n_fine * (y + n_fine * z) :
-                     dir == 1 ? y + n_fine * (x + n_fine * z) :
-                                y + n_fine * (z + n_fine * x));
-
-                  if (((m1 == 0) || !last_thread_x) &&
-                      ((m2 == 0) || !last_thread_y) &&
-                      ((m3 == 0) || !last_thread_z))
-                    {
-                      values[idx] = tmp[m1 + M1 * (m2 + M2 * m3)];
-                    }
-                }
-            }
-        }
-    }
-
-    inline __device__ unsigned int
-    dof1d_to_3(unsigned int x)
-    {
-      return (x > 0) + (x == (fe_degree * 2));
-    }
     __device__ void
     weigh_values()
     {
-      const unsigned int M1 = M;
-      const unsigned int M2 = (dim > 1 ? M : 1);
-      const unsigned int M3 = (dim > 2 ? M : 1);
-
-#pragma unroll
-      for (int m3 = 0; m3 < M3; ++m3)
-        {
-#pragma unroll
-          for (int m2 = 0; m2 < M2; ++m2)
-            {
-#pragma unroll
-              for (int m1 = 0; m1 < M1; ++m1)
-                {
-                  const unsigned int x = (M1 * threadIdx.x + m1);
-                  const unsigned int y = (M2 * threadIdx.y + m2);
-                  const unsigned int z = (M3 * threadIdx.z + m3);
-
-                  const unsigned int idx = x + n_fine * (y + n_fine * z);
-                  const unsigned int weight_idx =
-                    dof1d_to_3(x) + 3 * (dof1d_to_3(y) + 3 * dof1d_to_3(z));
-
-                  if (x < n_fine && y < n_fine && z < n_fine)
-                    {
-                      values[idx] *= weights[weight_idx];
-                    }
-                }
-            }
-        }
+      values[threadIdx.x] *= weights[threadIdx.x];
     }
   };
 
   template <int dim, int fe_degree, typename Number>
   class MGProlongateHelper : public MGTransferHelper<dim, fe_degree, Number>
   {
-    using MGTransferHelper<dim, fe_degree, Number>::M;
     using MGTransferHelper<dim, fe_degree, Number>::n_coarse;
     using MGTransferHelper<dim, fe_degree, Number>::n_fine;
     using MGTransferHelper<dim, fe_degree, Number>::dof_indices_coarse;
     using MGTransferHelper<dim, fe_degree, Number>::dof_indices_fine;
     using MGTransferHelper<dim, fe_degree, Number>::values;
     using MGTransferHelper<dim, fe_degree, Number>::shape_values;
+    using MGTransferHelper<dim, fe_degree, Number>::row_ptr;
+    using MGTransferHelper<dim, fe_degree, Number>::col_idx;
     using MGTransferHelper<dim, fe_degree, Number>::weights;
 
   public:
+    static constexpr TransferVariant transfer_variant = PROLONGATION;
+
     __device__
     MGProlongateHelper(Number             *buf,
                        const Number       *w,
                        const Number       *shvals,
+                       const unsigned int *row_ptr,
+                       const unsigned int *col_idx,
                        const unsigned int *idx_coarse,
                        const unsigned int *idx_fine)
       : MGTransferHelper<dim, fe_degree, Number>(buf,
                                                  w,
                                                  shvals,
+                                                 row_ptr,
+                                                 col_idx,
                                                  idx_coarse,
                                                  idx_fine)
     {}
@@ -205,27 +102,11 @@ namespace PSMF
     __device__ void
     run(Number *dst, const Number *src)
     {
-      Number my_shvals[M * n_coarse];
-      for (int m = 0; m < (threadIdx.x < fe_degree ? M : 1); ++m)
-        for (int i = 0; i < n_coarse; ++i)
-          my_shvals[m * n_coarse + i] =
-            shape_values[(threadIdx.x * M + m) + n_fine * i];
-
       read_coarse(src);
       __syncthreads();
 
-      this->template reduce<PROLONGATION, 0>(my_shvals);
+      reduce_csr();
       __syncthreads();
-      if (dim > 1)
-        {
-          this->template reduce<PROLONGATION, 1>(my_shvals);
-          __syncthreads();
-          if (dim > 2)
-            {
-              this->template reduce<PROLONGATION, 2>(my_shvals);
-              __syncthreads();
-            }
-        }
 
       this->weigh_values();
       __syncthreads();
@@ -237,46 +118,45 @@ namespace PSMF
     __device__ void
     read_coarse(const Number *vec)
     {
-      const unsigned int idx =
-        threadIdx.x + n_fine * (threadIdx.y + n_fine * threadIdx.z);
-      values[idx] = vec[dof_indices_coarse[idx]];
+      if (threadIdx.x < n_coarse)
+        values[threadIdx.x] = vec[dof_indices_coarse[threadIdx.x]];
+    }
+
+    __device__ void
+    reduce_csr()
+    {
+      Number sum = 0;
+
+      for (auto i = row_ptr[threadIdx.x]; i < row_ptr[threadIdx.x + 1]; ++i)
+        sum += shape_values[i] * values[col_idx[i]];
+
+      __syncthreads();
+      values[threadIdx.x] = sum;
     }
 
     __device__ void
     write_fine(Number *vec) const
     {
-      const unsigned int M1 = M;
-      const unsigned int M2 = (dim > 1 ? M : 1);
-      const unsigned int M3 = (dim > 2 ? M : 1);
-
-      for (int m3 = 0; m3 < M3; ++m3)
-        for (int m2 = 0; m2 < M2; ++m2)
-          for (int m1 = 0; m1 < M1; ++m1)
-            {
-              const unsigned int x = (M1 * threadIdx.x + m1);
-              const unsigned int y = (M2 * threadIdx.y + m2);
-              const unsigned int z = (M3 * threadIdx.z + m3);
-
-              const unsigned int idx = x + n_fine * (y + n_fine * z);
-              if (x < n_fine && y < n_fine && z < n_fine)
-                atomicAdd(&vec[dof_indices_fine[idx]], values[idx]);
-            }
+      atomicAdd(&vec[dof_indices_fine[threadIdx.x]], values[threadIdx.x]);
     }
   };
 
   template <int dim, int fe_degree, typename Number>
   class MGRestrictHelper : public MGTransferHelper<dim, fe_degree, Number>
   {
-    using MGTransferHelper<dim, fe_degree, Number>::M;
     using MGTransferHelper<dim, fe_degree, Number>::n_coarse;
     using MGTransferHelper<dim, fe_degree, Number>::n_fine;
     using MGTransferHelper<dim, fe_degree, Number>::dof_indices_coarse;
     using MGTransferHelper<dim, fe_degree, Number>::dof_indices_fine;
     using MGTransferHelper<dim, fe_degree, Number>::values;
     using MGTransferHelper<dim, fe_degree, Number>::shape_values;
+    using MGTransferHelper<dim, fe_degree, Number>::row_ptr;
+    using MGTransferHelper<dim, fe_degree, Number>::col_idx;
     using MGTransferHelper<dim, fe_degree, Number>::weights;
 
   public:
+    static constexpr TransferVariant transfer_variant = RESTRICTION;
+
     __device__
     MGRestrictHelper(Number             *buf,
                      const Number       *w,
@@ -290,30 +170,34 @@ namespace PSMF
                                                  idx_fine)
     {}
 
+    __device__
+    MGRestrictHelper(Number             *buf,
+                     const Number       *w,
+                     const Number       *shvals,
+                     const unsigned int *row_ptr,
+                     const unsigned int *col_idx,
+                     const unsigned int *idx_coarse,
+                     const unsigned int *idx_fine)
+      : MGTransferHelper<dim, fe_degree, Number>(buf,
+                                                 w,
+                                                 shvals,
+                                                 row_ptr,
+                                                 col_idx,
+                                                 idx_coarse,
+                                                 idx_fine)
+    {}
+
     __device__ void
     run(Number *dst, const Number *src)
     {
-      Number my_shvals[n_fine];
-      for (int i = 0; i < n_fine; ++i)
-        my_shvals[i] = shape_values[threadIdx.x * n_fine + i];
-
       read_fine(src);
       __syncthreads();
+
       this->weigh_values();
       __syncthreads();
 
-      this->template reduce<RESTRICTION, 0>(my_shvals);
+      reduce_csr();
       __syncthreads();
-      if (dim > 1)
-        {
-          this->template reduce<RESTRICTION, 1>(my_shvals);
-          __syncthreads();
-          if (dim > 2)
-            {
-              this->template reduce<RESTRICTION, 2>(my_shvals);
-              __syncthreads();
-            }
-        }
 
       write_coarse(dst);
     }
@@ -322,33 +206,35 @@ namespace PSMF
     __device__ void
     read_fine(const Number *vec)
     {
-      const unsigned int M1 = M;
-      const unsigned int M2 = (dim > 1 ? M : 1);
-      const unsigned int M3 = (dim > 2 ? M : 1);
+      values[threadIdx.x] = vec[dof_indices_fine[threadIdx.x]];
+    }
 
-      for (int m3 = 0; m3 < M3; ++m3)
-        for (int m2 = 0; m2 < M2; ++m2)
-          for (int m1 = 0; m1 < M1; ++m1)
-            {
-              const unsigned int x = (M1 * threadIdx.x + m1);
-              const unsigned int y = (M2 * threadIdx.y + m2);
-              const unsigned int z = (M3 * threadIdx.z + m3);
+    __device__ void
+    reduce_csr()
+    {
+      Number sum = 0;
 
-              const unsigned int idx = x + n_fine * (y + n_fine * z);
-              if (x < n_fine && y < n_fine && z < n_fine)
-                values[idx] = vec[dof_indices_fine[idx]];
-            }
+      if (threadIdx.x < n_coarse)
+        {
+          for (auto i = row_ptr[threadIdx.x]; i < row_ptr[threadIdx.x + 1]; ++i)
+            sum += shape_values[i] * values[col_idx[i]];
+        }
+
+      __syncthreads();
+      if (threadIdx.x < n_coarse)
+        {
+          values[threadIdx.x] = sum;
+        }
     }
 
     __device__ void
     write_coarse(Number *vec) const
     {
-      const unsigned int idx =
-        threadIdx.x + n_fine * (threadIdx.y + n_fine * threadIdx.z);
-
-      atomicAdd(&vec[dof_indices_coarse[idx]], values[idx]);
+      if (threadIdx.x < n_coarse)
+        atomicAdd(&vec[dof_indices_coarse[threadIdx.x]], values[threadIdx.x]);
     }
   };
+
 
   namespace internal
   {
@@ -380,19 +266,21 @@ namespace PSMF
             const Number       *src,
             const Number       *weights,
             const Number       *shape_values,
+            const unsigned int *row_ptr,
+            const unsigned int *col_idx,
             const unsigned int *dof_indices_coarse,
             const unsigned int *dof_indices_fine,
-            const unsigned int *child_offset_in_parent,
             const unsigned int  n_child_cell_dofs)
   {
-    const unsigned int n_fine        = Util::pow(degree * 2 + 1, dim);
-    const unsigned int coarse_cell   = blockIdx.x;
-    const unsigned int coarse_offset = child_offset_in_parent[coarse_cell];
+    const unsigned int n_coarse    = Util::pow(degree + 1, dim);
+    const unsigned int coarse_cell = blockIdx.x;
 
     loop_body body(internal::get_shared_mem_ptr<Number>(),
-                   weights + coarse_cell * Util::pow(3, dim),
+                   weights + coarse_cell * n_child_cell_dofs,
                    shape_values,
-                   dof_indices_coarse + coarse_offset,
+                   row_ptr,
+                   col_idx,
+                   dof_indices_coarse + coarse_cell * n_coarse,
                    dof_indices_fine + coarse_cell * n_child_cell_dofs);
 
     body.run(dst, src);
@@ -409,17 +297,17 @@ namespace PSMF
     const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &src)
     const
   {
-    constexpr unsigned int n_fine_size =
-      Util::pow(degree * 2 + 1, dim) * sizeof(Number);
-    constexpr unsigned int n_coarse_dofs_1d = degree + 1;
+    constexpr unsigned int n_fine_dofs = Util::pow(degree * 2 + 1, dim);
+    constexpr unsigned int n_fine_size = n_fine_dofs * sizeof(Number);
+    // constexpr unsigned int n_coarse_dofs_1d = degree + 1;
 
     const unsigned int n_coarse_cells = n_owned_level_cells[fine_level - 1];
 
-    // kernel parameters
-    dim3 bk_dim(n_coarse_dofs_1d,
-                (dim > 1) ? n_coarse_dofs_1d : 1,
-                (dim > 2) ? n_coarse_dofs_1d : 1);
+    constexpr TransferVariant transfer_vatiant =
+      loop_body<dim, degree, Number>::transfer_variant;
 
+    // kernel parameters
+    dim3 bk_dim(n_fine_dofs);
     dim3 gd_dim(n_coarse_cells);
 
     AssertCuda(cudaFuncSetAttribute(
@@ -431,12 +319,12 @@ namespace PSMF
       <<<gd_dim, bk_dim, n_fine_size>>>(
         dst.get_values(),
         src.get_values(),
-        weights_on_refined[fine_level - 1]
-          .get_values(), // only has fine-level entries
-        prolongation_matrix_1d.get_values(),
-        level_dof_indices[fine_level - 1].get_values(),
-        level_dof_indices[fine_level].get_values(),
-        child_offset_in_parent[fine_level - 1].get_values(), // on coarse level
+        weights_on_refined[fine_level - 1].get_values(),
+        transfer_matrix_val[transfer_vatiant].get_values(),
+        transfer_matrix_row_ptr[transfer_vatiant].get_values(),
+        transfer_matrix_col_idx[transfer_vatiant].get_values(),
+        level_dof_indices_parent[fine_level - 1].get_values(),
+        level_dof_indices_child[fine_level].get_values(),
         n_child_cell_dofs);
 
     AssertCudaKernel();
@@ -505,7 +393,8 @@ namespace PSMF
     const unsigned int n_levels = mg_dof.get_triangulation().n_global_levels();
 
     std::vector<std::vector<Number>>       weights_host;
-    std::vector<std::vector<unsigned int>> level_dof_indices_host;
+    std::vector<std::vector<unsigned int>> level_dof_indices_parent_host;
+    std::vector<std::vector<unsigned int>> level_dof_indices_child_host;
     std::vector<std::vector<std::pair<unsigned int, unsigned int>>>
       parent_child_connect;
 
@@ -515,6 +404,8 @@ namespace PSMF
     std::vector<std::vector<std::vector<unsigned short>>>
       dirichlet_indices_host;
 
+    std::vector<PSMF::internal::CSRMatrix<Number>> transfer_matrix;
+
     ghosted_level_vector.resize(0, n_levels - 1);
 
     vector_partitioners.resize(0, n_levels - 1);
@@ -523,19 +414,17 @@ namespace PSMF
       vector_partitioners[level] =
         ghosted_level_vector[level].get_partitioner();
 
-    dealii::internal::MGTransfer::ElementInfo<Number> elem_info;
-    dealii::internal::MGTransfer::setup_transfer<dim, Number>(
-      mg_dof,
-      this->mg_constrained_dofs,
-      external_partitioners,
-      elem_info,
-      level_dof_indices_host,
-      parent_child_connect,
-      n_owned_level_cells,
-      dirichlet_indices_host,
-      weights_host,
-      copy_indices_global_mine,
-      vector_partitioners);
+    internal::ElementInfo<Number> elem_info;
+    internal::setup_transfer<dim, Number>(mg_dof,
+                                          this->mg_constrained_dofs,
+                                          external_partitioners,
+                                          elem_info,
+                                          level_dof_indices_parent_host,
+                                          level_dof_indices_child_host,
+                                          n_owned_level_cells,
+                                          weights_host,
+                                          copy_indices_global_mine,
+                                          vector_partitioners);
 
     // unpack element info data
     fe_degree             = elem_info.fe_degree;
@@ -546,13 +435,27 @@ namespace PSMF
     //---------------------------------------------------------------------------
     // transfer stuff from host to device
     //---------------------------------------------------------------------------
-    copy_to_device(prolongation_matrix_1d, elem_info.prolongation_matrix_1d);
+    setup_prolongatino_matrix(mg_dof, transfer_matrix);
+    transfer_matrix_val.resize(2);
+    transfer_matrix_row_ptr.resize(2);
+    transfer_matrix_col_idx.resize(2);
+    for (unsigned int i = 0; i < transfer_matrix.size(); ++i)
+      {
+        copy_to_device(transfer_matrix_val[i], transfer_matrix[i].values);
+        copy_to_device(transfer_matrix_row_ptr[i], transfer_matrix[i].row_ptr);
+        copy_to_device(transfer_matrix_col_idx[i], transfer_matrix[i].col_idx);
+      }
 
     level_dof_indices.resize(n_levels);
+    level_dof_indices_parent.resize(n_levels);
+    level_dof_indices_child.resize(n_levels);
 
     for (unsigned int l = 0; l < n_levels; l++)
       {
-        copy_to_device(level_dof_indices[l], level_dof_indices_host[l]);
+        copy_to_device(level_dof_indices_parent[l],
+                       level_dof_indices_parent_host[l]);
+        copy_to_device(level_dof_indices_child[l],
+                       level_dof_indices_child_host[l]);
       }
 
     weights_on_refined.resize(n_levels - 1);
@@ -562,25 +465,6 @@ namespace PSMF
       }
 
     child_offset_in_parent.resize(n_levels - 1);
-    std::vector<unsigned int> offsets;
-
-    for (unsigned int l = 0; l < n_levels - 1; l++)
-      {
-        offsets.resize(n_owned_level_cells[l]);
-
-        for (unsigned int c = 0; c < n_owned_level_cells[l]; ++c)
-          {
-            const unsigned int shift =
-              dealii::internal::MGTransfer::compute_shift_within_children<dim>(
-                parent_child_connect[l][c].second,
-                fe_degree + 1 - element_is_continuous,
-                fe_degree);
-            offsets[c] =
-              parent_child_connect[l][c].first * n_child_cell_dofs + shift;
-          }
-
-        copy_to_device(child_offset_in_parent[l], offsets);
-      }
 
     std::vector<types::global_dof_index> dirichlet_index_vector;
     dirichlet_indices.resize(n_levels);
@@ -869,6 +753,127 @@ namespace PSMF
     for (unsigned int i = 0; i < host.size(); ++i)
       rw_vector[i] = host[i];
     device.import(rw_vector, VectorOperation::insert);
+  }
+
+  template <int dim, typename Number>
+  void
+  MGTransferCUDA<dim, Number>::setup_prolongatino_matrix(
+    const DoFHandler<dim>                    &dof_handler,
+    std::vector<internal::CSRMatrix<Number>> &transfer_matrix)
+  {
+    Triangulation<dim> tr(
+      Triangulation<dim>::limit_level_difference_at_vertices);
+    GridGenerator::hyper_cube(tr, 0, 1);
+    tr.refine_global(1);
+    DoFHandler<dim> mgdof(tr);
+    mgdof.distribute_dofs(dof_handler.get_fe());
+    mgdof.distribute_mg_dofs();
+
+    // MGConstrainedDoFs mg_constrained_dofs;
+    // mg_constrained_dofs.initialize(mgdof);
+    // mg_constrained_dofs.make_zero_boundary_constraints(mgdof, {0});
+
+    MGTransferPrebuilt<Vector<Number>> transfer_ref;
+    transfer_ref.build(mgdof);
+
+    // COO format to CSR format
+    std::vector<unsigned int> row, col;
+    std::vector<Number>       val;
+    std::string               temp_str;
+
+    std::ostringstream oss;
+    transfer_ref.print_matrices(oss);
+
+    std::string        data = oss.str();
+    std::istringstream iss(data);
+
+    int count = 0;
+    for (std::string line; std::getline(iss, line);)
+      {
+        std::stringstream str_strm;
+        str_strm << line;
+
+        str_strm >> temp_str; // take words into temp_str one by one
+
+        int p1 = temp_str.find("(");
+        int p2 = temp_str.find(",");
+        int p3 = temp_str.find(")");
+
+        if (p1 < 0)
+          continue;
+        row.push_back(std::stoi(temp_str.substr(p1 + 1, p2 - p1 - 1)));
+        col.push_back(std::stoi(temp_str.substr(p2 + 1, p3 - p2 - 1)));
+
+        str_strm >> temp_str;
+
+        val.push_back(std::stod(temp_str));
+
+        count++;
+        temp_str = ""; // clear temp string
+      }
+
+    std::vector<internal::COOEntry<Number>> coo_entries(row.size());
+    for (unsigned int i = 0; i < val.size(); ++i)
+      {
+        coo_entries[i].row   = row[i];
+        coo_entries[i].col   = col[i];
+        coo_entries[i].value = val[i];
+      }
+
+    auto coo_to_csr = [&](auto coo, unsigned int num_rows, unsigned int) {
+      // Sort the COO entries by row index
+      std::vector<internal::COOEntry<Number>> sorted_coo_entries = coo;
+      std::sort(sorted_coo_entries.begin(),
+                sorted_coo_entries.end(),
+                [](const internal::COOEntry<Number> &a,
+                   const internal::COOEntry<Number> &b) {
+                  if (a.row == b.row)
+                    return a.col < b.col;
+                  else
+                    return a.row < b.row;
+                });
+
+      internal::CSRMatrix<Number> csr_matrix;
+      csr_matrix.row_ptr.resize(num_rows + 1);
+      csr_matrix.col_idx.reserve(coo.size());
+      csr_matrix.values.reserve(coo.size());
+
+      // Initialize row_ptr to all zeros
+      std::fill(csr_matrix.row_ptr.begin(), csr_matrix.row_ptr.end(), 0);
+
+      // Count the number of non-zero entries in each row
+      for (const auto &entry : sorted_coo_entries)
+        {
+          csr_matrix.row_ptr[entry.row + 1]++;
+        }
+
+      // Cumulative sum of row counts to get row_ptr
+      for (unsigned int i = 0; i < num_rows; i++)
+        {
+          csr_matrix.row_ptr[i + 1] += csr_matrix.row_ptr[i];
+        }
+
+      // Copy data from sorted_coo_entries into CSR format
+      for (const auto &entry : sorted_coo_entries)
+        {
+          csr_matrix.col_idx.push_back(entry.col);
+          csr_matrix.values.push_back(entry.value);
+        }
+
+      return csr_matrix;
+    };
+
+    auto prolongation_matrix =
+      coo_to_csr(coo_entries, mgdof.n_dofs(1), mgdof.n_dofs(0));
+    transfer_matrix.push_back(prolongation_matrix);
+
+    // transpose_coo
+    for (unsigned int i = 0; i < coo_entries.size(); ++i)
+      std::swap(coo_entries[i].row, coo_entries[i].col);
+
+    auto restriction_matrix =
+      coo_to_csr(coo_entries, mgdof.n_dofs(0), mgdof.n_dofs(1));
+    transfer_matrix.push_back(restriction_matrix);
   }
 
   template <int dim, typename Number>

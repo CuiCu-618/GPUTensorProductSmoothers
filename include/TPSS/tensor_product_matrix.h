@@ -139,7 +139,7 @@ namespace Tensors
             /// computes a generalized eigenvalue problem of the form:
             ///    A q = \lambda B q
             /// eigenvectors q are stored column-wise in Q
-            dealii::internal::TensorProductMatrixSymmetricSum::
+            dealii::internal::TensorProductMatrix::
               spectral_assembly<Number>(&(B(0, 0)),
                                         &(A(0, 0)),
                                         A.n_rows(),
@@ -228,7 +228,7 @@ namespace Tensors
             ///    A q = \lambda B q
             /// eigenvectors q are stored column-wise in Q
             for (auto lane = 0U; lane < macro_size; ++lane)
-              dealii::internal::TensorProductMatrixSymmetricSum::
+              dealii::internal::TensorProductMatrix::
                 spectral_assembly<Number>(B_cbegin + nm * lane,
                                           A_cbegin + nm * lane,
                                           m,
