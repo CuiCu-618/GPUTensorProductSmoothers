@@ -11,7 +11,7 @@ INCLUDE_DIRECTORIES(
 )
 
 SET( SOURCE_FILES
-        biharm_op.cu
+        operator_stokes.cu
         get_1d_matrices.cu
         )
 
