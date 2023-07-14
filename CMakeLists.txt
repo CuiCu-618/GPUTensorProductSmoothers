@@ -59,7 +59,7 @@ configure_file(
 
 find_package (PythonInterp 3 REQUIRED)
 
-## Generates the default TPSS compile time parameters.
+## Generates the default GPUTPS compile time parameters.
 execute_process (
   COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_BINARY_DIR}/scripts/ct_parameter.py -O ${CMAKE_BINARY_DIR}/include/ct_parameter.h
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
