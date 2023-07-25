@@ -477,6 +477,19 @@ namespace PSMF
 
       std::string solver_name = "GMRES";
 
+      mg::Matrix<VectorType2> mg_matrix(matrix);
+
+      Multigrid<VectorType2> mg(mg_matrix,
+                                mg_coarse,
+                                *transfer,
+                                mg_smoother,
+                                mg_smoother,
+                                minlevel,
+                                maxlevel);
+
+      PreconditionMG<dim, VectorType2, MGTransferCUDA<dim, Number2>>
+        preconditioner_mg(*dof_handler, mg, *transfer);
+
       ReductionControl solver_control(CT::MAX_STEPS_, 1e-15, CT::REDUCE_);
       solver_control.enable_history_data();
       solver_control.log_history(true);
@@ -495,7 +508,7 @@ namespace PSMF
           solver.solve(matrix_dp[maxlevel],
                        solution[maxlevel],
                        rhs[maxlevel],
-                       *this);
+                       preconditioner_mg);
 
           best_time = std::min(time.wall_time(), best_time);
         }
