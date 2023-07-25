@@ -229,6 +229,10 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
+      constexpr int multiple = std::is_same<Number, double>::value ?
+                                 Util::calculate_multiple<n_dofs_1d, 16>() :
+                                 Util::calculate_multiple<n_dofs_1d, 32>();
+
       const unsigned int row = threadIdx.y;
       const unsigned int col = threadIdx.x % n_dofs_1d;
 
@@ -238,14 +242,17 @@ namespace PSMF
       for (unsigned int k = 0; k < n_dofs_1d; ++k)
         {
           const unsigned int shape_idx =
-            (direction == 0) ? (col * n_dofs_1d + k) : (row * n_dofs_1d + k);
+            (direction == 0) ?
+              (col * n_dofs_1d + (k + col / multiple) % n_dofs_1d) :
+              (row * n_dofs_1d + k);
 
           const unsigned int source_idx =
-            (direction == 0) ? (row * n_dofs_1d + k) : (k * n_dofs_1d + col);
+            (direction == 0) ?
+              (row * n_dofs_1d + (k + col / multiple) % n_dofs_1d) :
+              (k * n_dofs_1d + col);
 
           pval += shape_data[shape_idx] * in[source_idx];
         }
-
 
       const unsigned int destination_idx = row * n_dofs_1d + col;
 
@@ -285,6 +292,10 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
+      constexpr int multiple = std::is_same<Number, double>::value ?
+                                 Util::calculate_multiple<n_dofs_1d, 16>() :
+                                 Util::calculate_multiple<n_dofs_1d, 32>();
+
       constexpr int stride = n_dofs_1d * n_dofs_1d;
 
       const unsigned int row = threadIdx.y;
@@ -299,15 +310,17 @@ namespace PSMF
           for (unsigned int k = 0; k < n_dofs_1d; ++k)
             {
               const unsigned int shape_idx =
-                (direction == 0) ? col * n_dofs_1d + k :
+                (direction == 0) ?
+                  col * n_dofs_1d + (k + col / multiple) % n_dofs_1d :
                 (direction == 1) ? row * n_dofs_1d + k :
                                    z * n_dofs_1d + k;
 
               const unsigned int source_idx =
-                (direction == 0) ? (row * n_dofs_1d + k + z * stride) :
+                (direction == 0) ?
+                  (row * n_dofs_1d + (k + col / multiple) % n_dofs_1d +
+                   z * stride) :
                 (direction == 1) ? (k * n_dofs_1d + col + z * stride) :
                                    (row * n_dofs_1d + col + k * stride);
-
 
               pval[z] += shape_data[shape_idx] * in[source_idx];
             }
@@ -2211,6 +2224,171 @@ namespace PSMF
     }
   };
 
+  template <typename Number, int n_dofs_1d>
+  struct TPEvaluatorSmootherInv<Number, n_dofs_1d, SmootherVariant::ExactRes, 2>
+  {
+    __device__ void
+    apply_inverse(Number       *dst,
+                  Number       *src,
+                  const Number *eigenvalues,
+                  const Number *eigenvectors,
+                  Number       *tmp)
+    {
+      const unsigned int linear_tid =
+        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+
+      unsigned int row = linear_tid / (n_dofs_1d - 4);
+      unsigned int col = linear_tid % (n_dofs_1d - 4);
+
+      apply<0, true>(eigenvectors, src, tmp);
+      __syncthreads();
+      apply<1, true>(eigenvectors, tmp, src);
+      __syncthreads();
+      if (linear_tid < (n_dofs_1d - 4) * (n_dofs_1d - 4))
+        src[row * (n_dofs_1d - 4) + col] /=
+          (eigenvalues[row] + eigenvalues[col]);
+      __syncthreads();
+      apply<0, false>(eigenvectors, src, tmp);
+      __syncthreads();
+      apply<1, false, true>(eigenvectors, tmp, dst);
+    }
+
+    template <int direction, bool contract_over_rows, bool add = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      constexpr unsigned int n_dofs_1d_i = n_dofs_1d - 4;
+      const unsigned int     linear_tid =
+        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+
+      const unsigned int row = linear_tid / n_dofs_1d_i;
+      const unsigned int col = linear_tid % n_dofs_1d_i;
+
+      Number pval;
+
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
+        {
+          pval = 0;
+          // #pragma unroll
+          for (unsigned int k = 0; k < n_dofs_1d_i; ++k)
+            {
+              const unsigned int shape_idx =
+                contract_over_rows ?
+                  ((direction == 0) ? k * n_dofs_1d_i + col :
+                                      k * n_dofs_1d_i + row) :
+                  ((direction == 0) ? col * n_dofs_1d_i + k :
+                                      row * n_dofs_1d_i + k);
+
+              const unsigned int source_idx = (direction == 0) ?
+                                                (row * n_dofs_1d_i + k) :
+                                                (k * n_dofs_1d_i + col);
+
+              pval += shape_data[shape_idx] * in[source_idx];
+            }
+        }
+
+      if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
+        {
+          const unsigned int destination_idx = row * n_dofs_1d_i + col;
+
+          if (add)
+            out[destination_idx] += pval;
+          else
+            out[destination_idx] = pval;
+        }
+    }
+  };
+
+  template <typename Number, int n_dofs_1d>
+  struct TPEvaluatorSmootherInv<Number, n_dofs_1d, SmootherVariant::ExactRes, 3>
+  {
+    __device__ void
+    apply_inverse(Number       *dst,
+                  Number       *src,
+                  const Number *eigenvalues,
+                  const Number *eigenvectors,
+                  Number       *tmp)
+    {
+      const unsigned int linear_tid =
+        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+
+      unsigned int row = linear_tid / (n_dofs_1d - 4);
+      unsigned int col = linear_tid % (n_dofs_1d - 4);
+
+      apply<0, true>(eigenvectors, src, tmp);
+      __syncthreads();
+      apply<1, true>(eigenvectors, tmp, src);
+      __syncthreads();
+      apply<2, true>(eigenvectors, src, tmp);
+      __syncthreads();
+      if (linear_tid < (n_dofs_1d - 4) * (n_dofs_1d - 4))
+        for (unsigned int z = 0; z < n_dofs_1d - 4; ++z)
+          {
+            tmp[z * n_dofs_1d * n_dofs_1d + row * (n_dofs_1d - 4) + col] /=
+              (eigenvalues[z] + eigenvalues[row] + eigenvalues[col]);
+          }
+      __syncthreads();
+      apply<0, false>(eigenvectors, tmp, src);
+      __syncthreads();
+      apply<1, false>(eigenvectors, src, tmp);
+      __syncthreads();
+      apply<2, false, true>(eigenvectors, tmp, dst);
+    }
+
+    template <int direction, bool contract_over_rows, bool add = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      constexpr unsigned int stride      = n_dofs_1d * n_dofs_1d;
+      constexpr unsigned int n_dofs_1d_i = n_dofs_1d - 4;
+      const unsigned int     linear_tid =
+        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+
+      const unsigned int row = linear_tid / n_dofs_1d_i;
+      const unsigned int col = linear_tid % n_dofs_1d_i;
+
+      Number pval[n_dofs_1d_i];
+
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
+        for (unsigned int z = 0; z < n_dofs_1d_i; ++z)
+          {
+            pval[z] = 0;
+            // #pragma unroll
+            for (unsigned int k = 0; k < n_dofs_1d_i; ++k)
+              {
+                const unsigned int shape_idx =
+                  contract_over_rows ?
+                    ((direction == 0) ? k * n_dofs_1d_i + col :
+                     (direction == 1) ? k * n_dofs_1d_i + row :
+                                        k * n_dofs_1d_i + z) :
+                    ((direction == 0) ? col * n_dofs_1d_i + k :
+                     (direction == 1) ? row * n_dofs_1d_i + k :
+                                        z * n_dofs_1d_i + k);
+
+                const unsigned int source_idx =
+                  (direction == 0) ? (row * n_dofs_1d_i + k + z * stride) :
+                  (direction == 1) ? (k * n_dofs_1d_i + col + z * stride) :
+                                     (row * n_dofs_1d_i + col + k * stride);
+
+                pval[z] += shape_data[shape_idx] * in[source_idx];
+              }
+          }
+
+      if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
+        for (unsigned int z = 0; z < n_dofs_1d_i; ++z)
+          {
+            const unsigned int destination_idx =
+              row * n_dofs_1d_i + col + z * stride;
+
+            if (add)
+              out[destination_idx] += pval[z];
+            else
+              out[destination_idx] = pval[z];
+          }
+    }
+  };
 
   ////////////////////////////////////////////////////////////////////////////////////////////////
   ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2377,6 +2555,80 @@ namespace PSMF
                        shared_data->local_mass,
                        shared_data->local_derivative,
                        &shared_data->tmp[local_patch * local_dim * (dim - 1)]);
+    __syncthreads();
+  }
+
+  template <int dim,
+            int fe_degree,
+            typename Number,
+            LaplaceVariant  laplace,
+            SmootherVariant smooth>
+  __device__ void
+  evaluate_smooth_exact(
+    const unsigned int                                             local_patch,
+    SharedMemData<dim, Number, false>                             *shared_data,
+    const typename LevelVertexPatch<dim, fe_degree, Number>::Data *gpu_data)
+  {
+    constexpr unsigned int n_dofs_1d   = 2 * fe_degree + 2;
+    constexpr unsigned int local_dim   = Util::pow(n_dofs_1d, dim);
+    constexpr unsigned int n_dofs_1d_z = dim == 2 ? 1 : n_dofs_1d - 4;
+
+    TPEvaluatorSmootherVmult<Number, n_dofs_1d, laplace, dim> eval_vmult;
+    TPEvaluatorSmootherInv<Number, n_dofs_1d, smooth, dim>    eval_inverse;
+    __syncthreads();
+
+    eval_vmult.vmult(&shared_data->local_src[local_patch * local_dim],
+                     &shared_data->local_dst[local_patch * local_dim],
+                     shared_data->local_mass,
+                     shared_data->local_derivative,
+                     &shared_data->tmp[local_patch * local_dim * (dim - 1)]);
+    __syncthreads();
+
+    const unsigned int linear_tid =
+      threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+
+    if (linear_tid < (n_dofs_1d - 4) * (n_dofs_1d - 4))
+      {
+        const unsigned int row = linear_tid / (n_dofs_1d - 4);
+        const unsigned int col = linear_tid % (n_dofs_1d - 4);
+
+        shared_data->local_mass[col] = gpu_data->eigenvalues[col + n_dofs_1d];
+        shared_data->local_derivative[row * (n_dofs_1d - 4) + col] =
+          gpu_data
+            ->eigenvectors[row * (n_dofs_1d - 4) + col + n_dofs_1d * n_dofs_1d];
+      }
+    // __syncthreads();
+
+    if (linear_tid < (n_dofs_1d - 4) * (n_dofs_1d - 4))
+      {
+        unsigned int row = linear_tid / (n_dofs_1d - 4) + 2;
+        unsigned int col = linear_tid % (n_dofs_1d - 4) + 2;
+
+        for (unsigned int z = 0; z < n_dofs_1d_z; ++z)
+          {
+            shared_data
+              ->tmp[2 * local_patch * local_dim + z * n_dofs_1d * n_dofs_1d +
+                    (row - 2) * (n_dofs_1d - 4) + col - 2] =
+              shared_data->local_dst[local_patch * local_dim +
+                                     (z + 2 * dim - 4) * n_dofs_1d * n_dofs_1d +
+                                     row * n_dofs_1d + col];
+
+            shared_data->tmp[2 * local_patch * local_dim + local_dim +
+                             z * n_dofs_1d * n_dofs_1d +
+                             (row - 2) * (n_dofs_1d - 4) + col - 2] =
+              shared_data->local_src[local_patch * local_dim +
+                                     (z + 2 * dim - 4) * n_dofs_1d * n_dofs_1d +
+                                     row * n_dofs_1d + col];
+          }
+      }
+    __syncthreads();
+
+    eval_inverse.apply_inverse(
+      &shared_data->tmp[local_patch * local_dim * 2],
+      &shared_data->tmp[local_patch * local_dim * 2 + local_dim],
+      shared_data->local_mass,
+      shared_data->local_derivative,
+      &shared_data->local_src[local_patch * local_dim]);
     __syncthreads();
   }
 

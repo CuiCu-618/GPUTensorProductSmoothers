@@ -85,7 +85,12 @@ namespace PSMF
      * Using the Warp Matrix Multiply and Accumulate (WMMA) API introduced in
      * CUDA 11.0.
      */
-    TensorCore
+    TensorCore,
+
+    /**
+     * Compute the residual b - Ax exactly with FE_DGQHermite element.
+     */
+    ExactRes
   };
 
 
@@ -574,12 +579,15 @@ namespace PSMF
     {
       constexpr unsigned int n = is_laplace ? 3 : 1;
 
+      const unsigned int n_dofs_1d_p =
+        is_laplace ? n_dofs_1d + Util::padding : n_dofs_1d;
+
       local_src = data;
       local_dst = local_src + n_buff * local_dim;
 
       local_mass       = local_dst + n_buff * local_dim;
-      local_derivative = local_mass + n_buff * n_dofs_1d * n_dofs_1d * n;
-      tmp              = local_derivative + n_buff * n_dofs_1d * n_dofs_1d * n;
+      local_derivative = local_mass + n_buff * n_dofs_1d * n_dofs_1d_p * n;
+      tmp = local_derivative + n_buff * n_dofs_1d * n_dofs_1d_p * n;
     }
 
 

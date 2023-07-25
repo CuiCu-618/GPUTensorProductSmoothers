@@ -370,18 +370,77 @@ namespace Step64
     using LA = PSMF::LaplaceVariant;
     using SM = PSMF::SmootherVariant;
 
-    do_solve<CT::LAPLACE_TYPE_[0], CT::SMOOTH_VMULT_[0], CT::SMOOTH_INV_[0]>(
-      0, 0, 0, call_count);
-
-    // for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
-    //   for (unsigned int j = 0; j < CT::SMOOTH_VMULT_.size(); ++j)
-    //     for (unsigned int i = 0; i < CT::SMOOTH_INV_.size(); ++i)
-    //       {
-    //         if (LAPLACE_TYPE_[i] == LA::Basic)
-
-    //       }
 
 
+    if (CT::LAPLACE_TYPE_.size() > 1)
+      for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
+        {
+          switch (CT::LAPLACE_TYPE_[k])
+            {
+              case LA::Basic:
+                {
+                  do_solve<LA::Basic, CT::SMOOTH_VMULT_[0], CT::SMOOTH_INV_[0]>(
+                    k, 0, 0, call_count);
+                  break;
+                }
+              case LA::BasicCell:
+                {
+                  do_solve<LA::BasicCell,
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, 0, 0, call_count);
+                  break;
+                }
+              case LA::ConflictFree:
+                {
+                  do_solve<LA::ConflictFree,
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, 0, 0, call_count);
+                  break;
+                }
+              case LA::TensorCore:
+                {
+                  do_solve<LA::TensorCore,
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, 0, 0, call_count);
+                  break;
+                }
+              default:
+                AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+            }
+        }
+    else if (CT::SMOOTH_INV_.size() > 1)
+      for (unsigned int k = 0; k < CT::SMOOTH_INV_.size(); ++k)
+        {
+          switch (CT::SMOOTH_INV_[k])
+            {
+              case SM::GLOBAL:
+                {
+                  do_solve<CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           SM::GLOBAL>(0, 0, k, call_count);
+                  break;
+                }
+              case SM::ConflictFree:
+                {
+                  do_solve<CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           SM::ConflictFree>(0, 0, k, call_count);
+                  break;
+                }
+              case SM::ExactRes:
+                {
+                  do_solve<CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           SM::ExactRes>(0, 0, k, call_count);
+                  break;
+                }
+              default:
+                AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+            }
+        }
+    else
+      do_solve<CT::LAPLACE_TYPE_[0], CT::SMOOTH_VMULT_[0], CT::SMOOTH_INV_[0]>(
+        0, 0, 0, call_count);
 
     call_count++;
   }

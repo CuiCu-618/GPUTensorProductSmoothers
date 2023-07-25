@@ -352,7 +352,8 @@ void
 LaplaceProblem<dim, fe_degree>::do_smooth()
 {
   // DP
-  using MatrixTypeDP = PSMF::LaplaceOperator<dim, fe_degree, full_number, smooth_vmult>;
+  using MatrixTypeDP =
+    PSMF::LaplaceOperator<dim, fe_degree, full_number, smooth_vmult>;
   MatrixTypeDP matrix_dp;
   matrix_dp.initialize(mfdata_dp, dof_handler, maxlevel);
 
@@ -387,7 +388,8 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   info_table[3].add_value("Perf[Dof/s]", n_dofs / best_time);
 
   // SP
-  using MatrixTypeSP = PSMF::LaplaceOperator<dim, fe_degree, vcycle_number, smooth_vmult>;
+  using MatrixTypeSP =
+    PSMF::LaplaceOperator<dim, fe_degree, vcycle_number, smooth_vmult>;
   MatrixTypeSP matrix_sp;
   matrix_sp.initialize(mfdata_sp, dof_handler, maxlevel);
 
