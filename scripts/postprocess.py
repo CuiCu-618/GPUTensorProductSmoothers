@@ -103,3 +103,23 @@ def extract_component(dataset, op_type, n_kernels, kernel):
     data = np.array(data, dtype=object)
     
     return data
+
+def extract_col(dataset, col, n_kernels, kernel):
+    
+    n_p = dataset.shape[0]
+
+    data = []
+
+    for d in dataset:
+        n_l = int(d.shape[0] / n_kernels)
+
+        if col == 13:
+            dofs = np.array(d[kernel * n_l : kernel * n_l + n_l, 2])
+            time = np.array(d[kernel * n_l : kernel * n_l + n_l, col])
+            data.append(time / dofs)
+        else:
+            data.append(d[kernel * n_l : kernel * n_l + n_l, col])
+    
+    data = np.array(data, dtype=object)
+    
+    return data
