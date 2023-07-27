@@ -341,6 +341,133 @@ namespace PSMF
     }
   };
 
+  // template <typename T, int n_dofs_1d, typename Number>
+  // struct TPEvaluatorBase<T, n_dofs_1d, Number, LaplaceVariant::ConflictFree, 3>
+  // {
+  //   /**
+  //    * Default constructor.
+  //    */
+  //   __device__
+  //   TPEvaluatorBase() = default;
+
+  //   /**
+  //    * Implements a matrix-vector product for Laplacian.
+  //    */
+  //   __device__ void
+  //   vmult(Number       *dst,
+  //         const Number *src,
+  //         const Number *mass_matrix,
+  //         const Number *derivative_matrix,
+  //         Number       *tmp)
+  //   {
+  //     static_cast<T *>(this)->vmult_impl(
+  //       dst, src, mass_matrix, derivative_matrix, tmp);
+  //   }
+
+  //   template <int direction, bool add, bool sub = false>
+  //   __device__ void
+  //   apply(const Number *shape_data, const Number *in, Number *out)
+  //   {
+  //     // constexpr int multiple = std::is_same<Number, double>::value ?
+  //     //                            Util::calculate_multiple<n_dofs_1d, 16>() :
+  //     //                            Util::calculate_multiple<n_dofs_1d, 32>();
+
+  //     constexpr int stride = n_dofs_1d * n_dofs_1d;
+
+  //     const unsigned int row = threadIdx.y;
+  //     const unsigned int col = threadIdx.x % n_dofs_1d;
+
+  //     Number rc_sh[n_dofs_1d];
+  //     // rc_sh[0] = shape_data[row * n_dofs_1d + col];
+  //     // rc_sh[1] = shape_data[((row + 4) & 7) * n_dofs_1d + col];
+
+  //     auto src_ind = direction == 0 ? col * n_dofs_1d : row * n_dofs_1d;
+  //     for (unsigned int i = 0; i < n_dofs_1d; ++i)
+  //       rc_sh[i] = shape_data[src_ind + i];
+
+  //     Number pval[n_dofs_1d];
+  //     // kernel product: A kdot src, [N x N] * [N^dim, 1]
+  //     for (unsigned int z = 0; z < n_dofs_1d; ++z)
+  //       {
+  //         pval[z] = 0;
+  //         // #pragma unroll
+  //         for (unsigned int k = 0; k < n_dofs_1d; ++k)
+  //           {
+  //             const unsigned int shape_idx =
+  //               (direction == 0) ? col * n_dofs_1d + k :
+  //               (direction == 1) ? row * n_dofs_1d + k :
+  //                                  z * n_dofs_1d + k;
+
+  //             const unsigned int source_idx =
+  //               (direction == 0) ? (row * n_dofs_1d + k + z * stride) :
+  //               (direction == 1) ? (k * n_dofs_1d + col + z * stride) :
+  //                                  (row * n_dofs_1d + col + k * stride);
+
+  //             if (direction == 3)
+  //               {
+  //                 unsigned int src_lane_sh = (col * n_dofs_1d + k) % 32;
+  //                 unsigned int bk          = (col / 4 + row / 4) % 2;
+
+  //                 pval[z] += __shfl_sync(0xffffffff, rc_sh[bk], src_lane_sh) *
+  //                            in[source_idx];
+  //               }
+  //             else if (direction == 1 || direction == 0)
+  //               {
+  //                 pval[z] += rc_sh[k] * in[source_idx];
+
+  //                 // unsigned int src_lane_sh = (row * n_dofs_1d + k) & 31;
+
+  //                 // pval[z] += __shfl_sync(0xffffffff, rc_sh[0], src_lane_sh) *
+  //                 //            in[source_idx];
+  //               }
+  //             else if (direction == 3)
+  //               {
+  //                 unsigned int src_lane_sh = (z * n_dofs_1d + k) % 32;
+  //                 unsigned int bk          = (z / 4 + row / 4) % 2;
+
+  //                 pval[z] += __shfl_sync(0xffffffff, rc_sh[bk], src_lane_sh) *
+  //                            in[source_idx];
+  //               }
+  //             else
+  //               {
+  //                 pval[z] += shape_data[shape_idx] * in[source_idx];
+  //               }
+
+  //             // Number rc_in[2];
+  //             // rc_in[0] = in[row * n_dofs_1d + col + z * stride];
+  //             // rc_in[1] =
+  //             //   in[((row + 4) % n_dofs_1d) * n_dofs_1d + col + z * stride];
+
+  //             // if (direction == 1)
+  //             //   {
+  //             //     unsigned int src_lane_sh = (row * n_dofs_1d + k) % 32;
+  //             //     unsigned int src_lane_in = (k * n_dofs_1d + col) % 32;
+
+  //             //     unsigned int bk = (row / 4 + k / 4) % 2;
+
+  //             //     pval[z] += __shfl_sync(0xffffffff, rc_sh, src_lane_sh) *
+  //             //                __shfl_sync(0xffffffff, rc_in[bk], src_lane_in);
+  //             //   }
+  //             // else
+  //             //   pval[z] += shape_data[shape_idx] * in[source_idx];
+  //           }
+  //       }
+
+  //     for (unsigned int z = 0; z < n_dofs_1d; ++z)
+  //       {
+  //         const unsigned int destination_idx =
+  //           row * n_dofs_1d + col + z * stride;
+
+  //         if (add)
+  //           out[destination_idx] += pval[z];
+  //         else if (sub)
+  //           out[destination_idx] -= pval[z];
+  //         else
+  //           out[destination_idx] = pval[z];
+  //       }
+  //   }
+  // };
+
 
   template <typename T>
   struct TPEvaluatorBase<T, 8, double, LaplaceVariant::TensorCoreMMA, 2>
