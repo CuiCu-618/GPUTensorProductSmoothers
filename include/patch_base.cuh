@@ -741,8 +741,8 @@ namespace PSMF
       local_dst = local_src + n_buff * local_dim;
 
       local_mass      = local_dst + n_buff * local_dim;
-      local_laplace   = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim;
-      local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+      local_laplace   = local_mass + n_buff * n_dofs_1d * n_dofs_1d;
+      local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d;
 
       tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
     }
@@ -785,7 +785,7 @@ namespace PSMF
           local_laplace   = local_mass + n_buff * n_dofs_1d * n_dofs_1d;
           local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d;
           // TODO: should be able to use less shared memory
-          tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * (dim - 1);
+          tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
         }
     }
   };

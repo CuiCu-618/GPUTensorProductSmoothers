@@ -34,6 +34,9 @@ namespace PSMF
     void
     setup_kernel(const unsigned int patch_per_block) const
     {
+      constexpr unsigned int n =
+        kernel == LaplaceVariant::ConflictFree ? 2 : (dim - 1);
+
       shared_mem = 0;
 
       const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
@@ -43,7 +46,7 @@ namespace PSMF
       shared_mem +=
         3 * patch_per_block * n_dofs_1d * n_dofs_1d * dim * sizeof(Number);
       // temp
-      shared_mem += (dim - 1) * patch_per_block * local_dim * sizeof(Number);
+      shared_mem += n * patch_per_block * local_dim * sizeof(Number);
 
       AssertCuda(cudaFuncSetAttribute(
         laplace_kernel_basic<dim, fe_degree, Number, kernel>,

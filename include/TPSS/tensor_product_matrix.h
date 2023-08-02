@@ -166,7 +166,7 @@ namespace Tensors
                                 &rank1_tensors,
         const std::bitset<order> B_mask)
       {
-        AssertDimension(rank1_tensors.size(), 2U);
+        AssertDimension(rank1_tensors.size(), order);
 
         /// assume one-dimensional square matrices
         constexpr unsigned int macro_size = VectorizedArray<Number>::size();

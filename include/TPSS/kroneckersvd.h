@@ -326,6 +326,14 @@ compute_ksvd(const std::vector<std::array<Table<2, Number>, 2>> &src,
                                                                      ,max_tensor_rank_src*/);
 }
 
+template <typename Number>
+AlignedVector<Number>
+compute_ksvd(const std::vector<std::array<Table<2, Number>, 3>> &,
+             std::vector<std::array<Table<2, Number>, 3>> &,
+             const std::size_t)
+{
+  return AlignedVector<Number>();
+}
 
 
 /**

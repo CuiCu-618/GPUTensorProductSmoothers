@@ -348,7 +348,7 @@ namespace Tensors
 
     else if (additional_data.state == State::ranktwo)
       {
-        AssertDimension(elementary_tensors_in.size(), 2U);
+        AssertDimension(elementary_tensors_in.size(), order);
 
         Base::reinit(elementary_tensors_in);
 
@@ -365,7 +365,7 @@ namespace Tensors
     else if (additional_data.state == State::separable)
       {
         AssertThrow(
-          elementary_tensors_in.size() == 2U,
+          elementary_tensors_in.size() == order,
           ExcMessage(
             "elementary_tensors_in must contain exactly two elements: a tensor of mass matrices first and a tensor of derivative matrices second!"));
         const auto &MM = elementary_tensors_in.front();

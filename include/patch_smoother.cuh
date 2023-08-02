@@ -129,8 +129,8 @@ namespace PSMF
       // local_src, local_dst
       shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
       // local_eigenvectors, local_eigenvalues
-      shared_mem += (3 + dim - 2) * patch_per_block * n_dofs_1d * n_dofs_1d *
-                    sizeof(Number);
+      shared_mem +=
+        (2 + dim) * patch_per_block * n_dofs_1d * n_dofs_1d * sizeof(Number);
       // tmp
       shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
 

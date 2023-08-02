@@ -29,6 +29,7 @@
 #include <deal.II/multigrid/multigrid.h>
 
 #include <functional>
+#include <iomanip>
 
 #include "cuda_mg_transfer.cuh"
 #include "laplace_operator.cuh"
@@ -1063,7 +1064,7 @@ namespace PSMF
       std::string comp_name = "";
 
       const unsigned int n_dofs = dof_handler->n_dofs();
-      const unsigned int n_mv   = n_dofs < 10000000 ? 20 : 4;
+      const unsigned int n_mv   = n_dofs < 10000000 ? 10 : 4;
 
       auto tester = [&](auto kernel) {
         Timer              time;
@@ -1084,7 +1085,7 @@ namespace PSMF
         comp_data.push_back(data);
       };
 
-      for (unsigned int s = 0; s < 4; ++s)
+      for (unsigned int s = 0; s < 2; ++s)
         {
           switch (s)
             {
@@ -1124,84 +1125,6 @@ namespace PSMF
       return comp_data;
     }
 
-    std::vector<SolverData>
-    solve_old()
-    {
-      *pcout << "Solving...\n";
-
-      std::string solver_name = "";
-
-      auto solver = [&](auto kernel) {
-        Timer              time;
-        const unsigned int N         = 10;
-        double             best_time = 1e10;
-        for (unsigned int i = 0; i < N; ++i)
-          {
-            time.reset();
-            time.start();
-            kernel(this);
-            best_time = std::min(time.wall_time(), best_time);
-          }
-
-        const auto [n_iter, residual_n, residual_0] = kernel(this);
-
-        // *** average reduction: r_n = rho^n * r_0
-        const double rho =
-          std::pow(residual_n / residual_0, static_cast<double>(1. / n_iter));
-        const double convergence_rate =
-          1. / n_iter * std::log10(residual_0 / residual_n);
-
-        const auto n_step = -10 * std::log10(rho);
-        const auto n_frac = std::log(CT::REDUCE_) / std::log(rho);
-
-        size_t free_mem, total_mem;
-        AssertCuda(cudaMemGetInfo(&free_mem, &total_mem));
-
-        int mem_usage = (total_mem - free_mem) / 1024 / 1024;
-
-        SolverData data;
-        data.solver_name      = solver_name;
-        data.n_iteration      = n_iter;
-        data.n_step           = n_frac;
-        data.residual         = residual_n;
-        data.reduction_rate   = rho;
-        data.convergence_rate = convergence_rate;
-        data.timing           = best_time;
-        data.mem_usage        = mem_usage;
-        solver_data.push_back(data);
-      };
-
-      for (unsigned int s = 0; s < 1; ++s)
-        {
-          switch (s)
-            {
-              // case 0:
-              //   {
-              //     auto kernel = std::mem_fn(&MultigridSolver::solve_fmg);
-              //     solver_name = "Linear-FMG";
-              //     solver(kernel);
-              //     break;
-              //   }
-              // case 1:
-              //   {
-              //     auto kernel =
-              //     std::mem_fn(&MultigridSolver::solve_vcycle); solver_name
-              //     = "V-cycles"; solver(kernel); break;
-              //   }
-              case 0:
-                {
-                  auto kernel = std::mem_fn(&MultigridSolver::solve_gmres);
-                  solver_name = "GMRES";
-                  solver(kernel);
-                  break;
-                }
-              default:
-                AssertThrow(false, ExcMessage("Invalid Solver Variant."));
-            }
-        }
-
-      return solver_data;
-    }
 
     // Implement the vmult() function needed by the preconditioner interface
     void
@@ -1209,9 +1132,9 @@ namespace PSMF
           const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
             &src) const
     {
-      defect[maxlevel] = src;
-      v_cycle(maxlevel, false);
-      dst = solution[maxlevel];
+      all_mg_counter++;
+
+      preconditioner_mg->vmult(dst, src);
     }
 
     // Return the solution vector for further processing
@@ -1220,6 +1143,75 @@ namespace PSMF
     {
       // set_inhomogeneous_bc<false>(maxlevel);
       return solution[maxlevel];
+    }
+
+    void
+    print_timings() const
+    {
+      // if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+      {
+        *pcout << " - #N of calls of multigrid: " << all_mg_counter << std::endl
+               << std::endl;
+        *pcout << " - Times of multigrid (levels):" << std::endl;
+
+        const auto print_line = [&](const auto &vector) {
+          for (const auto &i : vector)
+            *pcout << std::scientific << std::setprecision(2) << std::setw(10)
+                   << i.first;
+
+          double sum = 0;
+
+          for (const auto &i : vector)
+            sum += i.first;
+
+          *pcout << "   | " << std::scientific << std::setprecision(2)
+                 << std::setw(10) << sum;
+
+          *pcout << "\n";
+        };
+
+        for (unsigned int l = 0; l < all_mg_timers.size(); ++l)
+          {
+            *pcout << std::setw(4) << l << ": ";
+
+            print_line(all_mg_timers[l]);
+          }
+
+        std::vector<
+          std::pair<double, std::chrono::time_point<std::chrono::system_clock>>>
+          sums(all_mg_timers[0].size());
+
+        for (unsigned int i = 0; i < sums.size(); ++i)
+          for (unsigned int j = 0; j < all_mg_timers.size(); ++j)
+            sums[i].first += all_mg_timers[j][i].first;
+
+        *pcout
+          << "   ----------------------------------------------------------------------------+-----------\n";
+        *pcout << "      ";
+        print_line(sums);
+
+        *pcout << std::endl;
+
+        *pcout << " - Times of multigrid (solver <-> mg): ";
+
+        for (const auto &i : all_mg_precon_timers)
+          *pcout << i.first << " ";
+        *pcout << std::endl;
+        *pcout << std::endl;
+      }
+    }
+
+    void
+    clear_timings() const
+    {
+      for (auto &is : all_mg_timers)
+        for (auto &i : is)
+          i.first = 0.0;
+
+      for (auto &i : all_mg_precon_timers)
+        i.first = 0.0;
+
+      all_mg_counter = 0;
     }
 
     // Solve with the conjugate gradient method preconditioned by the V-cycle
@@ -1240,8 +1232,74 @@ namespace PSMF
                                minlevel,
                                maxlevel);
 
-      PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>
-        preconditioner_mg(*dof_handler, mg, *transfer);
+      preconditioner_mg = std::make_unique<
+        PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>>(
+        *dof_handler, mg, *transfer);
+
+      // timers
+      if (true)
+        {
+          all_mg_timers.resize((maxlevel - minlevel + 1));
+          for (unsigned int i = 0; i < all_mg_timers.size(); ++i)
+            all_mg_timers[i].resize(7);
+
+          const auto create_mg_timer_function = [&](const unsigned int i,
+                                                    const std::string &label) {
+            return [i, label, this](const bool flag, const unsigned int level) {
+              if (false && flag)
+                std::cout << label << " " << level << std::endl;
+              if (flag)
+                all_mg_timers[level - minlevel][i].second =
+                  std::chrono::system_clock::now();
+              else
+                all_mg_timers[level - minlevel][i].first +=
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now() -
+                    all_mg_timers[level - minlevel][i].second)
+                    .count() /
+                  1e9;
+            };
+          };
+
+          {
+            mg.connect_pre_smoother_step(
+              create_mg_timer_function(0, "pre_smoother_step"));
+            mg.connect_residual_step(
+              create_mg_timer_function(1, "residual_step"));
+            mg.connect_restriction(create_mg_timer_function(2, "restriction"));
+            mg.connect_coarse_solve(
+              create_mg_timer_function(3, "coarse_solve"));
+            mg.connect_prolongation(
+              create_mg_timer_function(4, "prolongation"));
+            mg.connect_edge_prolongation(
+              create_mg_timer_function(5, "edge_prolongation"));
+            mg.connect_post_smoother_step(
+              create_mg_timer_function(6, "post_smoother_step"));
+          }
+
+          all_mg_precon_timers.resize(2);
+
+          const auto create_mg_precon_timer_function =
+            [&](const unsigned int i) {
+              return [i, this](const bool flag) {
+                if (flag)
+                  all_mg_precon_timers[i].second =
+                    std::chrono::system_clock::now();
+                else
+                  all_mg_precon_timers[i].first +=
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::system_clock::now() -
+                      all_mg_precon_timers[i].second)
+                      .count() /
+                    1e9;
+              };
+            };
+
+          preconditioner_mg->connect_transfer_to_mg(
+            create_mg_precon_timer_function(0));
+          preconditioner_mg->connect_transfer_to_global(
+            create_mg_precon_timer_function(1));
+        }
 
       std::string solver_name = "GMRES";
 
@@ -1251,8 +1309,18 @@ namespace PSMF
 
       SolverGMRES<VectorType> solver(solver_control);
 
+      {
+        solution[maxlevel] = 0;
+        solver.solve(matrix[maxlevel],
+                     solution[maxlevel],
+                     rhs[maxlevel],
+                     *this);
+        print_timings();
+        clear_timings();
+      }
+
       Timer              time;
-      const unsigned int N         = 10;
+      const unsigned int N         = 5;
       double             best_time = 1e10;
       for (unsigned int i = 0; i < N; ++i)
         {
@@ -1263,7 +1331,7 @@ namespace PSMF
           solver.solve(matrix[maxlevel],
                        solution[maxlevel],
                        rhs[maxlevel],
-                       preconditioner_mg);
+                       *this);
 
           best_time = std::min(time.wall_time(), best_time);
         }
@@ -1591,6 +1659,20 @@ namespace PSMF
     const Function<dim, Number> &analytic_solution;
 
     std::shared_ptr<ConditionalOStream> pcout;
+
+    mutable std::unique_ptr<
+      PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>>
+      preconditioner_mg;
+
+    mutable unsigned int all_mg_counter = 0;
+
+    mutable std::vector<std::vector<
+      std::pair<double, std::chrono::time_point<std::chrono::system_clock>>>>
+      all_mg_timers;
+
+    mutable std::vector<
+      std::pair<double, std::chrono::time_point<std::chrono::system_clock>>>
+      all_mg_precon_timers;
   };
 
 } // namespace PSMF

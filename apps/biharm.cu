@@ -40,9 +40,6 @@
 #include "utilities.cuh"
 
 
-// -\delta u = f, u = 0 on \parital \Omege, f = 1.
-// double percision
-
 namespace Step64
 {
   using namespace dealii;
@@ -50,64 +47,127 @@ namespace Step64
   template <int dim, typename Number>
   class Solution : public Function<dim, Number>
   {
-    static_assert(dim == 2, "Only dim==2 is implemented.");
     static constexpr auto PI = numbers::PI;
 
   public:
-    virtual double
+    Solution()
+      : Function<dim, Number>()
+    {}
+
+    virtual Number
     value(const Point<dim> &p,
           const unsigned int /*component*/ = 0) const override
     {
-      return std::sin(PI * p[0]) * std::sin(PI * p[1]);
+      Number return_value = 0.0;
+
+      if (dim == 2)
+        {
+          return_value = std::sin(PI * p[0]) * std::sin(PI * p[1]);
+        }
+      else if (dim == 3)
+        {
+          return_value =
+            std::sin(PI * p[0]) * std::sin(PI * p[1]) * std::sin(PI * p[2]);
+        }
+      else
+        Assert(false, ExcNotImplemented());
+
+      return return_value;
     }
 
     virtual Tensor<1, dim>
     gradient(const Point<dim> &p,
              const unsigned int /*component*/ = 0) const override
     {
-      Tensor<1, dim> r;
-      r[0] = PI * std::cos(PI * p[0]) * std::sin(PI * p[1]);
-      r[1] = PI * std::cos(PI * p[1]) * std::sin(PI * p[0]);
-      return r;
-    }
+      Tensor<1, dim> return_gradient;
 
-    virtual void
-    hessian_list(const std::vector<Point<dim>>        &points,
-                 std::vector<SymmetricTensor<2, dim>> &hessians,
-                 const unsigned int /*component*/ = 0) const override
-    {
-      for (unsigned i = 0; i < points.size(); ++i)
+      if (dim == 2)
         {
-          const double x = points[i][0];
-          const double y = points[i][1];
-
-          hessians[i][0][0] = -PI * PI * std::sin(PI * x) * std::sin(PI * y);
-          hessians[i][0][1] = PI * PI * std::cos(PI * x) * std::cos(PI * y);
-          hessians[i][1][1] = -PI * PI * std::sin(PI * x) * std::sin(PI * y);
+          return_gradient[0] = PI * std::cos(PI * p[0]) * std::sin(PI * p[1]);
+          return_gradient[1] = PI * std::cos(PI * p[1]) * std::sin(PI * p[0]);
         }
+      else if (dim == 3)
+        {
+          return_gradient[0] = PI * std::cos(PI * p[0]) * std::sin(PI * p[1]) *
+                               std::sin(PI * p[2]);
+          return_gradient[1] = PI * std::cos(PI * p[1]) * std::sin(PI * p[0]) *
+                               std::sin(PI * p[2]);
+          return_gradient[2] = PI * std::cos(PI * p[2]) * std::sin(PI * p[0]) *
+                               std::sin(PI * p[1]);
+        }
+      else
+        Assert(false, ExcNotImplemented());
+
+      return return_gradient;
     }
 
-    double
-    bilaplacian(const Point<dim> &p, const unsigned int /*component*/ = 0) const
+    virtual SymmetricTensor<2, dim>
+    hessian(const Point<dim> &p,
+            const unsigned int /*component*/ = 0) const override
     {
-      const auto &x = p[0];
-      const auto &y = p[1];
-      return 4 * std::pow(PI, 4.0) * std::sin(PI * x) * std::sin(PI * y);
+      SymmetricTensor<2, dim> return_hessian;
+
+      if (dim == 2)
+        {
+          return_hessian[0][0] =
+            -PI * PI * std::sin(PI * p[0]) * std::sin(PI * p[1]);
+          return_hessian[0][1] =
+            PI * PI * std::cos(PI * p[0]) * std::cos(PI * p[1]);
+          return_hessian[1][1] =
+            -PI * PI * std::sin(PI * p[0]) * std::sin(PI * p[1]);
+        }
+      else if (dim == 3)
+        {
+          return_hessian[0][0] = -PI * PI * std::sin(PI * p[0]) *
+                                 std::sin(PI * p[1]) * std::sin(PI * p[2]);
+          return_hessian[0][1] = PI * PI * std::cos(PI * p[0]) *
+                                 std::cos(PI * p[1]) * std::sin(PI * p[2]);
+          return_hessian[0][2] = PI * PI * std::cos(PI * p[0]) *
+                                 std::cos(PI * p[2]) * std::sin(PI * p[1]);
+          return_hessian[1][1] = -PI * PI * std::sin(PI * p[0]) *
+                                 std::sin(PI * p[1]) * std::sin(PI * p[2]);
+          return_hessian[1][2] = PI * PI * std::cos(PI * p[1]) *
+                                 std::cos(PI * p[2]) * std::sin(PI * p[0]);
+          return_hessian[2][2] = -PI * PI * std::sin(PI * p[0]) *
+                                 std::sin(PI * p[1]) * std::sin(PI * p[2]);
+        }
+      else
+        Assert(false, ExcNotImplemented());
+
+      return return_hessian;
     }
   };
 
-  template <int dim, typename Number, typename FunctionType>
+  template <int dim, typename Number>
   class RightHandSide : public Function<dim, Number>
   {
+    static constexpr auto PI = numbers::PI;
+
   public:
+    RightHandSide()
+      : Function<dim, Number>()
+    {}
+
     virtual Number
     value(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      return solution.bilaplacian(p);
-    }
+      Number return_value = 0.0;
 
-  private:
-    const FunctionType solution;
+      if (dim == 2)
+        {
+          return_value =
+            4 * std::pow(PI, 4.0) * std::sin(PI * p[0]) * std::sin(PI * p[1]);
+        }
+      else if (dim == 3)
+        {
+          return_value = 9 * std::pow(PI, 4.0) * std::sin(PI * p[0]) *
+                         std::sin(PI * p[1]) * std::sin(PI * p[2]);
+        }
+      else
+        Assert(false, ExcNotImplemented());
+
+      return return_value;
+    }
   };
 
   template <int dim, int fe_degree>
@@ -181,7 +241,8 @@ namespace Step64
     fout.open(filename + ".log", std::ios_base::out);
     pcout = std::make_shared<ConditionalOStream>(fout, true);
 
-    info_table.resize(CT::LOCAL_SOLVER_.size());
+    info_table.resize(
+      std::max(CT::LAPLACE_TYPE_.size(), CT::LOCAL_SOLVER_.size()));
   }
 
   template <int dim, int fe_degree>
@@ -327,14 +388,24 @@ namespace Step64
              mfdata_sp,
              transfer,
              Solution<dim, full_number>(),
-             RightHandSide<dim, full_number, Solution<dim, full_number>>(),
+             RightHandSide<dim, full_number>(),
              pcout,
              1);
-
-    *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
-           << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
-           << SmootherToString(CT::SMOOTH_INV_[0]) << " "
-           << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << "]\n";
+    if (CT::LAPLACE_TYPE_.size() > 1)
+      *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
+             << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+             << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+             << LocalSolverToString(CT::LOCAL_SOLVER_[0]) << "]\n";
+    else if (CT::LOCAL_SOLVER_.size() > 1)
+      *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
+             << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+             << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+             << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << "]\n";
+    else
+      *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
+             << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+             << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+             << LocalSolverToString(CT::LOCAL_SOLVER_[0]) << "]\n";
 
     unsigned int index = k;
 
@@ -411,7 +482,9 @@ namespace Step64
 
         const auto [l2_error, H1_error] = compute_error();
 
-        // std::cout << l2_error << std::endl;
+        *pcout << "L2 error: " << l2_error << std::endl
+               << "H1 error: " << H1_error << std::endl
+               << std::endl;
 
         // ghost_solution_host.print(std::cout);
 
@@ -445,46 +518,77 @@ namespace Step64
     //          CT::SMOOTH_VMULT_[0],
     //          CT::SMOOTH_INV_[0]>(0, 0, 0, call_count);
 
-    for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-      {
-        switch (CT::LOCAL_SOLVER_[k])
-          {
-            case PSMF::LocalSolverVariant::Exact:
-              {
-                do_solve<PSMF::LocalSolverVariant::Exact,
-                         CT::LAPLACE_TYPE_[0],
-                         CT::SMOOTH_VMULT_[0],
-                         CT::SMOOTH_INV_[0]>(k, call_count);
-                break;
-              }
-            case PSMF::LocalSolverVariant::Bila:
-              {
-                do_solve<PSMF::LocalSolverVariant::Bila,
-                         CT::LAPLACE_TYPE_[0],
-                         CT::SMOOTH_VMULT_[0],
-                         CT::SMOOTH_INV_[0]>(k, call_count);
-                break;
-              }
-            case PSMF::LocalSolverVariant::KSVD:
-              {
-                do_solve<PSMF::LocalSolverVariant::KSVD,
-                         CT::LAPLACE_TYPE_[0],
-                         CT::SMOOTH_VMULT_[0],
-                         CT::SMOOTH_INV_[0]>(k, call_count);
-                break;
-              }
-            case PSMF::LocalSolverVariant::NN:
-              {
-                do_solve<PSMF::LocalSolverVariant::NN,
-                         CT::LAPLACE_TYPE_[0],
-                         CT::SMOOTH_VMULT_[0],
-                         CT::SMOOTH_INV_[0]>(k, call_count);
-                break;
-              }
-            default:
-              AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
-          }
-      }
+    if (CT::LAPLACE_TYPE_.size() > 1)
+      for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
+        {
+          switch (CT::LAPLACE_TYPE_[k])
+            {
+              case PSMF::LaplaceVariant::Basic:
+                {
+                  do_solve<CT::LOCAL_SOLVER_[0],
+                           PSMF::LaplaceVariant::Basic,
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, call_count);
+                  break;
+                }
+              case PSMF::LaplaceVariant::ConflictFree:
+                {
+                  do_solve<CT::LOCAL_SOLVER_[0],
+                           PSMF::LaplaceVariant::ConflictFree,
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, call_count);
+                  break;
+                }
+              default:
+                AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+            }
+        }
+    else if (CT::LOCAL_SOLVER_.size() > 1)
+      for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+        {
+          switch (CT::LOCAL_SOLVER_[k])
+            {
+              case PSMF::LocalSolverVariant::Exact:
+                {
+                  do_solve<PSMF::LocalSolverVariant::Exact,
+                           CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, call_count);
+                  break;
+                }
+              case PSMF::LocalSolverVariant::Bila:
+                {
+                  do_solve<PSMF::LocalSolverVariant::Bila,
+                           CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, call_count);
+                  break;
+                }
+              case PSMF::LocalSolverVariant::KSVD:
+                {
+                  do_solve<PSMF::LocalSolverVariant::KSVD,
+                           CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, call_count);
+                  break;
+                }
+              case PSMF::LocalSolverVariant::NN:
+                {
+                  do_solve<PSMF::LocalSolverVariant::NN,
+                           CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, call_count);
+                  break;
+                }
+              default:
+                AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+            }
+        }
+    else
+      do_solve<CT::LOCAL_SOLVER_[0],
+               CT::LAPLACE_TYPE_[0],
+               CT::SMOOTH_VMULT_[0],
+               CT::SMOOTH_INV_[0]>(0, call_count);
 
 
 
@@ -545,20 +649,51 @@ namespace Step64
             *pcout << "Max size reached, terminating." << std::endl;
             *pcout << std::endl;
 
-            for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-              {
-                unsigned int index = k;
+            if (CT::LAPLACE_TYPE_.size() > 1)
+              for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
+                {
+                  unsigned int index = k;
 
-                std::ostringstream oss;
+                  std::ostringstream oss;
 
-                oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
-                    << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
-                    << SmootherToString(CT::SMOOTH_INV_[0]) << " "
-                    << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << "]\n";
-                info_table[index].write_text(oss);
+                  oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
+                      << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+                      << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+                      << LocalSolverToString(CT::LOCAL_SOLVER_[0]) << "]\n";
+                  info_table[index].write_text(oss);
 
-                *pcout << oss.str() << std::endl;
-              }
+                  *pcout << oss.str() << std::endl;
+                }
+            else if (CT::LOCAL_SOLVER_.size() > 1)
+              for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+                {
+                  unsigned int index = k;
+
+                  std::ostringstream oss;
+
+                  oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
+                      << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+                      << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+                      << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << "]\n";
+                  info_table[index].write_text(oss);
+
+                  *pcout << oss.str() << std::endl;
+                }
+            else
+              for (unsigned int k = 0; k < 1; ++k)
+                {
+                  unsigned int index = k;
+
+                  std::ostringstream oss;
+
+                  oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
+                      << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+                      << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+                      << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << "]\n";
+                  info_table[index].write_text(oss);
+
+                  *pcout << oss.str() << std::endl;
+                }
 
             return;
           }

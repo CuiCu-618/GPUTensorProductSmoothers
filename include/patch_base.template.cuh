@@ -417,73 +417,6 @@ namespace PSMF
 
     setup_configuration(n_colors);
 
-    // Mapping
-    if (dim == 2)
-      {
-        lookup_table.insert({123, {{0, 1}}}); // x-y
-        lookup_table.insert({213, {{1, 0}}}); // y-x
-      }
-    else if (dim == 3)
-      {
-        lookup_table.insert({1234567, {{0, 1, 2}}}); // x-y-z
-        lookup_table.insert({1452367, {{0, 2, 1}}}); // x-z-y
-        lookup_table.insert({2134657, {{1, 0, 2}}}); // y-x-z
-        lookup_table.insert({2461357, {{1, 2, 0}}}); // y-z-x
-        lookup_table.insert({4152637, {{2, 0, 1}}}); // z-x-y
-        lookup_table.insert({4261537, {{2, 1, 0}}}); // z-y-x
-      }
-
-    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
-    constexpr unsigned int N         = fe_degree + 1;
-    constexpr unsigned int z         = dim == 2 ? 1 : fe_degree + 1;
-    h_to_l_host.resize(Util::pow(n_dofs_1d, dim) * dim * (dim - 1));
-    l_to_h_host.resize(Util::pow(n_dofs_1d, dim) * dim * (dim - 1));
-
-    auto generate_indices = [&](unsigned int label, unsigned int type) {
-      const unsigned int          offset = type * Util::pow(n_dofs_1d, dim);
-      std::array<unsigned int, 3> strides;
-      for (unsigned int i = 0; i < 3; ++i)
-        strides[i] = Util::pow(n_dofs_1d, lookup_table[label][i]);
-
-      unsigned int count = 0;
-
-      for (unsigned i = 0; i < dim - 1; ++i)
-        for (unsigned int j = 0; j < 2; ++j)
-          for (unsigned int k = 0; k < 2; ++k)
-            for (unsigned int l = 0; l < z; ++l)
-              for (unsigned int m = 0; m < fe_degree + 1; ++m)
-                for (unsigned int n = 0; n < fe_degree + 1; ++n)
-                  {
-                    h_to_l_host[offset + (i * N) * strides[2] +
-                                l * n_dofs_1d * n_dofs_1d +
-                                (j * N) * strides[1] + m * n_dofs_1d +
-                                (k * N) * strides[0] + n] = count;
-                    l_to_h_host[offset + count++] =
-                      (i * N) * strides[2] + l * n_dofs_1d * n_dofs_1d +
-                      (j * N) * strides[1] + m * n_dofs_1d +
-                      (k * N) * strides[0] + n;
-                  }
-    };
-    for (auto &el : ordering_to_type)
-      generate_indices(el.first, el.second);
-
-    alloc_arrays(&l_to_h, Util::pow(n_dofs_1d, dim) * dim * (dim - 1));
-    alloc_arrays(&h_to_l, Util::pow(n_dofs_1d, dim) * dim * (dim - 1));
-
-    cudaError_t error_code = cudaMemcpy(l_to_h,
-                                        l_to_h_host.data(),
-                                        Util::pow(n_dofs_1d, dim) * dim *
-                                          (dim - 1) * sizeof(unsigned int),
-                                        cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
-    error_code = cudaMemcpy(h_to_l,
-                            h_to_l_host.data(),
-                            Util::pow(n_dofs_1d, dim) * dim * (dim - 1) *
-                              sizeof(unsigned int),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
     auto copy_to_device = [](auto &device, const auto &host) {
       LinearAlgebra::ReadWriteVector<unsigned int> rw_vector(host.size());
       device.reinit(host.size());
@@ -500,6 +433,7 @@ namespace PSMF
         copy_to_device(dirichlet_indices, dirichlet_index_vector);
       }
 
+    constexpr unsigned n_dofs_1d = 2 * fe_degree + 1;
     constexpr unsigned n_dofs_2d = n_dofs_1d * n_dofs_1d;
 
     alloc_arrays(&eigenvalues[0],
@@ -533,8 +467,6 @@ namespace PSMF
     data_copy.first_dof          = first_dof_laplace[color];
     data_copy.patch_id           = patch_id[color];
     data_copy.patch_type         = patch_type[color];
-    data_copy.l_to_h             = l_to_h;
-    data_copy.h_to_l             = h_to_l;
     data_copy.laplace_mass_1d    = laplace_mass_1d;
     data_copy.laplace_stiff_1d   = laplace_stiff_1d;
     data_copy.bilaplace_stiff_1d = bilaplace_stiff_1d;
@@ -557,8 +489,6 @@ namespace PSMF
         data_copy[i].relaxation          = relaxation;
         data_copy[i].first_dof           = first_dof_smooth[color];
         data_copy[i].patch_type          = patch_type_smooth[color];
-        data_copy[i].l_to_h              = l_to_h;
-        data_copy[i].h_to_l              = h_to_l;
         data_copy[i].eigenvalues         = eigenvalues[i];
         data_copy[i].eigenvectors        = eigenvectors[i];
         data_copy[i].smooth_mass_1d      = smooth_mass_1d;
@@ -629,7 +559,7 @@ namespace PSMF
       for (unsigned int i = 0; i < 3; ++i)
         std::transform(tensor[i + shift].begin(),
                        tensor[i + shift].end(),
-                       &mat[n_dofs_2d],
+                       &mat[n_dofs_2d * i],
                        [](auto m) -> Number { return m.value()[0]; });
 
       cudaError_t error_code = cudaMemcpy(dst,
@@ -664,19 +594,19 @@ namespace PSMF
     auto bilaplace_tensor_inv = interior(bilaplace_tensor, 3);
 
 
-    // auto print_matrices = [](auto matrix) {
-    //   for (auto m = 0U; m < matrix.size(1); ++m)
-    //     {
-    //       for (auto n = 0U; n < matrix.size(0); ++n)
-    //         std::cout << matrix(m, n) << " ";
-    //       std::cout << std::endl;
-    //     }
-    //   std::cout << std::endl;
-    // };
+    auto print_matrices = [](auto matrix) {
+      for (auto m = 0U; m < matrix.size(1); ++m)
+        {
+          for (auto n = 0U; n < matrix.size(0); ++n)
+            std::cout << matrix(m, n) << " ";
+          std::cout << std::endl;
+        }
+      std::cout << std::endl;
+    };
 
-    // print_matrices(mass_tensor_inv.back());
-    // print_matrices(laplace_tensor_inv.back());
-    // print_matrices(bilaplace_tensor_inv.back());
+    // print_matrices(mass_tensor.back());
+    // print_matrices(laplace_tensor.back());
+    // print_matrices(bilaplace_tensor[3]);
 
     auto copy_vals = [](auto tensor, auto dst, auto shift) {
       constexpr unsigned int n_dofs_1d = Util::pow(2 * fe_degree - 1, 1);
@@ -762,7 +692,7 @@ namespace PSMF
                   if (direction1 != direction2)
                     rank1_tensors.emplace_back(LxLxM(direction1, direction2));
 
-              AssertDimension(rank1_tensors.size(), 2 * dim);
+              AssertDimension(rank1_tensors.size(), dim * dim);
 
               matrix_type local_matrices;
               local_matrices.reinit(rank1_tensors);
@@ -798,10 +728,29 @@ namespace PSMF
 
               matrix_type local_matrices;
 
-              local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
+              // local_matrices.reinit(rank1_tensors, matrix_state::separable);
 
-              auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
-              auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
+              std::array<Table<2, VectorizedArray<Number>>, dim> mass, bila;
+              for (unsigned int d = 0; d < dim; ++d)
+                {
+                  mass[d] = mass_tensor_inv[2];
+                  bila[d] = bilaplace_tensor_inv[indices[d]];
+                }
+
+              TensorProductData<dim, fe_degree, VectorizedArray<Number>>
+                tensor_product;
+              tensor_product.reinit(mass, bila);
+
+              std::array<AlignedVector<VectorizedArray<Number>>, dim>
+                eigenvalue_tensor;
+              std::array<Table<2, VectorizedArray<Number>>, dim>
+                eigenvector_tensor;
+              tensor_product.get_eigenvalues(eigenvalue_tensor);
+              tensor_product.get_eigenvectors(eigenvector_tensor);
+
+              // auto eigenvalue_tensor  =
+              // local_matrices.get_eigenvalue_tensor(); auto eigenvector_tensor
+              // = local_matrices.get_eigenvector_tensor();
 
               copy_vals(eigenvalue_tensor, eigenvalues[1], k + j * 3 + i * 9);
               copy_vecs(eigenvector_tensor, eigenvectors[1], k + j * 3 + i * 9);
@@ -810,142 +759,147 @@ namespace PSMF
 
 
             // KSVD
-            {
-              std::set<unsigned int> ksvd_tensor_indices = {0U, 1U};
+            if (dim == 2)
+              {
+                std::set<unsigned int> ksvd_tensor_indices = {0U, 1U};
 
-              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-                rank1_tensors;
+                std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+                  rank1_tensors;
 
-              for (auto direction = 0; direction < dim; ++direction)
-                rank1_tensors.emplace_back(BxMxM(direction, indices));
+                for (auto direction = 0; direction < dim; ++direction)
+                  rank1_tensors.emplace_back(BxMxM(direction, indices));
 
-              for (auto direction1 = 0; direction1 < dim; ++direction1)
-                for (auto direction2 = 0; direction2 < dim; ++direction2)
-                  if (direction1 != direction2)
-                    rank1_tensors.emplace_back(LxLxM(direction1, direction2));
+                for (auto direction1 = 0; direction1 < dim; ++direction1)
+                  for (auto direction2 = 0; direction2 < dim; ++direction2)
+                    if (direction1 != direction2)
+                      rank1_tensors.emplace_back(LxLxM(direction1, direction2));
 
-              AssertDimension(rank1_tensors.size(), dim * dim);
+                AssertDimension(rank1_tensors.size(), dim * dim);
 
-              // KSVD
-              std::array<std::size_t, dim> rows, columns;
-              for (auto d = 0U; d < dim; ++d)
-                {
-                  const auto &A_d = rank1_tensors.front()[d];
-                  rows[d]         = A_d.size(0);
-                  columns[d]      = A_d.size(1);
-                }
+                // KSVD
+                std::array<std::size_t, dim> rows, columns;
+                for (auto d = 0U; d < dim; ++d)
+                  {
+                    const auto &A_d = rank1_tensors.front()[d];
+                    rows[d]         = A_d.size(0);
+                    columns[d]      = A_d.size(1);
+                  }
 
-              const auto ksvd_rank = *(ksvd_tensor_indices.rbegin()) + 1;
-              AssertIndexRange(ksvd_rank, rank1_tensors.size() + 1);
-              auto ksvd_tensors =
-                Tensors::make_zero_rank1_tensors<dim, VectorizedArray<Number>>(
-                  ksvd_rank, rows, columns);
+                const auto ksvd_rank = *(ksvd_tensor_indices.rbegin()) + 1;
+                AssertIndexRange(ksvd_rank, rank1_tensors.size() + 1);
+                auto ksvd_tensors =
+                  Tensors::make_zero_rank1_tensors<dim,
+                                                   VectorizedArray<Number>>(
+                    ksvd_rank, rows, columns);
 
-              const auto &ksvd_singular_values =
-                compute_ksvd(rank1_tensors, ksvd_tensors, 5);
+                const auto &ksvd_singular_values =
+                  compute_ksvd(rank1_tensors, ksvd_tensors, 5);
 
-              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-                approximation;
-              for (auto n = 0U; n < ksvd_tensors.size(); ++n)
-                if (ksvd_tensor_indices.find(n) != ksvd_tensor_indices.cend())
-                  approximation.emplace_back(ksvd_tensors[n]);
+                std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
+                  approximation;
+                for (auto n = 0U; n < ksvd_tensors.size(); ++n)
+                  if (ksvd_tensor_indices.find(n) != ksvd_tensor_indices.cend())
+                    approximation.emplace_back(ksvd_tensors[n]);
 
-              AssertDimension(ksvd_tensor_indices.size(), approximation.size());
+                AssertDimension(ksvd_tensor_indices.size(),
+                                approximation.size());
 
-              if (approximation.size() == 2U)
-                {
-                  Number addition_to_min_eigenvalue = 0.025;
+                if (approximation.size() == 2U)
+                  {
+                    Number addition_to_min_eigenvalue = 0.025;
 
-                  matrix_type local_matrices;
+                    matrix_type local_matrices;
 
-                  /// first tensor must contain s.p.d. matrices ("mass
-                  /// matrices")
-                  typename matrix_type::AdditionalData additional_data;
-                  additional_data.state = matrix_state::ranktwo;
+                    /// first tensor must contain s.p.d. matrices ("mass
+                    /// matrices")
+                    typename matrix_type::AdditionalData additional_data;
+                    additional_data.state = matrix_state::ranktwo;
 
-                  local_matrices.reinit(approximation, additional_data);
+                    local_matrices.reinit(approximation, additional_data);
 
-                  const auto &tensor_of_eigenvalues =
-                    local_matrices.get_eigenvalue_tensor();
-                  const auto eigenvalues_ksvd1 =
-                    Tensors::kronecker_product<dim, VectorizedArray<Number>>(
-                      tensor_of_eigenvalues);
+                    const auto &tensor_of_eigenvalues =
+                      local_matrices.get_eigenvalue_tensor();
+                    const auto eigenvalues_ksvd1 =
+                      Tensors::kronecker_product<dim, VectorizedArray<Number>>(
+                        tensor_of_eigenvalues);
 
-                  /// if the rank-2 KSVD isn't positive definite we scale the
-                  /// second tensor of matrices by a factor \alpha (with 0 <
-                  /// \alpha < 1), thus obtaing an approximation that is better
-                  /// than the best rank-1 approximation but worse than the best
-                  /// rank-2 approximation. \alpha is computed at negligible
-                  /// costs due to the specific eigendecomposition with tensor
-                  /// structure
-                  if (ksvd_tensor_indices == std::set<unsigned int>{0U, 1U})
-                    {
-                      VectorizedArray<Number> alpha(1.);
-                      for (auto lane = 0U;
-                           lane < VectorizedArray<Number>::size();
-                           ++lane)
-                        {
-                          // std::cout << "eigenvalues of KSVD[1]:\n"
-                          //           <<
-                          //           vector_to_string(alignedvector_to_vector(eigenvalues_ksvd1,
-                          //           lane))
-                          //           << std::endl;
-                          const auto min_elem =
-                            std::min_element(eigenvalues_ksvd1.begin(),
-                                             eigenvalues_ksvd1.end(),
-                                             [&](const auto &lhs,
-                                                 const auto &rhs) {
-                                               return lhs[lane] < rhs[lane];
-                                             });
-                          const Number lambda_min = (*min_elem)[lane];
+                    /// if the rank-2 KSVD isn't positive definite we scale the
+                    /// second tensor of matrices by a factor \alpha (with 0 <
+                    /// \alpha < 1), thus obtaing an approximation that is
+                    /// better than the best rank-1 approximation but worse than
+                    /// the best rank-2 approximation. \alpha is computed at
+                    /// negligible costs due to the specific eigendecomposition
+                    /// with tensor structure
+                    if (ksvd_tensor_indices == std::set<unsigned int>{0U, 1U})
+                      {
+                        VectorizedArray<Number> alpha(1.);
+                        for (auto lane = 0U;
+                             lane < VectorizedArray<Number>::size();
+                             ++lane)
+                          {
+                            // std::cout << "eigenvalues of KSVD[1]:\n"
+                            //           <<
+                            //           vector_to_string(alignedvector_to_vector(eigenvalues_ksvd1,
+                            //           lane))
+                            //           << std::endl;
+                            const auto min_elem =
+                              std::min_element(eigenvalues_ksvd1.begin(),
+                                               eigenvalues_ksvd1.end(),
+                                               [&](const auto &lhs,
+                                                   const auto &rhs) {
+                                                 return lhs[lane] < rhs[lane];
+                                               });
+                            const Number lambda_min = (*min_elem)[lane];
 
-                          /// \alpha = -1 / ((1 + \epsilon) * \lambda_{min})
-                          if (lambda_min <
-                              -0.99) // KSVD isn't positive definite
-                            alpha[lane] /=
-                              -(1. + addition_to_min_eigenvalue) * lambda_min;
-                          if (alpha[lane] > 1.)
-                            alpha[lane] = 0.99;
-                        }
+                            /// \alpha = -1 / ((1 + \epsilon) * \lambda_{min})
+                            if (lambda_min <
+                                -0.99) // KSVD isn't positive definite
+                              alpha[lane] /=
+                                -(1. + addition_to_min_eigenvalue) * lambda_min;
+                            if (alpha[lane] > 1.)
+                              alpha[lane] = 0.99;
+                          }
 
-                      // std::cout << "alpha: " << varray_to_string(alpha) <<
-                      // std::endl;
-                      Tensors::scaling<dim>(alpha, approximation.at(1U));
-                      local_matrices.reinit(approximation, additional_data);
+                        // std::cout << "alpha: " << varray_to_string(alpha) <<
+                        // std::endl;
+                        Tensors::scaling<dim>(alpha, approximation.at(1U));
+                        local_matrices.reinit(approximation, additional_data);
 
-                      auto eigenvalue_tensor =
-                        local_matrices.get_eigenvalue_tensor();
-                      auto eigenvector_tensor =
-                        local_matrices.get_eigenvector_tensor();
+                        auto eigenvalue_tensor =
+                          local_matrices.get_eigenvalue_tensor();
+                        auto eigenvector_tensor =
+                          local_matrices.get_eigenvector_tensor();
 
-                      copy_vals(eigenvalue_tensor,
-                                eigenvalues[2],
-                                k + j * 3 + i * 9);
-                      copy_vecs(eigenvector_tensor,
-                                eigenvectors[2],
-                                k + j * 3 + i * 9);
+                        copy_vals(eigenvalue_tensor,
+                                  eigenvalues[2],
+                                  k + j * 3 + i * 9);
+                        copy_vecs(eigenvector_tensor,
+                                  eigenvectors[2],
+                                  k + j * 3 + i * 9);
 
-                      // auto eigenvalues_ = local_matrices.get_eigenvalues();
-                      // auto eigenvector_ = local_matrices.get_eigenvectors();
+                        // auto eigenvalues_ = local_matrices.get_eigenvalues();
+                        // auto eigenvector_ =
+                        // local_matrices.get_eigenvectors();
 
-                      // print_matrices(eigenvector_);
+                        // print_matrices(eigenvector_);
 
-                      // print_matrices(eigenvector_tensor[0]);
-                      // print_matrices(eigenvector_tensor[1]);
+                        // print_matrices(eigenvector_tensor[0]);
+                        // print_matrices(eigenvector_tensor[1]);
 
-                      // for (unsigned int j = 0; j < eigenvalues_.size(); ++j)
-                      //   std::cout << eigenvalues_[j] << " ";
-                      // std::cout << std::endl;
+                        // for (unsigned int j = 0; j < eigenvalues_.size();
+                        // ++j)
+                        //   std::cout << eigenvalues_[j] << " ";
+                        // std::cout << std::endl;
 
-                      // for (unsigned int i = 0; i < dim; ++i)
-                      //   for (unsigned int j = 0; j <
-                      //   eigenvalue_tensor[i].size();
-                      //   ++j)
-                      //     std::cout << eigenvalue_tensor[i][j] << " ";
-                      // std::cout << std::endl;
-                    }
-                }
-            }
+                        // for (unsigned int i = 0; i < dim; ++i)
+                        //   for (unsigned int j = 0; j <
+                        //   eigenvalue_tensor[i].size();
+                        //   ++j)
+                        //     std::cout << eigenvalue_tensor[i][j] << " ";
+                        // std::cout << std::endl;
+                      }
+                  }
+              }
 
 
             // Neural Network
