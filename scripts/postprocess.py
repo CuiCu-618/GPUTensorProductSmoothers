@@ -14,7 +14,8 @@ def read_data(files):
 
         for line in content:
             line = line.strip()
-            if line and line[0].isdigit():
+            words = line.split()
+            if line and words[0].isdigit() and words[1].isdigit():
                 values = []
                 for x in line.split():
                     try:
@@ -38,6 +39,10 @@ def write_convergence_table(filename, dataset, deg_start, sm_type, it_type, n_ke
         col = 11
     elif it_type == "frac":
         col = 12
+    elif it_type == "it_3d":
+        col = 7
+    elif it_type == "frac_3d":
+        col = 8
 
     if sm_type == "exact":
         sm = 0
