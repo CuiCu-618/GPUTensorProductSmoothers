@@ -16,10 +16,12 @@
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/timer.h>
 
+#include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_raviart_thomas_new.h>
 
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/tria.h>
@@ -70,6 +72,8 @@ public:
   using VectorTypeSP =
     LinearAlgebra::distributed::Vector<vcycle_number, MemorySpace::CUDA>;
 
+  using VectorTypeDPHost = Vector<full_number>;
+
   LaplaceProblem();
   ~LaplaceProblem();
   void
@@ -97,6 +101,8 @@ private:
   Triangulation<dim>                  triangulation;
   std::shared_ptr<FiniteElement<dim>> fe;
   DoFHandler<dim>                     dof_handler;
+  DoFHandler<dim>                     dof_handler_velocity;
+  DoFHandler<dim>                     dof_handler_pressure;
   MappingQ1<dim>                      mapping;
 
   MGConstrainedDoFs mg_constrained_dofs;
@@ -130,11 +136,17 @@ LaplaceProblem<dim, fe_degree>::LaplaceProblem()
   , fe([&]() -> std::shared_ptr<FiniteElement<dim>> {
     if (CT::DOF_LAYOUT_ == PSMF::DoFLayout::Q)
       return std::make_shared<FE_Q<dim>>(fe_degree);
-    else if (CT::DOF_LAYOUT_ == PSMF::DoFLayout::DGQ)
-      return std::make_shared<FE_DGQ<dim>>(fe_degree);
+    else if (CT::DOF_LAYOUT_ == PSMF::DoFLayout::RT)
+      return std::make_shared<FESystem<dim>>(FE_RaviartThomas_new<dim>(
+                                               fe_degree),
+                                             1,
+                                             FE_DGQLegendre<dim>(fe_degree),
+                                             1);
     return std::shared_ptr<FiniteElement<dim>>();
   }())
   , dof_handler(triangulation)
+  , dof_handler_velocity(triangulation)
+  , dof_handler_pressure(triangulation)
   , base_time_dp(0.)
   , base_time_sp(0.)
   , pcout(std::make_shared<ConditionalOStream>(std::cout, false))
@@ -154,24 +166,29 @@ LaplaceProblem<dim, fe_degree>::setup_system()
 {
   Timer time;
 
+  dof_handler_velocity.distribute_dofs(fe->get_sub_fe(0, dim));
+  dof_handler_velocity.distribute_mg_dofs();
+
+  dof_handler_pressure.distribute_dofs(fe->get_sub_fe(dim, 1));
+  dof_handler_pressure.distribute_mg_dofs();
+
   dof_handler.distribute_dofs(*fe);
   dof_handler.distribute_mg_dofs();
 
   n_dofs = dof_handler.n_dofs();
-  N      = 5;
-  n_mv   = dof_handler.n_dofs() < 10000000 ? 100 : 20;
+  N      = 1; // 5;
+  n_mv   = 1; // dof_handler.n_dofs() < 10000000 ? 100 : 20;
 
   *pcout << "Setting up dofs...\n";
 
-  const unsigned int nlevels = triangulation.n_global_levels();
-  for (unsigned int level = 0; level < nlevels; ++level)
-    Util::Lexicographic(dof_handler, level);
-  Util::Lexicographic(dof_handler);
+  // const unsigned int nlevels = triangulation.n_global_levels();
+  // for (unsigned int level = 0; level < nlevels; ++level)
+  //   Util::Lexicographic(dof_handler, level);
+  // Util::Lexicographic(dof_handler);
 
   *pcout << "Number of degrees of freedom: " << dof_handler.n_dofs() << " = ("
-         << ((int)std::pow(dof_handler.n_dofs() * 1.0000001, 1. / dim) - 1) /
-              fe->degree
-         << " x " << fe->degree << " + 1)^" << dim << std::endl;
+         << dof_handler_velocity.n_dofs() << " + "
+         << dof_handler_pressure.n_dofs() << ")" << std::endl;
 
   *pcout << "DoF setup time:         " << time.wall_time() << "s" << std::endl;
 
@@ -181,8 +198,8 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   // Initialization of Dirichlet boundaries
   std::set<types::boundary_id> dirichlet_boundary;
   dirichlet_boundary.insert(0);
-  mg_constrained_dofs.initialize(dof_handler);
-  mg_constrained_dofs.make_zero_boundary_constraints(dof_handler,
+  mg_constrained_dofs.initialize(dof_handler_velocity);
+  mg_constrained_dofs.make_zero_boundary_constraints(dof_handler_velocity,
                                                      dirichlet_boundary);
   MappingQ1<dim> mapping;
   maxlevel = triangulation.n_global_levels() - 1;
@@ -200,7 +217,8 @@ LaplaceProblem<dim, fe_degree>::setup_system()
     additional_data.granularity_scheme = CT::GRANULARITY_;
 
     mfdata_dp = std::make_shared<MatrixFreeDP>();
-    mfdata_dp->reinit(dof_handler,
+    mfdata_dp->reinit(dof_handler_velocity,
+                      dof_handler_pressure,
                       mg_constrained_dofs,
                       maxlevel,
                       additional_data);
@@ -214,7 +232,8 @@ LaplaceProblem<dim, fe_degree>::setup_system()
     additional_data.granularity_scheme = CT::GRANULARITY_;
 
     mfdata_sp = std::make_shared<MatrixFreeSP>();
-    mfdata_sp->reinit(dof_handler,
+    mfdata_sp->reinit(dof_handler_velocity,
+                      dof_handler_pressure,
                       mg_constrained_dofs,
                       maxlevel,
                       additional_data);
@@ -235,18 +254,23 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   system_rhs_dp = 1.;
   solution_dp   = 0.;
 
-  // LinearAlgebra::ReadWriteVector<full_number>
-  // rw_vector(dof_handler.n_dofs());
-  // // for (auto &val : rw_vector)
-  // // val = 1.;
+  LinearAlgebra::ReadWriteVector<full_number> rw_vector(dof_handler.n_dofs());
+  for (unsigned int i = 0; i < rw_vector.size(); ++i)
+    rw_vector[i] = i;
+  system_rhs_dp.import(rw_vector, VectorOperation::insert);
+  matrix_dp.vmult(solution_dp, system_rhs_dp);
+  solution_dp.print(std::cout);
+
+  // rw_vector = 0;
   // system_rhs_dp = 0.;
-  // for (unsigned int i = 0; i < system_rhs_dp.size(); ++i)
+  // for (unsigned int i = 0; i < 12; ++i)
   //   {
   //     rw_vector[i] = 1.;
   //     system_rhs_dp.import(rw_vector, VectorOperation::insert);
   //     matrix_dp.vmult(solution_dp, system_rhs_dp);
+  //     std::cout << i << std::endl;
   //     solution_dp.print(std::cout);
-  //     std::cout << i << " " << solution_dp.l2_norm() << std::endl;
+  //     // std::cout << i << " " << solution_dp.l2_norm() << std::endl;
   //     rw_vector[i] = 0;
   //   }
 
@@ -310,11 +334,8 @@ LaplaceProblem<dim, fe_degree>::bench_Ax()
         case PSMF::LaplaceVariant::BasicCell:
           do_Ax<PSMF::LaplaceVariant::BasicCell>();
           break;
-        case PSMF::LaplaceVariant::TensorCore:
-          do_Ax<PSMF::LaplaceVariant::TensorCore>();
-          break;
-        case PSMF::LaplaceVariant::TensorCoreMMA:
-          do_Ax<PSMF::LaplaceVariant::TensorCoreMMA>();
+        case PSMF::LaplaceVariant::MatrixStruct:
+          do_Ax<PSMF::LaplaceVariant::MatrixStruct>();
           break;
         case PSMF::LaplaceVariant::ConflictFree:
           do_Ax<PSMF::LaplaceVariant::ConflictFree>();
@@ -323,6 +344,18 @@ LaplaceProblem<dim, fe_degree>::bench_Ax()
           AssertThrow(false, ExcMessage("Invalid Laplace Variant."));
       }
 }
+
+template <int dim, typename VectorType, int spacedim>
+void
+reinit_vector(const DoFHandler<dim, spacedim> &mg_dof, VectorType &v)
+{
+  for (unsigned int level = v.min_level(); level <= v.max_level(); ++level)
+    {
+      unsigned int n = mg_dof.n_dofs(level);
+      v[level].reinit(n);
+    }
+}
+
 template <int dim, int fe_degree>
 void
 LaplaceProblem<dim, fe_degree>::bench_transfer()
@@ -336,7 +369,78 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
   u_coarse_ = 1.;
 
   PSMF::MGTransferCUDA<dim, full_number> mg_transfer(mg_constrained_dofs);
-  mg_transfer.build(dof_handler);
+  mg_transfer.build(dof_handler_velocity, dof_handler_pressure);
+
+  auto assign_vector_cuda = [](auto &vec) {
+    LinearAlgebra::ReadWriteVector<double> rw_vector(vec.size());
+    for (unsigned int i = 0; i < rw_vector.size(); ++i)
+      rw_vector(i) = i;
+
+    vec.import(rw_vector, VectorOperation::insert);
+  };
+
+  auto assign_vector_host = [](auto &vec, auto shift) {
+    for (unsigned int i = 0; i < vec.size(); ++i)
+      vec(i) = shift + i;
+  };
+
+  // check
+  {
+    MGLevelObject<VectorTypeDP> u(0, triangulation.n_levels() - 1);
+
+    reinit_vector(dof_handler, u);
+
+    const unsigned int max_level = u.max_level();
+
+    assign_vector_cuda(u[max_level - 1]);
+
+    std::cout << " CUDA\n";
+    mg_transfer.prolongate(max_level, u[max_level], u[max_level - 1]);
+    u[max_level].print(std::cout);
+
+    mg_transfer.restrict_and_add(max_level, u[max_level - 1], u[max_level]);
+    u[max_level - 1].print(std::cout);
+
+    mg_transfer.copy_from_mg(dof_handler, system_rhs_dp, u);
+    system_rhs_dp.print(std::cout);
+
+    u[max_level] = 0;
+    mg_transfer.copy_to_mg(dof_handler, u, system_rhs_dp);
+    u[max_level].print(std::cout);
+
+    // ref
+    MGTransferPrebuilt<VectorTypeDPHost> tran_v(mg_constrained_dofs);
+    tran_v.build(dof_handler_velocity);
+
+    MGTransferPrebuilt<VectorTypeDPHost> tran_p;
+    tran_p.build(dof_handler_pressure);
+
+    std::cout << "\n HOST\n";
+
+    // tran_v.print_matrices(std::cout);
+    // tran_p.print_matrices(std::cout);
+
+    MGLevelObject<VectorTypeDPHost> vec_v(0, triangulation.n_levels() - 1);
+    reinit_vector(dof_handler_velocity, vec_v);
+
+    MGLevelObject<VectorTypeDPHost> vec_p(0, triangulation.n_levels() - 1);
+    reinit_vector(dof_handler_pressure, vec_p);
+
+    assign_vector_host(vec_v[max_level - 1], 0);
+    assign_vector_host(vec_p[max_level - 1], vec_v[max_level - 1].size());
+
+    tran_v.prolongate(max_level, vec_v[max_level], vec_v[max_level - 1]);
+    vec_v[max_level].print(std::cout);
+
+    tran_p.prolongate(max_level, vec_p[max_level], vec_p[max_level - 1]);
+    vec_p[max_level].print(std::cout);
+
+    tran_v.restrict_and_add(max_level, vec_v[max_level - 1], vec_v[max_level]);
+    vec_v[max_level - 1].print(std::cout);
+
+    tran_p.restrict_and_add(max_level, vec_p[max_level - 1], vec_p[max_level]);
+    vec_p[max_level - 1].print(std::cout);
+  }
 
   Timer  time;
   double best_time  = 1e10;
@@ -361,7 +465,7 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
   *pcout << "Benchmarking Transfer in single precision...\n";
 
   PSMF::MGTransferCUDA<dim, vcycle_number> mg_transfer_(mg_constrained_dofs);
-  mg_transfer_.build(dof_handler);
+  mg_transfer_.build(dof_handler_velocity, dof_handler_pressure);
 
   for (unsigned int i = 0; i < N; ++i)
     {
@@ -406,10 +510,25 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
 
   smooth_dp.initialize(matrix_dp, smoother_data_dp);
 
+  auto assign_vector_cuda = [](auto &vec) {
+    LinearAlgebra::ReadWriteVector<double> rw_vector(vec.size());
+    for (unsigned int i = 0; i < rw_vector.size(); ++i)
+      rw_vector(i) = i;
+
+    vec.import(rw_vector, VectorOperation::insert);
+  };
+
   Timer  time;
   double best_time = 1e10;
 
-  system_rhs_dp = 1.;
+  assign_vector_cuda(system_rhs_dp);
+  assign_vector_cuda(solution_dp);
+
+  smooth_dp.step(solution_dp, system_rhs_dp);
+
+  std::cout << "TESTING SMOOTHER!!!\n";
+  solution_dp.print(std::cout);
+  std::cout << "\nTESTING SMOOTHER!!!\n";
 
   for (unsigned int i = 0; i < N; ++i)
     {
@@ -483,8 +602,8 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
                   for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
                     switch (CT::LOCAL_SOLVER_[k])
                       {
-                        case PSMF::LocalSolverVariant::Exact:
-                          do_smooth<PSMF::LocalSolverVariant::Exact,
+                        case PSMF::LocalSolverVariant::Direct:
+                          do_smooth<PSMF::LocalSolverVariant::Direct,
                                     PSMF::LaplaceVariant::Basic,
                                     PSMF::SmootherVariant::GLOBAL>();
                           break;
@@ -500,8 +619,8 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
                   for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
                     switch (CT::LOCAL_SOLVER_[k])
                       {
-                        case PSMF::LocalSolverVariant::Exact:
-                          do_smooth<PSMF::LocalSolverVariant::Exact,
+                        case PSMF::LocalSolverVariant::Direct:
+                          do_smooth<PSMF::LocalSolverVariant::Direct,
                                     PSMF::LaplaceVariant::Basic,
                                     PSMF::SmootherVariant::ConflictFree>();
                           break;
@@ -509,6 +628,46 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
                         case PSMF::LocalSolverVariant::KSVD:
                           do_smooth<PSMF::LocalSolverVariant::KSVD,
                                     PSMF::LaplaceVariant::Basic,
+                                    PSMF::SmootherVariant::ConflictFree>();
+                          break;
+                      }
+                  break;
+              }
+          break;
+        case PSMF::LaplaceVariant::MatrixStruct:
+          for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
+            switch (CT::SMOOTH_INV_[j])
+              {
+                case PSMF::SmootherVariant::GLOBAL:
+                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+                    switch (CT::LOCAL_SOLVER_[k])
+                      {
+                        case PSMF::LocalSolverVariant::Direct:
+                          do_smooth<PSMF::LocalSolverVariant::Direct,
+                                    PSMF::LaplaceVariant::MatrixStruct,
+                                    PSMF::SmootherVariant::GLOBAL>();
+                          break;
+                        case PSMF::LocalSolverVariant::Bila:
+                        case PSMF::LocalSolverVariant::KSVD:
+                          do_smooth<PSMF::LocalSolverVariant::KSVD,
+                                    PSMF::LaplaceVariant::MatrixStruct,
+                                    PSMF::SmootherVariant::GLOBAL>();
+                          break;
+                      }
+                  break;
+                case PSMF::SmootherVariant::ConflictFree:
+                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+                    switch (CT::LOCAL_SOLVER_[k])
+                      {
+                        case PSMF::LocalSolverVariant::Direct:
+                          do_smooth<PSMF::LocalSolverVariant::Direct,
+                                    PSMF::LaplaceVariant::ConflictFree,
+                                    PSMF::SmootherVariant::ConflictFree>();
+                          break;
+                        case PSMF::LocalSolverVariant::Bila:
+                        case PSMF::LocalSolverVariant::KSVD:
+                          do_smooth<PSMF::LocalSolverVariant::KSVD,
+                                    PSMF::LaplaceVariant::ConflictFree,
                                     PSMF::SmootherVariant::ConflictFree>();
                           break;
                       }
@@ -523,8 +682,8 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
                   for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
                     switch (CT::LOCAL_SOLVER_[k])
                       {
-                        case PSMF::LocalSolverVariant::Exact:
-                          do_smooth<PSMF::LocalSolverVariant::Exact,
+                        case PSMF::LocalSolverVariant::Direct:
+                          do_smooth<PSMF::LocalSolverVariant::Direct,
                                     PSMF::LaplaceVariant::ConflictFree,
                                     PSMF::SmootherVariant::GLOBAL>();
                           break;
@@ -540,8 +699,8 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
                   for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
                     switch (CT::LOCAL_SOLVER_[k])
                       {
-                        case PSMF::LocalSolverVariant::Exact:
-                          do_smooth<PSMF::LocalSolverVariant::Exact,
+                        case PSMF::LocalSolverVariant::Direct:
+                          do_smooth<PSMF::LocalSolverVariant::Direct,
                                     PSMF::LaplaceVariant::ConflictFree,
                                     PSMF::SmootherVariant::ConflictFree>();
                           break;

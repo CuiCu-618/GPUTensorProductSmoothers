@@ -11,7 +11,7 @@ INCLUDE_DIRECTORIES(
 )
 
 SET( SOURCE_FILES
-        biharm.cu
+        stokes.cu
         benchmark_mg.cu
         )
 

@@ -25,9 +25,6 @@ using namespace dealii;
 
 namespace Util
 {
-
-  constexpr unsigned int padding = 0;
-
   template <typename T>
   __host__ __device__ constexpr T
   pow(const T base, const int iexp)
@@ -38,6 +35,15 @@ namespace Util
                 base :
                 (((iexp % 2 == 1) ? base : 1) * pow(base * base, iexp / 2)));
   }
+
+
+  constexpr unsigned int padding = 0;
+
+  constexpr unsigned int DIM        = 2;
+  constexpr unsigned int MAX_DEGREE = 10;
+  constexpr unsigned int MAX_INTERIOR_PATCH_DOFS =
+    DIM * pow(2 * MAX_DEGREE, DIM - 1) * (2 * (MAX_DEGREE + 2) - 3) +
+    pow(2 * MAX_DEGREE, DIM);
 
   /**
    * Compute dofs in a patch based on first_dof.

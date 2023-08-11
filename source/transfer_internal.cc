@@ -85,9 +85,15 @@ namespace PSMF::internal
     std::vector<unsigned int>                  &localized_indices)
   {
     localized_indices.resize(mine.size(), numbers::invalid_unsigned_int);
+
     for (unsigned int i = 0; i < mine.size(); ++i)
       if (mine[i] != numbers::invalid_dof_index)
-        localized_indices[i] = part.global_to_local(mine[i]);
+        localized_indices[i] = mine[i];
+
+    (void)part;
+    // for (unsigned int i = 0; i < mine.size(); ++i)
+    //   if (mine[i] != numbers::invalid_dof_index)
+    //     localized_indices[i] = part.global_to_local(mine[i]);
   }
 
   void

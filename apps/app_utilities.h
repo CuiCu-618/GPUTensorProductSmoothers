@@ -63,8 +63,8 @@
   }
 
 SMO_MACRO(Smoother, GLOBAL, FUSED_L, ConflictFree, TensorCore);
-LA_MACRO(Laplace, Basic, BasicCell, ConflictFree, TensorCore, TensorCoreMMA);
-SMO_MACRO(LocalSolver, Exact, Bila, KSVD, NN);
+LA_MACRO(Laplace, Basic, BasicCell, ConflictFree, TensorCore, MatrixStruct);
+SMO_MACRO(LocalSolver, Direct, Bila, KSVD, NN);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);
 ENUM_MACRO(Granularity, none, user_define, multiple);
 
@@ -111,7 +111,7 @@ namespace Util
     const auto str_dof_layout  = DoFLayoutToString(CT::DOF_LAYOUT_);
     const auto str_granularity = GranularityToString(CT::GRANULARITY_);
 
-    oss << "biharm";
+    oss << "Stokes";
     oss << std::scientific << std::setprecision(2);
     oss << "_" << CT::DIMENSION_ << "D";
     oss << "_" << str_dof_layout;

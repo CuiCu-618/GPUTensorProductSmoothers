@@ -547,7 +547,7 @@ namespace PSMF
   struct TPEvaluatorSmootherInv<Number,
                                 n_dofs_1d,
                                 smoother,
-                                LocalSolverVariant::Exact,
+                                LocalSolverVariant::Direct,
                                 2>
   {
     __device__ void

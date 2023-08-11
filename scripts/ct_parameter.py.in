@@ -74,7 +74,7 @@ def parse_args():
                         help="maximum number of dofs"                    
     )
     parser.add_argument('-DLY','--dof-layout',
-                        default='Q',
+                        default='RT',
                         type=str,
                         choices=['Q','DGQ','RT'],
                         help="dof layout of finite element method"
@@ -86,13 +86,13 @@ def parse_args():
     parser.add_argument('-LA','--laplace_type',
                         default='B',
                         nargs='+',
-                        choices=['Basic','ConflictFree'],
+                        choices=['Basic','ConflictFree','MatrixStruct'],
                         help="variant of the Laplace operator kernel"
     )
     parser.add_argument('-SMV','--smooth_vmult',
                         default='B',
                         nargs='+',
-                        choices=['Basic','ConflictFree'],
+                        choices=['Basic','ConflictFree','MatrixStruct'],
                         help="variant of the Schwarz smoother vmult operator"
     )
     parser.add_argument('-SMI','--smooth_inv',
@@ -102,9 +102,9 @@ def parse_args():
                         help="variant of the Schwarz smoother inverse operator"
     )
     parser.add_argument('-SOL','--local_solver',
-                        default='K',
+                        default='D',
                         nargs='+',
-                        choices=['Exact','Bila','KSVD','NN'],
+                        choices=['Direct','Bila','KSVD','NN'],
                         help="variant of the local solver operator"
     )
     parser.add_argument('-G','--granularity',
@@ -171,6 +171,9 @@ class Parameter:
             elif kernel.endswith('Free'):
                 kernel_str += r'PSMF::LaplaceVariant::ConflictFree, '
                 count += 1
+            elif kernel.startswith('Matrix'):
+                kernel_str += r'PSMF::LaplaceVariant::MatrixStruct, '
+                count += 1
         self.laplace_type = ('constexpr std::array<PSMF::LaplaceVariant, ' + str(count) + '>', kernel_str + '}}')
 
     def smooth_vmult_prm(self,variant):
@@ -183,6 +186,9 @@ class Parameter:
                 count += 1
             elif kernel.endswith('Free'):
                 kernel_str += r'PSMF::LaplaceVariant::ConflictFree, '
+                count += 1
+            elif kernel.startswith('Matrix'):
+                kernel_str += r'PSMF::LaplaceVariant::MatrixStruct, '
                 count += 1
         self.smooth_vmult = ('constexpr std::array<PSMF::LaplaceVariant, ' + str(count) + '>', kernel_str + '}}')
 
@@ -204,8 +210,8 @@ class Parameter:
         kernel_str = '{{'
         count = 0
         for kernel in variant:
-            if kernel.startswith('Ex'):
-                kernel_str += r'PSMF::LocalSolverVariant::Exact, '
+            if kernel.startswith('D'):
+                kernel_str += r'PSMF::LocalSolverVariant::Direct, '
                 count += 1
             elif kernel.endswith('la'):
                 kernel_str += r'PSMF::LocalSolverVariant::Bila, '

@@ -55,9 +55,9 @@ namespace PSMF
     TensorCore,
 
     /**
-     * Using the Matrix Multiply and Accumulate ISA with inline PTX.
+     * Using the Matrix Structure.
      */
-    TensorCoreMMA
+    MatrixStruct
   };
 
 
@@ -93,7 +93,7 @@ namespace PSMF
 
   enum class LocalSolverVariant
   {
-    Exact,
+    Direct,
     Bila,
     KSVD,
     NN
@@ -152,6 +152,15 @@ namespace PSMF
       typename std::vector<std::vector<CellIterator>>::const_iterator;
 
     static constexpr unsigned int regular_vpatch_size = 1 << dim;
+
+    static constexpr unsigned int n_patch_dofs_rt =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * fe_degree + 3);
+
+    static constexpr unsigned int n_patch_dofs_dg =
+      Util::pow(2 * fe_degree + 2, dim);
+
+    static constexpr unsigned int n_patch_dofs =
+      n_patch_dofs_rt + n_patch_dofs_dg;
 
     /**
      * Standardized data struct to pipe additional data to LevelVertexPatch.
@@ -227,6 +236,14 @@ namespace PSMF
        *       four cells in a patch is stored consecutively.
        */
       unsigned int *first_dof;
+
+      unsigned int *patch_dof_laplace;
+      unsigned int *patch_dof_smooth;
+
+      /**
+       * Pointer to patch matrices for Stokes operator.
+       */
+      Number *vertex_patch_matrices;
 
       /**
        * Pointer to the patch cell ordering type.
@@ -320,6 +337,13 @@ namespace PSMF
            const unsigned int       mg_level,
            const AdditionalData    &additional_data = AdditionalData());
 
+    void
+    reinit(const DoFHandler<dim>   &dof_handler_velocity,
+           const DoFHandler<dim>   &dof_handler_pressure,
+           const MGConstrainedDoFs &mg_constrained_dofs,
+           const unsigned int       mg_level,
+           const AdditionalData    &additional_data = AdditionalData());
+
     /**
      * @brief This method runs the loop over all patches and apply the local operation on
      * each element in parallel.
@@ -368,6 +392,14 @@ namespace PSMF
     copy_constrained_values(const VectorType &src, VectorType &dst) const;
 
     /**
+     * Set the values of the constrained entries to zero. This is used
+     * to impose zero Dirichlet boundary condition.
+     */
+    template <typename VectorType>
+    void
+    set_constrained_values(VectorType &dst) const;
+
+    /**
      * Free all the memory allocated.
      */
     void
@@ -381,22 +413,28 @@ namespace PSMF
     memory_consumption() const;
 
     /**
-     * Helper function. Assemble 1d mass matrices.
+     * Helper function. Assemble 1d RT mass matrices.
      */
-    std::array<Table<2, VectorizedArray<Number>>, 3>
-    assemble_mass_tensor() const;
+    std::array<std::array<Table<2, Number>, 3>, dim>
+    assemble_RTmass_tensor() const;
 
     /**
-     * Helper function. Assemble 1d laplace matrices.
+     * Helper function. Assemble 1d RT laplace matrices.
      */
-    std::array<Table<2, VectorizedArray<Number>>, 3>
-    assemble_laplace_tensor() const;
+    std::array<std::array<Table<2, Number>, 6>, dim>
+    assemble_RTlaplace_tensor() const;
 
     /**
-     * Helper function. Assemble 1d bilaplace matrices.
+     * Helper function. Assemble 1d Mixed mass matrices.
      */
-    std::array<Table<2, VectorizedArray<Number>>, 6>
-    assemble_bilaplace_tensor() const;
+    std::array<std::array<Table<2, Number>, 3>, dim>
+    assemble_Mixmass_tensor() const;
+
+    /**
+     * Helper function. Assemble 1d Mixed derivative matrices.
+     */
+    std::array<std::array<Table<2, Number>, 3>, dim>
+    assemble_Mixder_tensor() const;
 
   private:
     /**
@@ -415,7 +453,9 @@ namespace PSMF
      * Helper function. Get tensor product data for each patch.
      */
     void
-    get_patch_data(const PatchIterator &patch, const unsigned int patch_id);
+    get_patch_data(const PatchIterator &patch_v,
+                   const PatchIterator &patch_p,
+                   const unsigned int   patch_id);
 
     /**
      * Gathering the locally owned and ghost cells attached to a common
@@ -492,12 +532,13 @@ namespace PSMF
     /**
      * Raw graphed of locally owned active patches.
      */
-    std::vector<std::vector<PatchIterator>> graph_ptr_raw;
-
+    std::vector<std::vector<PatchIterator>> graph_ptr_raw_velocity;
+    std::vector<std::vector<PatchIterator>> graph_ptr_raw_pressure;
     /**
      * Colored graphed of locally owned active patches.
      */
-    std::vector<std::vector<PatchIterator>> graph_ptr_colored;
+    std::vector<std::vector<PatchIterator>> graph_ptr_colored_velocity;
+    std::vector<std::vector<PatchIterator>> graph_ptr_colored_pressure;
 
     /**
      * Number of patches in each color.
@@ -510,6 +551,9 @@ namespace PSMF
      */
     const DoFHandler<dim> *dof_handler;
 
+    const DoFHandler<dim> *dof_handler_velocity;
+    const DoFHandler<dim> *dof_handler_pressure;
+
     /**
      * Vector of pointer to the the first degree of freedom
      * in each patch of each color.
@@ -520,12 +564,17 @@ namespace PSMF
     std::vector<unsigned int *> first_dof_laplace;
     std::vector<unsigned int *> first_dof_smooth;
 
+    std::vector<unsigned int *> patch_dof_laplace;
+    std::vector<unsigned int *> patch_dof_smooth;
+
     /**
      * Vector of the the first degree of freedom
      * in each patch of a single color.
      * Initialize on host and copy to device later.
      */
     std::vector<unsigned int> first_dof_host;
+
+    std::vector<unsigned int> patch_dofs_host;
 
     /**
      * Vector of pointer to patch type: left, middle, right.
@@ -587,34 +636,49 @@ namespace PSMF
     CudaVector<unsigned int> dirichlet_indices;
 
     /**
-     * Pointer to 1D mass matrix for bilapalace operator.
+     * Pointer to 1D RT mass matrix for Stokes operator.
      */
-    Number *laplace_mass_1d;
+    std::array<Number *, dim> rt_mass_1d;
 
     /**
-     * Pointer to 1D stiffness matrix for bilapalace operator.
+     * Pointer to 1D RT stiffness matrix for Stokes operator.
      */
-    Number *laplace_stiff_1d;
+    std::array<Number *, dim> rt_laplace_1d;
 
     /**
-     * Pointer to 1D stiffness matrix for bilapalace operator.
+     * Pointer to 1D mixed mass matrix for Stokes operator.
      */
-    Number *bilaplace_stiff_1d;
+    std::array<Number *, dim> mix_mass_1d;
 
     /**
-     * Pointer to 1D mass matrix for smoothing operator.
+     * Pointer to 1D mixed derivative matrix for Stokes operator.
      */
-    Number *smooth_mass_1d;
+    std::array<Number *, dim> mix_der_1d;
 
     /**
-     * Pointer to 1D stiffness matrix for smoothing operator.
+     * Pointer to patch matrices for Stokes operator.
      */
-    Number *smooth_stiff_1d;
+    Number *vertex_patch_matrices;
 
     /**
-     * Pointer to 1D bilaplace stiffness matrix for smoothing operator.
+     * Pointer to 1D RT mass matrix for smoothing operator.
      */
-    Number *smooth_bilaplace_1d;
+    std::array<Number *, dim> smooth_mass_1d;
+
+    /**
+     * Pointer to 1D RT stiffness matrix for smoothing operator.
+     */
+    std::array<Number *, dim> smooth_stiff_1d;
+
+    /**
+     * Pointer to 1D mixed mass matrix for smoothing operator.
+     */
+    std::array<Number *, dim> smooth_mixmass_1d;
+
+    /**
+     * Pointer to 1D mixed derivative matrix for smoothing operator.
+     */
+    std::array<Number *, dim> smooth_mixder_1d;
 
     /**
      * Pointer to 1D eigenvalues for smoothing operator.
@@ -676,6 +740,10 @@ namespace PSMF
     Number *tmp;
   };
 
+
+  __constant__ unsigned int h_interior[Util::MAX_INTERIOR_PATCH_DOFS];
+
+
   /**
    * Structure to pass the shared memory into a general user function.
    * Used for Bilaplace operator.
@@ -721,7 +789,7 @@ namespace PSMF
    * Exact local solver. TODO:
    */
   template <int dim, typename Number, SmootherVariant smoother>
-  struct SharedDataSmoother<dim, Number, smoother, LocalSolverVariant::Exact>
+  struct SharedDataSmoother<dim, Number, smoother, LocalSolverVariant::Direct>
     : SharedDataBase<Number>
   {
     using SharedDataBase<Number>::local_src;

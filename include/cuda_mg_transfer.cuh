@@ -100,7 +100,8 @@ namespace PSMF
      */
     void
     build(
-      const DoFHandler<dim, dim> &mg_dof,
+      const DoFHandler<dim, dim> &mg_dof_velocity,
+      const DoFHandler<dim, dim> &mg_dof_pressure,
       const std::vector<std::shared_ptr<const Utilities::MPI::Partitioner>>
         &external_partitioners =
           std::vector<std::shared_ptr<const Utilities::MPI::Partitioner>>());
@@ -273,8 +274,8 @@ namespace PSMF
     std::vector<unsigned int> n_owned_level_cells;
 
     /**
-     * Holds the one-dimensional embedding (prolongation) matrix from mother
-     * element to the children.
+     * Holds the (todo: one-dimensional) embedding (prolongation) matrix from
+     * mother element to the children. {P, R}
      */
     LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
       prolongation_matrix_1d;
@@ -343,8 +344,9 @@ namespace PSMF
      */
     void
     setup_prolongatino_matrix(
-      const DoFHandler<dim>                          &mg_dof,
-      std::vector<PSMF::internal::CSRMatrix<Number>> &transfer_matrix);
+      const DoFHandler<dim, dim>               &mg_dof_velocity,
+      const DoFHandler<dim, dim>               &mg_dof_pressure,
+      std::vector<internal::CSRMatrix<Number>> &transfer_matrix);
 
     /**
      * Internal function to fill copy_indice.
@@ -418,7 +420,8 @@ namespace PSMF
     template <int dim, typename Number>
     void
     setup_transfer(
-      const DoFHandler<dim>   &dof_handler,
+      const DoFHandler<dim>   &dof_handler_velocity,
+      const DoFHandler<dim>   &dof_handler_pressure,
       const MGConstrainedDoFs *mg_constrained_dofs,
       const std::vector<std::shared_ptr<const Utilities::MPI::Partitioner>>
                                              &external_partitioners,
@@ -440,10 +443,11 @@ namespace PSMF
       // tensorized operations, we align the degrees of freedom
       // lexicographically. We distinguish FE_Q elements and FE_DGQ elements
 
-      const ::Triangulation<dim> &tria = dof_handler.get_triangulation();
+      const ::Triangulation<dim> &tria =
+        dof_handler_velocity.get_triangulation();
 
       // ---------- 1. Extract info about the finite element
-      elem_info.reinit(dof_handler);
+      elem_info.reinit(dof_handler_velocity);
 
       // ---------- 2. Extract and match dof indices between child and parent
       const unsigned int n_levels = tria.n_global_levels();
@@ -453,8 +457,11 @@ namespace PSMF
 
       const unsigned int n_child_cell_dofs = elem_info.n_child_cell_dofs;
 
-      std::vector<types::global_dof_index> local_dof_indices(
-        dof_handler.get_fe().n_dofs_per_cell());
+      std::vector<types::global_dof_index> local_dof_indices_v(
+        dof_handler_velocity.get_fe().n_dofs_per_cell());
+
+      std::vector<types::global_dof_index> local_dof_indices_p(
+        dof_handler_pressure.get_fe().n_dofs_per_cell());
 
       AssertDimension(target_partitioners.max_level(), n_levels - 1);
       Assert(external_partitioners.empty() ||
@@ -468,19 +475,21 @@ namespace PSMF
           std::vector<types::global_dof_index> ghosted_level_dofs;
 
           // step 2.1: loop over the cells on the coarse side
-          typename ::DoFHandler<dim>::cell_iterator cell,
-            endc = dof_handler.end(level - 1);
-          for (cell = dof_handler.begin(level - 1); cell != endc; ++cell)
+          typename ::DoFHandler<dim>::cell_iterator
+            cell_v = dof_handler_velocity.begin(level - 1),
+            cell_p = dof_handler_pressure.begin(level - 1),
+            endc_v = dof_handler_velocity.end(level - 1);
+          for (; cell_v != endc_v; ++cell_v, ++cell_p)
             {
               // need to look into a cell if it has children and it is locally
               // owned
-              if (!cell->has_children())
+              if (!cell_v->has_children())
                 continue;
 
-              bool consider_cell =
-                (tria.locally_owned_subdomain() ==
-                   numbers::invalid_subdomain_id ||
-                 cell->level_subdomain_id() == tria.locally_owned_subdomain());
+              bool consider_cell = (tria.locally_owned_subdomain() ==
+                                      numbers::invalid_subdomain_id ||
+                                    cell_v->level_subdomain_id() ==
+                                      tria.locally_owned_subdomain());
 
               if (!consider_cell)
                 continue;
@@ -493,7 +502,7 @@ namespace PSMF
               // restriction/prolongation between level-1 and level) and the
               // remote case (which needs to store DoF indices for the
               // operations between level and level+1).
-              AssertDimension(cell->n_children(),
+              AssertDimension(cell_v->n_children(),
                               GeometryInfo<dim>::max_children_per_cell);
 
               // const std::size_t start_index =
@@ -504,9 +513,13 @@ namespace PSMF
               //   parent_level_dof_indices[start_index + i] =
               //     local_dof_indices[i];
 
-              cell->get_mg_dof_indices(local_dof_indices);
-              for (auto ind : local_dof_indices)
+              cell_v->get_mg_dof_indices(local_dof_indices_v);
+              cell_p->get_mg_dof_indices(local_dof_indices_p);
+              for (auto ind : local_dof_indices_v)
                 level_dof_indices_parent[level - 1].push_back(ind);
+              for (auto ind : local_dof_indices_p)
+                level_dof_indices_parent[level - 1].push_back(
+                  dof_handler_velocity.n_dofs(level - 1) + ind);
 
               std::unordered_set<unsigned int> s;
               for (unsigned int c = 0;
@@ -515,30 +528,50 @@ namespace PSMF
                 {
                   if (!consider_cell)
                     continue;
-                  cell->child(c)->get_mg_dof_indices(local_dof_indices);
+                  cell_v->child(c)->get_mg_dof_indices(local_dof_indices_v);
 
                   resolve_identity_constraints(mg_constrained_dofs,
                                                level,
-                                               local_dof_indices);
+                                               local_dof_indices_v);
 
                   const IndexSet &owned_level_dofs =
-                    dof_handler.locally_owned_mg_dofs(level);
-                  for (const auto local_dof_index : local_dof_indices)
+                    dof_handler_velocity.locally_owned_mg_dofs(level);
+                  for (const auto local_dof_index : local_dof_indices_v)
                     if (!owned_level_dofs.is_element(local_dof_index))
                       ghosted_level_dofs.push_back(local_dof_index);
 
-                  for (auto ind : local_dof_indices)
+                  for (auto ind : local_dof_indices_v)
                     if (s.count(ind) == 0)
                       {
                         child_level_dof_indices.push_back(ind);
                         s.insert(ind);
                       }
                 }
+
+              for (unsigned int c = 0;
+                   c < GeometryInfo<dim>::max_children_per_cell;
+                   ++c)
+                {
+                  if (!consider_cell)
+                    continue;
+                  cell_p->child(c)->get_mg_dof_indices(local_dof_indices_p);
+
+                  // const IndexSet &owned_level_dofs =
+                  //   dof_handler_pressure.locally_owned_mg_dofs(level);
+                  // for (const auto local_dof_index : local_dof_indices_p)
+                  //   if (!owned_level_dofs.is_element(local_dof_index))
+                  //     ghosted_level_dofs.push_back(local_dof_index);
+
+                  for (auto ind : local_dof_indices_p)
+                    child_level_dof_indices.push_back(
+                      dof_handler_velocity.n_dofs(level) + ind);
+                }
               // n_child_cell_dofs = s.size();
             }
           n_owned_level_cells[level - 1] = counter;
 
-          reinit_level_partitioner(dof_handler.locally_owned_mg_dofs(level),
+          reinit_level_partitioner(dof_handler_velocity.locally_owned_mg_dofs(
+                                     level),
                                    ghosted_level_dofs,
                                    external_partitioners.empty() ?
                                      nullptr :
@@ -567,12 +600,13 @@ namespace PSMF
       for (unsigned int level = 1; level < n_levels; ++level)
         {
           LinearAlgebra::distributed::Vector<Number> touch_count(
-            target_partitioners[level]);
+            dof_handler_velocity.n_dofs(level) +
+            dof_handler_pressure.n_dofs(level));
           for (unsigned int c = 0; c < n_owned_level_cells[level - 1]; ++c)
             for (unsigned int j = 0; j < elem_info.n_child_cell_dofs; ++j)
-              touch_count.local_element(
-                level_dof_indices_child[level][elem_info.n_child_cell_dofs * c +
-                                               j]) += Number(1.);
+              touch_count[level_dof_indices_child
+                            [level][elem_info.n_child_cell_dofs * c + j]] +=
+                Number(1.);
           touch_count.compress(VectorOperation::add);
           touch_count.update_ghost_values();
 
@@ -583,10 +617,8 @@ namespace PSMF
               {
                 weights_on_refined[level - 1][c * n_child_cell_dofs + j] =
                   Number(1.) /
-                  touch_count.local_element(
-                    level_dof_indices_child[level]
-                                           [elem_info.n_child_cell_dofs * c +
-                                            j]);
+                  touch_count[level_dof_indices_child
+                                [level][elem_info.n_child_cell_dofs * c + j]];
               }
         }
     }

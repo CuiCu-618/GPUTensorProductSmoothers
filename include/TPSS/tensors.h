@@ -121,6 +121,37 @@ namespace Tensors
     return matrix_out;
   }
 
+  template <typename Number>
+  FullMatrix<Number>
+  kronecker_product_(Table<2, Number> &matrix1, Table<2, Number> &matrix0)
+  {
+    const unsigned int n_rows0 = matrix0.n_rows();
+    const unsigned int n_cols0 = matrix0.n_cols();
+    const unsigned int n_rows1 = matrix1.n_rows();
+    const unsigned int n_cols1 = matrix1.n_cols();
+    FullMatrix<Number> matrix_out;
+    matrix_out.reinit(n_rows1 * n_rows0, n_cols1 * n_cols0);
+
+    for (unsigned int i1 = 0; i1 < n_rows1; ++i1)
+      for (unsigned int j1 = 0; j1 < n_cols1; ++j1)
+        for (unsigned int i0 = 0; i0 < n_rows0; ++i0)
+          for (unsigned int j0 = 0; j0 < n_cols0; ++j0)
+            matrix_out(i1 * n_rows0 + i0, j1 * n_cols0 + j0) =
+              matrix1(i1, j1) * matrix0(i0, j0);
+
+    return matrix_out;
+  }
+
+  template <typename Number>
+  FullMatrix<Number>
+  kronecker_product_(Table<2, Number> &matrix2,
+                     Table<2, Number> &matrix1,
+                     Table<2, Number> &matrix0)
+  {
+    Table<2, Number> tmp = kronecker_product_(matrix1, matrix0);
+    return kronecker_product_(matrix2, tmp);
+  }
+
 
 
   /**

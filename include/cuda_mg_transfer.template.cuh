@@ -16,6 +16,7 @@
 
 #include "cuda_mg_transfer.cuh"
 #include "cuda_vector.cuh"
+#include "transfer_internal.h"
 
 namespace PSMF
 {
@@ -30,9 +31,13 @@ namespace PSMF
   class MGTransferHelper
   {
   protected:
-    static constexpr unsigned int n_coarse = Util::pow(fe_degree + 1, dim);
-    static constexpr unsigned int n_fine   = Util::pow(2 * fe_degree + 1, dim);
-    static constexpr unsigned int M        = 2;
+    static constexpr unsigned int n_coarse =
+      dim * Util::pow(fe_degree + 1, dim - 1) * (fe_degree + 2) +
+      Util::pow(fe_degree + 1, dim);
+
+    static constexpr unsigned int n_fine =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * fe_degree + 3) +
+      Util::pow(2 * fe_degree + 2, dim);
 
     Number             *values;
     const Number       *weights;
@@ -58,6 +63,12 @@ namespace PSMF
       , dof_indices_coarse(idx_coarse)
       , dof_indices_fine(idx_fine)
     {}
+
+    template <int kernel>
+    __device__ void
+    reduce()
+    {}
+
 
     __device__ void
     weigh_values()
@@ -161,19 +172,6 @@ namespace PSMF
     MGRestrictHelper(Number             *buf,
                      const Number       *w,
                      const Number       *shvals,
-                     const unsigned int *idx_coarse,
-                     const unsigned int *idx_fine)
-      : MGTransferHelper<dim, fe_degree, Number>(buf,
-                                                 w,
-                                                 shvals,
-                                                 idx_coarse,
-                                                 idx_fine)
-    {}
-
-    __device__
-    MGRestrictHelper(Number             *buf,
-                     const Number       *w,
-                     const Number       *shvals,
                      const unsigned int *row_ptr,
                      const unsigned int *col_idx,
                      const unsigned int *idx_coarse,
@@ -236,29 +234,27 @@ namespace PSMF
   };
 
 
-  namespace internal
+  extern __shared__ double data_d[];
+  extern __shared__ float  data_f[];
+
+  template <typename Number>
+  __device__ inline Number *
+  get_shared_data_ptr();
+
+  template <>
+  __device__ inline double *
+  get_shared_data_ptr()
   {
-    extern __shared__ double shmem_d[];
-    extern __shared__ float  shmem_f[];
+    return data_d;
+  }
 
-    template <typename Number>
-    __device__ inline Number *
-    get_shared_mem_ptr();
+  template <>
+  __device__ inline float *
+  get_shared_data_ptr()
+  {
+    return data_f;
+  }
 
-    template <>
-    __device__ inline double *
-    get_shared_mem_ptr()
-    {
-      return shmem_d;
-    }
-
-    template <>
-    __device__ inline float *
-    get_shared_mem_ptr()
-    {
-      return shmem_f;
-    }
-  } // namespace internal
 
   template <int dim, int degree, typename loop_body, typename Number>
   __global__ void
@@ -272,10 +268,13 @@ namespace PSMF
             const unsigned int *dof_indices_fine,
             const unsigned int  n_child_cell_dofs)
   {
-    const unsigned int n_coarse    = Util::pow(degree + 1, dim);
+    constexpr unsigned int n_coarse =
+      dim * Util::pow(degree + 1, dim - 1) * (degree + 2) +
+      Util::pow(degree + 1, dim);
+
     const unsigned int coarse_cell = blockIdx.x;
 
-    loop_body body(internal::get_shared_mem_ptr<Number>(),
+    loop_body body(get_shared_data_ptr<Number>(),
                    weights + coarse_cell * n_child_cell_dofs,
                    shape_values,
                    row_ptr,
@@ -297,17 +296,24 @@ namespace PSMF
     const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &src)
     const
   {
-    constexpr unsigned int n_fine_dofs = Util::pow(degree * 2 + 1, dim);
-    constexpr unsigned int n_fine_size = n_fine_dofs * sizeof(Number);
-    // constexpr unsigned int n_coarse_dofs_1d = degree + 1;
+    constexpr unsigned int n_coarse =
+      dim * Util::pow(degree + 1, dim - 1) * (degree + 2) +
+      Util::pow(degree + 1, dim);
+    constexpr unsigned int n_fine_dofs =
+      dim * Util::pow(2 * degree + 2, dim - 1) * (2 * degree + 3) +
+      Util::pow(2 * degree + 2, dim);
 
-    const unsigned int n_coarse_cells = n_owned_level_cells[fine_level - 1];
+    constexpr unsigned int n_fine_size = n_fine_dofs * sizeof(Number);
+
+    AssertDimension(n_child_cell_dofs, n_fine_dofs);
 
     constexpr TransferVariant transfer_vatiant =
       loop_body<dim, degree, Number>::transfer_variant;
 
+    const unsigned int n_coarse_cells = n_owned_level_cells[fine_level - 1];
+
     // kernel parameters
-    dim3 bk_dim(n_fine_dofs);
+    dim3 bk_dim(n_fine_dofs, 1, 1);
     dim3 gd_dim(n_coarse_cells);
 
     AssertCuda(cudaFuncSetAttribute(
@@ -333,7 +339,7 @@ namespace PSMF
   template <int dim, typename Number>
   MGTransferCUDA<dim, Number>::MGTransferCUDA()
     : fe_degree(0)
-    , element_is_continuous(true)
+    , element_is_continuous(false)
     , n_components(0)
     , n_child_cell_dofs(0)
   {}
@@ -341,7 +347,7 @@ namespace PSMF
   template <int dim, typename Number>
   MGTransferCUDA<dim, Number>::MGTransferCUDA(const MGConstrainedDoFs &mg_c)
     : fe_degree(0)
-    , element_is_continuous(true)
+    , element_is_continuous(false)
     , n_components(0)
     , n_child_cell_dofs(0)
   {
@@ -377,20 +383,22 @@ namespace PSMF
   template <int dim, typename Number>
   void
   MGTransferCUDA<dim, Number>::build(
-    const DoFHandler<dim, dim> &mg_dof,
+    const DoFHandler<dim, dim> &mg_dof_velocity,
+    const DoFHandler<dim, dim> &mg_dof_pressure,
     const std::vector<std::shared_ptr<const Utilities::MPI::Partitioner>>
       &external_partitioners)
   {
-    Assert(mg_dof.has_level_dofs(),
+    Assert(mg_dof_velocity.has_level_dofs() && mg_dof_pressure.has_level_dofs(),
            ExcMessage(
              "The underlying DoFHandler object has not had its "
              "distribute_mg_dofs() function called, but this is a prerequisite "
              "for multigrid transfers. You will need to call this function, "
              "probably close to where you already call distribute_dofs()."));
 
-    fill_copy_indices(mg_dof);
+    fill_copy_indices(mg_dof_velocity);
 
-    const unsigned int n_levels = mg_dof.get_triangulation().n_global_levels();
+    const unsigned int n_levels =
+      mg_dof_velocity.get_triangulation().n_global_levels();
 
     std::vector<std::vector<Number>>       weights_host;
     std::vector<std::vector<unsigned int>> level_dof_indices_parent_host;
@@ -404,7 +412,7 @@ namespace PSMF
     std::vector<std::vector<std::vector<unsigned short>>>
       dirichlet_indices_host;
 
-    std::vector<PSMF::internal::CSRMatrix<Number>> transfer_matrix;
+    std::vector<internal::CSRMatrix<Number>> transfer_matrix;
 
     ghosted_level_vector.resize(0, n_levels - 1);
 
@@ -414,8 +422,10 @@ namespace PSMF
       vector_partitioners[level] =
         ghosted_level_vector[level].get_partitioner();
 
+
     internal::ElementInfo<Number> elem_info;
-    internal::setup_transfer<dim, Number>(mg_dof,
+    internal::setup_transfer<dim, Number>(mg_dof_velocity,
+                                          mg_dof_pressure,
                                           this->mg_constrained_dofs,
                                           external_partitioners,
                                           elem_info,
@@ -435,7 +445,9 @@ namespace PSMF
     //---------------------------------------------------------------------------
     // transfer stuff from host to device
     //---------------------------------------------------------------------------
-    setup_prolongatino_matrix(mg_dof, transfer_matrix);
+    setup_prolongatino_matrix(mg_dof_velocity,
+                              mg_dof_pressure,
+                              transfer_matrix);
     transfer_matrix_val.resize(2);
     transfer_matrix_row_ptr.resize(2);
     transfer_matrix_col_idx.resize(2);
@@ -456,12 +468,22 @@ namespace PSMF
                        level_dof_indices_parent_host[l]);
         copy_to_device(level_dof_indices_child[l],
                        level_dof_indices_child_host[l]);
+
+        // std::cout << "Level " << l << std::endl;
+        // for (auto ind : level_dof_indices_parent_host[l])
+        //   std::cout << ind << " ";
+        // std::cout << "\n\n";
       }
 
     weights_on_refined.resize(n_levels - 1);
     for (unsigned int l = 0; l < n_levels - 1; l++)
       {
         copy_to_device(weights_on_refined[l], weights_host[l]);
+
+        // std::cout << "Level " << l << std::endl;
+        // for (auto ind : weights_host[l])
+        //   std::cout << ind << " ";
+        // std::cout << "\n\n";
       }
 
     child_offset_in_parent.resize(n_levels - 1);
@@ -665,10 +687,11 @@ namespace PSMF
     const MGLevelObject<
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>> &src) const
   {
-    (void)mg_dof;
     AssertIndexRange(src.max_level(),
                      mg_dof.get_triangulation().n_global_levels());
     AssertIndexRange(src.min_level(), src.max_level() + 1);
+
+    (void)mg_dof;
 
     if (perform_plain_copy)
       {
@@ -758,59 +781,110 @@ namespace PSMF
   template <int dim, typename Number>
   void
   MGTransferCUDA<dim, Number>::setup_prolongatino_matrix(
-    const DoFHandler<dim>                    &dof_handler,
+    const DoFHandler<dim, dim>               &mg_dof_velocity,
+    const DoFHandler<dim, dim>               &mg_dof_pressure,
     std::vector<internal::CSRMatrix<Number>> &transfer_matrix)
   {
     Triangulation<dim> tr(
       Triangulation<dim>::limit_level_difference_at_vertices);
     GridGenerator::hyper_cube(tr, 0, 1);
     tr.refine_global(1);
-    DoFHandler<dim> mgdof(tr);
-    mgdof.distribute_dofs(dof_handler.get_fe());
-    mgdof.distribute_mg_dofs();
-
-    // MGConstrainedDoFs mg_constrained_dofs;
-    // mg_constrained_dofs.initialize(mgdof);
-    // mg_constrained_dofs.make_zero_boundary_constraints(mgdof, {0});
-
-    MGTransferPrebuilt<Vector<Number>> transfer_ref;
-    transfer_ref.build(mgdof);
 
     // COO format to CSR format
     std::vector<unsigned int> row, col;
     std::vector<Number>       val;
-    std::string               temp_str;
 
-    std::ostringstream oss;
-    transfer_ref.print_matrices(oss);
+    // velocity
 
-    std::string        data = oss.str();
-    std::istringstream iss(data);
+    DoFHandler<dim> mgdof_v(tr);
+    mgdof_v.distribute_dofs(mg_dof_velocity.get_fe());
+    mgdof_v.distribute_mg_dofs();
+    {
+      // MGConstrainedDoFs mg_constrained_dofs;
+      // mg_constrained_dofs.initialize(mgdof_v);
+      // mg_constrained_dofs.make_zero_boundary_constraints(mgdof_v, {0});
 
-    int count = 0;
-    for (std::string line; std::getline(iss, line);)
-      {
-        std::stringstream str_strm;
-        str_strm << line;
+      MGTransferPrebuilt<Vector<Number>> transfer_ref;
+      transfer_ref.build(mgdof_v);
 
-        str_strm >> temp_str; // take words into temp_str one by one
+      std::string temp_str;
 
-        int p1 = temp_str.find("(");
-        int p2 = temp_str.find(",");
-        int p3 = temp_str.find(")");
+      std::ostringstream oss;
+      transfer_ref.print_matrices(oss);
 
-        if (p1 < 0)
-          continue;
-        row.push_back(std::stoi(temp_str.substr(p1 + 1, p2 - p1 - 1)));
-        col.push_back(std::stoi(temp_str.substr(p2 + 1, p3 - p2 - 1)));
+      // transfer_ref.print_matrices(std::cout);
 
-        str_strm >> temp_str;
+      std::string        data = oss.str();
+      std::istringstream iss(data);
 
-        val.push_back(std::stod(temp_str));
+      for (std::string line; std::getline(iss, line);)
+        {
+          std::stringstream str_strm;
+          str_strm << line;
 
-        count++;
-        temp_str = ""; // clear temp string
-      }
+          str_strm >> temp_str; // take words into temp_str one by one
+
+          int p1 = temp_str.find("(");
+          int p2 = temp_str.find(",");
+          int p3 = temp_str.find(")");
+
+          if (p1 < 0)
+            continue;
+          row.push_back(std::stoi(temp_str.substr(p1 + 1, p2 - p1 - 1)));
+          col.push_back(std::stoi(temp_str.substr(p2 + 1, p3 - p2 - 1)));
+
+          str_strm >> temp_str;
+
+          val.push_back(std::stod(temp_str));
+
+          temp_str = ""; // clear temp string
+        }
+    }
+
+    // pressure
+
+    DoFHandler<dim> mgdof_p(tr);
+    mgdof_p.distribute_dofs(mg_dof_pressure.get_fe());
+    mgdof_p.distribute_mg_dofs();
+    {
+      MGTransferPrebuilt<Vector<Number>> transfer_ref;
+      transfer_ref.build(mgdof_p);
+
+      std::string temp_str;
+
+      std::ostringstream oss;
+      transfer_ref.print_matrices(oss);
+
+      // transfer_ref.print_matrices(std::cout);
+
+      std::string        data = oss.str();
+      std::istringstream iss(data);
+
+      for (std::string line; std::getline(iss, line);)
+        {
+          std::stringstream str_strm;
+          str_strm << line;
+
+          str_strm >> temp_str; // take words into temp_str one by one
+
+          int p1 = temp_str.find("(");
+          int p2 = temp_str.find(",");
+          int p3 = temp_str.find(")");
+
+          if (p1 < 0)
+            continue;
+          row.push_back(mgdof_v.n_dofs(1) +
+                        std::stoi(temp_str.substr(p1 + 1, p2 - p1 - 1)));
+          col.push_back(mgdof_v.n_dofs(0) +
+                        std::stoi(temp_str.substr(p2 + 1, p3 - p2 - 1)));
+
+          str_strm >> temp_str;
+
+          val.push_back(std::stod(temp_str));
+
+          temp_str = ""; // clear temp string
+        }
+    }
 
     std::vector<internal::COOEntry<Number>> coo_entries(row.size());
     for (unsigned int i = 0; i < val.size(); ++i)
@@ -818,6 +892,8 @@ namespace PSMF
         coo_entries[i].row   = row[i];
         coo_entries[i].col   = col[i];
         coo_entries[i].value = val[i];
+
+        // std::cout << row[i] << ", " << col[i] << " " << val[i] << std::endl;
       }
 
     auto coo_to_csr = [&](auto coo, unsigned int num_rows, unsigned int) {
@@ -864,15 +940,18 @@ namespace PSMF
     };
 
     auto prolongation_matrix =
-      coo_to_csr(coo_entries, mgdof.n_dofs(1), mgdof.n_dofs(0));
+      coo_to_csr(coo_entries,
+                 mgdof_v.n_dofs(1) + mgdof_p.n_dofs(1),
+                 mgdof_v.n_dofs(0) + mgdof_p.n_dofs(0));
     transfer_matrix.push_back(prolongation_matrix);
 
     // transpose_coo
     for (unsigned int i = 0; i < coo_entries.size(); ++i)
       std::swap(coo_entries[i].row, coo_entries[i].col);
 
-    auto restriction_matrix =
-      coo_to_csr(coo_entries, mgdof.n_dofs(0), mgdof.n_dofs(1));
+    auto restriction_matrix = coo_to_csr(coo_entries,
+                                         mgdof_v.n_dofs(0) + mgdof_p.n_dofs(0),
+                                         mgdof_v.n_dofs(1) + mgdof_p.n_dofs(1));
     transfer_matrix.push_back(restriction_matrix);
   }
 
@@ -946,6 +1025,7 @@ namespace PSMF
               break;
             }
       }
+    perform_plain_copy = true;
   }
 } // namespace PSMF
 

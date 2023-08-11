@@ -11,9 +11,17 @@
 
 #include <deal.II/base/graph_coloring.h>
 
+#include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_raviart_thomas_new.h>
+#include <deal.II/fe/fe_tools.h>
+
+#include <deal.II/matrix_free/shape_info.h>
+
 #include <fstream>
 
+#include "TPSS/tensors.h"
 #include "loop_kernel.cuh"
+#include "renumber.h"
 
 namespace PSMF
 {
@@ -52,12 +60,23 @@ namespace PSMF
       Utilities::CUDA::free(patch_type_color_ptr);
     patch_type_smooth.clear();
 
-    Utilities::CUDA::free(laplace_mass_1d);
-    Utilities::CUDA::free(laplace_stiff_1d);
-    Utilities::CUDA::free(bilaplace_stiff_1d);
-    Utilities::CUDA::free(smooth_mass_1d);
-    Utilities::CUDA::free(smooth_stiff_1d);
-    Utilities::CUDA::free(smooth_bilaplace_1d);
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        Utilities::CUDA::free(smooth_mass_1d[d]);
+        Utilities::CUDA::free(smooth_stiff_1d[d]);
+        Utilities::CUDA::free(smooth_mixmass_1d[d]);
+        Utilities::CUDA::free(smooth_mixder_1d[d]);
+      }
+
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        Utilities::CUDA::free(rt_mass_1d[d]);
+        Utilities::CUDA::free(rt_laplace_1d[d]);
+        Utilities::CUDA::free(mix_mass_1d[d]);
+        Utilities::CUDA::free(mix_der_1d[d]);
+      }
+
+    Utilities::CUDA::free(vertex_patch_matrices);
 
     Utilities::CUDA::free(eigenvalues[0]);
     for (unsigned int i = 1; i < 4; ++i)
@@ -184,25 +203,60 @@ namespace PSMF
   template <int dim, int fe_degree, typename Number>
   void
   LevelVertexPatch<dim, fe_degree, Number>::get_patch_data(
-    const PatchIterator &patch,
+    const PatchIterator &patch_v,
+    const PatchIterator &patch_p,
     const unsigned int   patch_id)
   {
-    std::vector<unsigned int> local_dof_indices(Util::pow(fe_degree + 1, dim));
-    std::vector<unsigned int> numbering(regular_vpatch_size);
-    std::iota(numbering.begin(), numbering.end(), 0);
+    const unsigned int n_cell_rt =
+      dof_handler_velocity->get_fe().n_dofs_per_cell();
+    const unsigned int n_cell_dg =
+      dof_handler_pressure->get_fe().n_dofs_per_cell();
 
-    // first_dof
-    for (unsigned int cell = 0; cell < 1; ++cell)
+    std::vector<unsigned int> local_dof_indices(n_cell_rt + n_cell_dg);
+
+    std::set<unsigned int> dofs_set;
+    std::set<unsigned int> dofs_set_p;
+
+    unsigned int it = 0;
+    // patch_dofs
+    for (unsigned int cell = 0; cell < regular_vpatch_size; ++cell)
       {
-        auto cell_ptr = (*patch)[cell];
-        cell_ptr->get_mg_dof_indices(local_dof_indices);
-        first_dof_host[patch_id * 1 + cell] = local_dof_indices[0];
+        auto cell_ptr_v = (*patch_v)[cell];
+        cell_ptr_v->get_mg_dof_indices(local_dof_indices);
+
+        for (unsigned int i = 0; i < n_cell_rt; ++i)
+          if (dofs_set.find(local_dof_indices[i]) == dofs_set.end())
+            {
+              patch_dofs_host[patch_id * n_patch_dofs + it] =
+                local_dof_indices[i];
+              dofs_set.insert(local_dof_indices[i]);
+
+              it++;
+            }
+
+        auto cell_ptr_p = (*patch_p)[cell];
+        cell_ptr_p->get_mg_dof_indices(local_dof_indices);
+        for (unsigned int i = 0; i < n_cell_dg; ++i)
+          patch_dofs_host[patch_id * n_patch_dofs + n_patch_dofs_rt +
+                          cell * n_cell_dg + i] =
+            dof_handler_velocity->n_dofs(level) + local_dof_indices[i];
+
+
+        // for (auto ind : local_dof_indices)
+        //   std::cout << ind << " ";
+        // std::cout << std::endl;
       }
+    AssertDimension(it, n_patch_dofs_rt);
+
+    // std::cout << patch_id << std::endl;
+    // for (unsigned int i = n_patch_dofs_rt; i < n_patch_dofs; ++i)
+    //   std::cout << patch_dofs_host[patch_id * n_patch_dofs + i] << " ";
+    // std::cout << std::endl;
 
     // patch_type. TODO: Fix: only works on [0,1]^d
     // TODO: level == 1, one patch only.
     const double h            = 1. / Util::pow(2, level);
-    auto         first_center = (*patch)[0]->center();
+    auto         first_center = (*patch_v)[0]->center();
 
     if (level == 1)
       for (unsigned int d = 0; d < dim; ++d)
@@ -262,6 +316,21 @@ namespace PSMF
   template <int dim, int fe_degree, typename Number>
   void
   LevelVertexPatch<dim, fe_degree, Number>::reinit(
+    const DoFHandler<dim>   &mg_dof_v,
+    const DoFHandler<dim>   &mg_dof_p,
+    const MGConstrainedDoFs &mg_constrained_dofs,
+    const unsigned int       mg_level,
+    const AdditionalData    &additional_data)
+  {
+    dof_handler_velocity = &mg_dof_v;
+    dof_handler_pressure = &mg_dof_p;
+
+    reinit(mg_dof_v, mg_constrained_dofs, mg_level, additional_data);
+  }
+
+  template <int dim, int fe_degree, typename Number>
+  void
+  LevelVertexPatch<dim, fe_degree, Number>::reinit(
     const DoFHandler<dim>   &mg_dof,
     const MGConstrainedDoFs &mg_constrained_dofs,
     const unsigned int       mg_level,
@@ -294,28 +363,55 @@ namespace PSMF
       }
 
     // create patches
-    std::vector<std::vector<CellIterator>> cell_collections;
-    cell_collections = std::move(gather_vertex_patches(*dof_handler, level));
+    std::vector<std::vector<CellIterator>> cell_collections_velocity;
+    cell_collections_velocity =
+      std::move(gather_vertex_patches(*dof_handler_velocity, level));
 
-    graph_ptr_raw.clear();
-    graph_ptr_raw.resize(1);
-    for (auto patch = cell_collections.begin(); patch != cell_collections.end();
+    std::vector<std::vector<CellIterator>> cell_collections_pressure;
+    cell_collections_pressure =
+      std::move(gather_vertex_patches(*dof_handler_pressure, level));
+
+    graph_ptr_raw_velocity.clear();
+    graph_ptr_raw_velocity.resize(1);
+    for (auto patch = cell_collections_velocity.begin();
+         patch != cell_collections_velocity.end();
          ++patch)
-      graph_ptr_raw[0].push_back(patch);
+      graph_ptr_raw_velocity[0].push_back(patch);
+
+    graph_ptr_raw_pressure.clear();
+    graph_ptr_raw_pressure.resize(1);
+    for (auto patch = cell_collections_pressure.begin();
+         patch != cell_collections_pressure.end();
+         ++patch)
+      graph_ptr_raw_pressure[0].push_back(patch);
 
     // coloring
-    graph_ptr_colored.clear();
+    graph_ptr_colored_velocity.clear();
+    graph_ptr_colored_pressure.clear();
     if (1)
       {
-        graph_ptr_colored.resize(regular_vpatch_size);
-        for (auto patch = cell_collections.begin();
-             patch != cell_collections.end();
+        graph_ptr_colored_velocity.resize(regular_vpatch_size);
+        for (auto patch = cell_collections_velocity.begin();
+             patch != cell_collections_velocity.end();
              ++patch)
           {
             auto first_cell = (*patch)[0];
 
-            graph_ptr_colored[first_cell->parent()->child_iterator_to_index(
-                                first_cell)]
+            graph_ptr_colored_velocity[first_cell->parent()
+                                         ->child_iterator_to_index(first_cell)]
+              .push_back(patch);
+          }
+
+
+        graph_ptr_colored_pressure.resize(regular_vpatch_size);
+        for (auto patch = cell_collections_pressure.begin();
+             patch != cell_collections_pressure.end();
+             ++patch)
+          {
+            auto first_cell = (*patch)[0];
+
+            graph_ptr_colored_pressure[first_cell->parent()
+                                         ->child_iterator_to_index(first_cell)]
               .push_back(patch);
           }
       }
@@ -325,20 +421,27 @@ namespace PSMF
           return get_face_conflicts<dim, fe_degree, Number>(filter);
         };
 
-        graph_ptr_colored = std::move(GraphColoring::make_graph_coloring(
-          cell_collections.cbegin(), cell_collections.cend(), fun));
+        graph_ptr_colored_velocity = std::move(
+          GraphColoring::make_graph_coloring(cell_collections_velocity.cbegin(),
+                                             cell_collections_velocity.cend(),
+                                             fun));
+
+        graph_ptr_colored_pressure = std::move(
+          GraphColoring::make_graph_coloring(cell_collections_pressure.cbegin(),
+                                             cell_collections_pressure.cend(),
+                                             fun));
       }
 
     if (use_coloring)
-      n_colors = graph_ptr_colored.size();
+      n_colors = graph_ptr_colored_velocity.size();
     else
       n_colors = 1;
 
     setup_color_arrays(n_colors);
 
-    for (unsigned int i = 0; i < graph_ptr_colored.size(); ++i)
+    for (unsigned int i = 0; i < graph_ptr_colored_velocity.size(); ++i)
       {
-        auto n_patches      = graph_ptr_colored[i].size();
+        auto n_patches      = graph_ptr_colored_velocity[i].size();
         n_patches_smooth[i] = n_patches;
 
         patch_type_host.clear();
@@ -348,13 +451,19 @@ namespace PSMF
         patch_type_host.resize(n_patches * dim);
         first_dof_host.resize(n_patches * 1);
 
-        auto patch     = graph_ptr_colored[i].begin(),
-             end_patch = graph_ptr_colored[i].end();
-        for (unsigned int p_id = 0; patch != end_patch; ++patch, ++p_id)
-          get_patch_data(*patch, p_id);
+        patch_dofs_host.resize(n_patches * n_patch_dofs);
+
+        auto patch_v   = graph_ptr_colored_velocity[i].begin(),
+             end_patch = graph_ptr_colored_velocity[i].end();
+        auto patch_p   = graph_ptr_colored_pressure[i].begin();
+
+        for (unsigned int p_id = 0; patch_v != end_patch;
+             ++patch_v, ++patch_p, ++p_id)
+          get_patch_data(*patch_v, *patch_p, p_id);
 
         alloc_arrays(&first_dof_smooth[i], n_patches * 1);
         alloc_arrays(&patch_type_smooth[i], n_patches * dim);
+        alloc_arrays(&patch_dof_smooth[i], n_patches * n_patch_dofs);
 
         cudaError_t error_code =
           cudaMemcpy(first_dof_smooth[i],
@@ -368,10 +477,21 @@ namespace PSMF
                                 dim * n_patches * sizeof(unsigned int),
                                 cudaMemcpyHostToDevice);
         AssertCuda(error_code);
+
+        error_code = cudaMemcpy(patch_dof_smooth[i],
+                                patch_dofs_host.data(),
+                                n_patch_dofs * n_patches * sizeof(unsigned int),
+                                cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
       }
 
     std::vector<std::vector<PatchIterator>> tmp_ptr;
-    tmp_ptr = use_coloring ? graph_ptr_colored : graph_ptr_raw;
+    tmp_ptr =
+      use_coloring ? graph_ptr_colored_velocity : graph_ptr_raw_velocity;
+
+    std::vector<std::vector<PatchIterator>> tmp_ptr_p;
+    tmp_ptr_p =
+      use_coloring ? graph_ptr_colored_pressure : graph_ptr_raw_pressure;
 
     ordering_to_type.clear();
     ordering_types = 0;
@@ -387,14 +507,19 @@ namespace PSMF
         patch_type_host.resize(n_patches * dim);
         first_dof_host.resize(n_patches * 1);
 
+        patch_dofs_host.resize(n_patches * n_patch_dofs);
+
         auto patch = tmp_ptr[i].begin(), end_patch = tmp_ptr[i].end();
-        for (unsigned int p_id = 0; patch != end_patch; ++patch, ++p_id)
-          get_patch_data(*patch, p_id);
+        auto patch_p = tmp_ptr_p[i].begin();
+        for (unsigned int p_id = 0; patch != end_patch;
+             ++patch, ++patch_p, ++p_id)
+          get_patch_data(*patch, *patch_p, p_id);
 
         // alloc_and_copy_arrays(i);
         alloc_arrays(&first_dof_laplace[i], n_patches * 1);
         alloc_arrays(&patch_id[i], n_patches);
         alloc_arrays(&patch_type[i], n_patches * dim);
+        alloc_arrays(&patch_dof_laplace[i], n_patches * n_patch_dofs);
 
         cudaError_t error_code = cudaMemcpy(patch_id[i],
                                             patch_id_host.data(),
@@ -408,9 +533,22 @@ namespace PSMF
                                 cudaMemcpyHostToDevice);
         AssertCuda(error_code);
 
+        // for (unsigned int j = 0; j < patch_type_host.size(); ++j)
+        //   {
+        //     std::cout << patch_type_host[j] << " ";
+        //     if ((j + 1) % dim == 0)
+        //       std::cout << std::endl;
+        //   }
+
         error_code = cudaMemcpy(patch_type[i],
                                 patch_type_host.data(),
                                 dim * n_patches * sizeof(unsigned int),
+                                cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+
+        error_code = cudaMemcpy(patch_dof_laplace[i],
+                                patch_dofs_host.data(),
+                                n_patch_dofs * n_patches * sizeof(unsigned int),
                                 cudaMemcpyHostToDevice);
         AssertCuda(error_code);
       }
@@ -418,6 +556,32 @@ namespace PSMF
     setup_configuration(n_colors);
 
     // Mapping
+    DoFMapping<dim, fe_degree> dm;
+
+    auto h_interior_host_rt = dm.get_h_to_l_rt_interior();
+    auto h_interior_host_dg = dm.get_h_to_l_dg_normal();
+
+    std::sort(h_interior_host_rt.begin(), h_interior_host_rt.end());
+    std::sort(h_interior_host_dg.begin(), h_interior_host_dg.end());
+
+    for (auto &i : h_interior_host_dg)
+      i += n_patch_dofs_rt;
+
+    h_interior_host_rt.insert(h_interior_host_rt.end(),
+                              h_interior_host_dg.begin(),
+                              h_interior_host_dg.end());
+
+    // for (auto i : h_interior_host_rt)
+    //   std::cout << i << " ";
+
+    cudaError_t cuda_error =
+      cudaMemcpyToSymbol(h_interior,
+                         h_interior_host_rt.data(),
+                         h_interior_host_rt.size() * sizeof(unsigned int),
+                         0,
+                         cudaMemcpyHostToDevice);
+    AssertCuda(cuda_error);
+
     if (dim == 2)
       {
         lookup_table.insert({123, {{0, 1}}}); // x-y
@@ -500,21 +664,40 @@ namespace PSMF
         copy_to_device(dirichlet_indices, dirichlet_index_vector);
       }
 
-    constexpr unsigned n_dofs_2d = n_dofs_1d * n_dofs_1d;
+    constexpr unsigned n_dofs_2d =
+      (2 * fe_degree + 2) * (2 * (fe_degree + 2) - 1);
+
+    constexpr unsigned int n_patch_dofs =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 1) +
+      Util::pow(2 * fe_degree + 2, dim);
+
+    constexpr unsigned int n_patch_dofs_inv =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 3) +
+      Util::pow(2 * fe_degree + 2, dim);
+
+    alloc_arrays(&vertex_patch_matrices,
+                 Util::pow(n_patch_dofs, 2) * Util::pow(3, dim));
 
     alloc_arrays(&eigenvalues[0],
-                 Util::pow(Util::pow(n_dofs_1d, dim), 2) * Util::pow(3, dim));
+                 Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
     for (unsigned int i = 1; i < 4; ++i)
       {
         alloc_arrays(&eigenvalues[i], n_dofs_1d * dim * Util::pow(3, dim));
         alloc_arrays(&eigenvectors[i], n_dofs_2d * dim * Util::pow(3, dim));
       }
-    alloc_arrays(&smooth_mass_1d, n_dofs_2d * 3);
-    alloc_arrays(&smooth_stiff_1d, n_dofs_2d * 3);
-    alloc_arrays(&smooth_bilaplace_1d, n_dofs_2d * 3);
-    alloc_arrays(&laplace_mass_1d, n_dofs_2d * 3);
-    alloc_arrays(&laplace_stiff_1d, n_dofs_2d * 3);
-    alloc_arrays(&bilaplace_stiff_1d, n_dofs_2d * 3);
+
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        alloc_arrays(&smooth_mass_1d[d], n_dofs_2d * 3 * dim);
+        alloc_arrays(&smooth_stiff_1d[d], n_dofs_2d * 3 * dim);
+        alloc_arrays(&smooth_mixmass_1d[d], n_dofs_2d * 3 * dim);
+        alloc_arrays(&smooth_mixder_1d[d], n_dofs_2d * 3 * dim);
+
+        alloc_arrays(&rt_mass_1d[d], n_dofs_2d * 3 * dim);
+        alloc_arrays(&rt_laplace_1d[d], n_dofs_2d * 3 * dim);
+        alloc_arrays(&mix_mass_1d[d], n_dofs_2d * 3 * dim);
+        alloc_arrays(&mix_der_1d[d], n_dofs_2d * 3 * dim);
+      }
 
     reinit_tensor_product_laplace();
     reinit_tensor_product_smoother();
@@ -535,9 +718,12 @@ namespace PSMF
     data_copy.patch_type         = patch_type[color];
     data_copy.l_to_h             = l_to_h;
     data_copy.h_to_l             = h_to_l;
-    data_copy.laplace_mass_1d    = laplace_mass_1d;
-    data_copy.laplace_stiff_1d   = laplace_stiff_1d;
-    data_copy.bilaplace_stiff_1d = bilaplace_stiff_1d;
+    data_copy.laplace_mass_1d    = rt_mass_1d[0];
+    data_copy.laplace_stiff_1d   = rt_mass_1d[0];
+    data_copy.bilaplace_stiff_1d = rt_mass_1d[0];
+
+    data_copy.patch_dof_laplace     = patch_dof_laplace[color];
+    data_copy.vertex_patch_matrices = vertex_patch_matrices;
 
     return data_copy;
   }
@@ -561,9 +747,11 @@ namespace PSMF
         data_copy[i].h_to_l              = h_to_l;
         data_copy[i].eigenvalues         = eigenvalues[i];
         data_copy[i].eigenvectors        = eigenvectors[i];
-        data_copy[i].smooth_mass_1d      = smooth_mass_1d;
-        data_copy[i].smooth_stiff_1d     = smooth_stiff_1d;
-        data_copy[i].smooth_bilaplace_1d = smooth_bilaplace_1d;
+        data_copy[i].smooth_mass_1d      = rt_mass_1d[0];
+        data_copy[i].smooth_stiff_1d     = rt_mass_1d[0];
+        data_copy[i].smooth_bilaplace_1d = rt_mass_1d[0];
+
+        data_copy[i].patch_dof_smooth = patch_dof_smooth[color];
       }
 
     return data_copy;
@@ -578,7 +766,7 @@ namespace PSMF
   {
     op.setup_kernel(patch_per_block);
 
-    for (unsigned int i = 0; i < graph_ptr_colored.size(); ++i)
+    for (unsigned int i = 0; i < graph_ptr_colored_velocity.size(); ++i)
       if (n_patches_smooth[i] > 0)
         {
           op.loop_kernel(src,
@@ -603,6 +791,7 @@ namespace PSMF
     for (unsigned int i = 0; i < n_colors; ++i)
       if (n_patches_laplace[i] > 0)
         {
+          // std::cout << n_patches_laplace[i] << std::endl;
           op.loop_kernel(src,
                          dst,
                          get_laplace_data(i),
@@ -618,61 +807,78 @@ namespace PSMF
   LevelVertexPatch<dim, fe_degree, Number>::reinit_tensor_product_smoother()
     const
   {
-    auto mass_tensor      = assemble_mass_tensor();
-    auto laplace_tensor   = assemble_laplace_tensor();
-    auto bilaplace_tensor = assemble_bilaplace_tensor();
+    auto RT_mass    = assemble_RTmass_tensor();
+    auto RT_laplace = assemble_RTlaplace_tensor();
+    auto Mix_mass   = assemble_Mixmass_tensor();
+    auto Mix_der    = assemble_Mixder_tensor();
 
-    auto copy_mats = [](auto tensor, auto dst, auto shift) {
-      constexpr unsigned int n_dofs_2d = Util::pow(2 * fe_degree + 1, 2);
+    auto copy_to_device =
+      [](auto tensor, auto dst, unsigned int s, unsigned int e) {
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            const unsigned int n_elements = tensor[d][s].n_elements();
 
-      auto mat = new Number[n_dofs_2d * 3];
-      for (unsigned int i = 0; i < 3; ++i)
-        std::transform(tensor[i + shift].begin(),
-                       tensor[i + shift].end(),
-                       &mat[n_dofs_2d],
-                       [](auto m) -> Number { return m.value()[0]; });
+            auto mat = new Number[n_elements * (e - s)];
+            for (unsigned int i = s; i < e; ++i)
+              std::transform(tensor[d][i].begin(),
+                             tensor[d][i].end(),
+                             &mat[n_elements * (i - s)],
+                             [](auto m) -> Number { return m; });
 
-      cudaError_t error_code = cudaMemcpy(dst,
-                                          mat,
-                                          3 * n_dofs_2d * sizeof(Number),
-                                          cudaMemcpyHostToDevice);
-      AssertCuda(error_code);
+            cudaError_t error_code =
+              cudaMemcpy(dst[d],
+                         mat,
+                         (e - s) * n_elements * sizeof(Number),
+                         cudaMemcpyHostToDevice);
+            AssertCuda(error_code);
 
-      delete[] mat;
-    };
+            delete[] mat;
+          }
+      };
 
-    copy_mats(mass_tensor, smooth_mass_1d, 0);
-    copy_mats(laplace_tensor, smooth_stiff_1d, 0);
-    copy_mats(bilaplace_tensor, smooth_bilaplace_1d, 3);
+    copy_to_device(RT_mass, smooth_mass_1d, 2, 3);
+    copy_to_device(RT_laplace, smooth_stiff_1d, 3, 6);
+    copy_to_device(Mix_mass, smooth_mixmass_1d, 2, 3);
+    copy_to_device(Mix_der, smooth_mixder_1d, 2, 3);
 
-    auto interior = [](auto matrix, auto shift) {
-      std::array<Table<2, VectorizedArray<Number>>, 3> dst;
-      for (unsigned int m = 0; m < 3; ++m)
+    auto interior = [](auto matrix, unsigned int s, unsigned int e) {
+      std::array<std::vector<Table<2, Number>>, dim> dst;
+
+      for (unsigned int d = 0; d < dim; ++d)
         {
-          dst[m].reinit(matrix[m + shift].n_rows() - 2,
-                        matrix[m + shift].n_cols() - 2);
+          dst[d].resize(e - s);
+          for (unsigned int m = s; m < e; ++m)
+            {
+              dst[d][m - s].reinit(matrix[d][m].n_rows() - 2,
+                                   matrix[d][m].n_cols() - 2);
 
-          for (unsigned int i = 0; i < matrix[m + shift].n_rows() - 2; ++i)
-            for (unsigned int j = 0; j < matrix[m + shift].n_cols() - 2; ++j)
-              dst[m](i, j) = matrix[m + shift](i + 1, j + 1);
+              for (unsigned int i = 0; i < matrix[d][m].n_rows() - 2; ++i)
+                for (unsigned int j = 0; j < matrix[d][m].n_cols() - 2; ++j)
+                  dst[d][m - s](i, j) = matrix[d][m](i + 1, j + 1);
+            }
         }
       return dst;
     };
 
-    auto mass_tensor_inv      = interior(mass_tensor, 0);
-    auto laplace_tensor_inv   = interior(laplace_tensor, 0);
-    auto bilaplace_tensor_inv = interior(bilaplace_tensor, 3);
+    auto rt_mass_int    = interior(RT_mass, 2, 3);
+    auto rt_laplace_int = interior(RT_laplace, 3, 6);
+    auto mix_mass_int   = interior(Mix_mass, 2, 3);
+    auto mix_der_int    = interior(Mix_der, 2, 3);
 
 
-    // auto print_matrices = [](auto matrix) {
-    //   for (auto m = 0U; m < matrix.size(1); ++m)
-    //     {
-    //       for (auto n = 0U; n < matrix.size(0); ++n)
-    //         std::cout << matrix(m, n) << " ";
-    //       std::cout << std::endl;
-    //     }
-    //   std::cout << std::endl;
-    // };
+    auto print_matrices = [](auto matrix) {
+      for (auto i = 0U; i < matrix.size(); ++i)
+        {
+          for (auto m = 0U; m < matrix[i].size(0); ++m)
+            {
+              for (auto n = 0U; n < matrix[i].size(1); ++n)
+                std::cout << matrix[i](m, n) << " ";
+              std::cout << std::endl;
+            }
+          std::cout << std::endl;
+        }
+      std::cout << std::endl;
+    };
 
     // print_matrices(mass_tensor_inv.back());
     // print_matrices(laplace_tensor_inv.back());
@@ -716,71 +922,262 @@ namespace PSMF
       delete[] mat;
     };
 
-    /// store rank1 tensors of separable Kronecker representation
-    /// BxMxM + MxBxM + MxMxB
-    const auto &BxMxM = [&](const int direction, auto indices) {
-      std::array<Table<2, VectorizedArray<Number>>, dim> kronecker_tensor;
-      for (auto d = 0; d < dim; ++d)
-        kronecker_tensor[d] = d == direction ?
-                                bilaplace_tensor_inv[indices[d]] :
-                                mass_tensor_inv[2];
-      return kronecker_tensor;
-    };
-
-    /// store rank1 tensors of mixed derivatives
-    /// 2(LxLxM + LxMxL + MxLxL)
-    const auto &LxLxM = [&](const int direction1, const int direction2) {
-      std::array<Table<2, VectorizedArray<Number>>, dim> kronecker_tensor;
-      for (auto d = 0; d < dim; ++d)
-        kronecker_tensor[d] = (d == direction1 || d == direction2) ?
-                                laplace_tensor_inv[2] :
-                                mass_tensor_inv[2];
-      return kronecker_tensor;
-    };
-
     using matrix_type =
       Tensors::TensorProductMatrix<dim, VectorizedArray<Number>>;
     using matrix_state = typename matrix_type::State;
 
     constexpr unsigned dim_z = dim == 2 ? 1 : 3;
 
-    for (unsigned int i = 0; i < dim_z; ++i)
+    for (unsigned int z = 0; z < dim_z; ++z)
       for (unsigned int j = 0; j < 3; ++j)
         for (unsigned int k = 0; k < 3; ++k)
           {
-            std::vector<unsigned int> indices{k, j, i};
+            std::array<Table<2, Number>, dim> patch_mass_inv;
+            std::array<Table<2, Number>, dim> patch_laplace_inv;
+
             // Exact
             {
-              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-                rank1_tensors;
+              // block (0,0)
+              for (unsigned int d = 0; d < dim; ++d)
+                {
+                  patch_mass_inv[d]    = rt_mass_int[d][0];
+                  patch_laplace_inv[d] = d == 0 ? rt_laplace_int[d][k] :
+                                         d == 1 ? rt_laplace_int[d][j] :
+                                                  rt_laplace_int[d][z];
+                }
+              std::array<FullMatrix<Number>, dim> A;
+              if (dim == 2)
+                {
+                  // FullMatrix<Number> t0 =
+                  //   Tensors::kronecker_product_(patch_mass_inv[1],
+                  //                               patch_laplace_inv[0]);
+                  // FullMatrix<Number> t1 =
+                  //   Tensors::kronecker_product_(patch_laplace_inv[1],
+                  //                               patch_mass_inv[0]);
+                  // t0.add(1., t1);
+                  // A.copy_from(t0);
 
-              for (auto direction = 0; direction < dim; ++direction)
-                rank1_tensors.emplace_back(BxMxM(direction, indices));
+                  {
+                    FullMatrix<Number> t0 =
+                      Tensors::kronecker_product_(RT_mass[1][2],
+                                                  RT_laplace[0][3 + k]);
+                    FullMatrix<Number> t1 =
+                      Tensors::kronecker_product_(RT_laplace[1][3 + j],
+                                                  RT_mass[0][2]);
+                    t0.add(1., t1);
+                    A[0].copy_from(t0);
+                  }
 
-              for (auto direction1 = 0; direction1 < dim; ++direction1)
-                for (auto direction2 = 0; direction2 < dim; ++direction2)
-                  if (direction1 != direction2)
-                    rank1_tensors.emplace_back(LxLxM(direction1, direction2));
+                  {
+                    FullMatrix<Number> t0 =
+                      Tensors::kronecker_product_(RT_mass[1][2],
+                                                  RT_laplace[0][3 + j]);
+                    FullMatrix<Number> t1 =
+                      Tensors::kronecker_product_(RT_laplace[1][3 + k],
+                                                  RT_mass[0][2]);
+                    t0.add(1., t1);
+                    A[1].copy_from(t0);
+                  }
+                }
+              else
+                {
+                  FullMatrix<Number> t0 =
+                    Tensors::kronecker_product_(patch_mass_inv[2],
+                                                patch_mass_inv[1],
+                                                patch_laplace_inv[0]);
+                  FullMatrix<Number> t1 =
+                    Tensors::kronecker_product_(patch_mass_inv[2],
+                                                patch_laplace_inv[1],
+                                                patch_mass_inv[0]);
+                  FullMatrix<Number> t2 =
+                    Tensors::kronecker_product_(patch_laplace_inv[2],
+                                                patch_mass_inv[1],
+                                                patch_mass_inv[0]);
+                  t0.add(1., t1, 1., t2);
+                  A[0].copy_from(t0);
+                }
 
-              AssertDimension(rank1_tensors.size(), 2 * dim);
+              // print_matrices(patch_mass_inv);
+              // print_matrices(patch_laplace_inv);
 
-              matrix_type local_matrices;
-              local_matrices.reinit(rank1_tensors);
+              // block (0,1)
+              // FullMatrix<Number> B =
+              //   dim == 2 ? Tensors::kronecker_product_(mix_mass_int[1][0],
+              //                                          mix_der_int[0][0]) :
+              //              Tensors::kronecker_product_(mix_mass_int[2][0],
+              //                                          mix_mass_int[1][0],
+              //                                          mix_der_int[0][0]);
 
-              auto exact_inverse = local_matrices.as_inverse_table();
+              FullMatrix<Number> B =
+                dim == 2 ?
+                  Tensors::kronecker_product_(Mix_mass[1][2], Mix_der[0][2]) :
+                  Tensors::kronecker_product_(Mix_mass[2][2],
+                                              Mix_mass[1][2],
+                                              Mix_der[0][2]);
 
-              auto *vals = new Number[exact_inverse.n_elements()];
+              B /= -1;
 
-              std::transform(exact_inverse.begin(),
-                             exact_inverse.end(),
-                             vals,
-                             [](auto m) -> Number { return m.value()[0]; });
+              FullMatrix<Number> Bt;
+              Bt.copy_transposed(B);
+
+              const unsigned int n_patch_dofs_inv =
+                dim * Util::pow(2 * fe_degree + 2, dim - 1) *
+                  (2 * (fe_degree + 2) - 3) +
+                Util::pow(2 * fe_degree + 2, dim);
+
+              // std::cout << A.m() << " " << B.m() << " " << B.n() <<
+              // std::endl;
+
+              AssertDimension(A[0].n() * dim + B.n(), n_patch_dofs);
+
+              FullMatrix<Number> PatchMatrix(n_patch_dofs, n_patch_dofs);
+              PatchMatrix.fill(A[0], 0, 0, 0, 0);
+              PatchMatrix.fill(A[1], A[0].m(), A[0].n(), 0, 0);
+              PatchMatrix.fill(B, 0, dim * A[0].n(), 0, 0);
+              PatchMatrix.fill(B, A[0].m(), dim * A[0].n(), 0, 0);
+              PatchMatrix.fill(Bt, dim * A[0].m(), 0, 0, 0);
+              PatchMatrix.fill(Bt, dim * A[0].m(), A[0].n(), 0, 0);
+
+              // {
+              //   std::ofstream out;
+              //   out.open("tp_mat" + std::to_string(level));
+
+              //   PatchMatrix.print_formatted(out, 3, false, 0, "0");
+
+              //   // for (unsigned int i = 0; i < PatchMatrix.m(); ++i)
+              //   //   {
+              //   //     for (unsigned int j = 0; j < PatchMatrix.n(); ++j)
+              //   //       out << PatchMatrix(i, j) << " ";
+              //   //     out << std::endl;
+              //   //   }
+
+              //   out.close();
+              // }
+
+              DoFMapping<dim, fe_degree> dm;
+
+              auto ind_v_b  = dm.get_l_to_h_rt();
+              auto ind_p1   = dm.get_h_to_l_dg_normal();
+              auto ind_p1_b = dm.get_l_to_h_dg_normal();
+              auto ind_p2_b = dm.get_l_to_h_dg_tangent();
+
+              FullMatrix<Number> AA(PatchMatrix.m(), PatchMatrix.n());
+
+              for (auto i = 0U; i < ind_v_b.size(); ++i)
+                for (auto j = 0U; j < ind_v_b.size(); ++j)
+                  AA(i, j) = PatchMatrix(ind_v_b[i], ind_v_b[j]);
+
+              for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+                for (auto j = 0U; j < ind_p2_b.size(); ++j)
+                  Bt(j, i) = B(i, ind_p2_b[j]);
+
+              for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+                for (auto j = 0U; j < ind_p1.size(); ++j)
+                  PatchMatrix(i + ind_v_b.size() / dim, j + ind_v_b.size()) =
+                    Bt(ind_p1[j], i);
+
+              for (auto i = 0; i < ind_v_b.size(); ++i)
+                for (auto j = 0U; j < ind_p1_b.size(); ++j)
+                  {
+                    AA(i, j + ind_v_b.size()) =
+                      PatchMatrix(ind_v_b[i], ind_p1_b[j] + ind_v_b.size());
+                    AA(j + ind_v_b.size(), i) = AA(i, j + ind_v_b.size());
+                  }
+
+              auto h_interior_host_rt = dm.get_h_to_l_rt_interior();
+              auto h_interior_host_dg = dm.get_h_to_l_dg_normal();
+
+              std::sort(h_interior_host_rt.begin(), h_interior_host_rt.end());
+              std::sort(h_interior_host_dg.begin(), h_interior_host_dg.end());
+
+              for (auto &i : h_interior_host_dg)
+                i += n_patch_dofs_rt;
+
+              h_interior_host_rt.insert(h_interior_host_rt.end(),
+                                        h_interior_host_dg.begin(),
+                                        h_interior_host_dg.end());
+
+              FullMatrix<Number> AA_inv(n_patch_dofs_inv, n_patch_dofs_inv);
+
+              AA_inv.extract_submatrix_from(AA,
+                                            h_interior_host_rt,
+                                            h_interior_host_rt);
+
+              // {
+              //   std::ofstream out;
+              //   out.open("mat" + std::to_string(level));
+
+              //   AA.print_formatted(out, 3, false, 0, "0");
+
+              //   // for (unsigned int i = 0; i < PatchMatrix.m(); ++i)
+              //   //   {
+              //   //     for (unsigned int j = 0; j < PatchMatrix.n(); ++j)
+              //   //       out << PatchMatrix(i, j) << " ";
+              //   //     out << std::endl;
+              //   //   }
+
+              //   out.close();
+              // }
+
+              // {
+              //   std::ofstream out;
+              //   out.open("mat_int" + std::to_string(level));
+
+              //   AA_inv.print_formatted(out, 3, false, 0, "0");
+
+              //   // for (unsigned int i = 0; i < PatchMatrix.m(); ++i)
+              //   //   {
+              //   //     for (unsigned int j = 0; j < PatchMatrix.n(); ++j)
+              //   //       out << PatchMatrix(i, j) << " ";
+              //   //     out << std::endl;
+              //   //   }
+
+              //   out.close();
+              // }
+
+              LAPACKFullMatrix<Number> exact_inverse(AA_inv.m(), AA_inv.n());
+              exact_inverse = AA_inv;
+              exact_inverse.compute_inverse_svd_with_kernel(1);
+
+              Vector<Number> tmp(AA_inv.m());
+              Vector<Number> dst(AA_inv.m());
+              for (unsigned int col = 0; col < exact_inverse.n(); ++col)
+                {
+                  tmp[col] = 1;
+                  exact_inverse.vmult(dst, tmp);
+                  for (unsigned int row = 0; row < exact_inverse.n(); ++row)
+                    AA_inv(row, col) = dst[row];
+                  tmp[col] = 0;
+                }
+
+              // FullMatrix<Number> exact_inverse(AA_inv);
+              // exact_inverse.invert(AA_inv);
+
+              // if (k == 2 && j == 2)
+              //   for (unsigned int i = 0; i < AA_inv.m(); ++i)
+              //     {
+              //       for (unsigned int j = 0; j < AA_inv.n(); ++j)
+              //         std::cout << AA_inv(i, j) << " ";
+              //       std::cout << std::endl;
+              //     }
+
+              auto *vals = new Number[AA_inv.m() * AA_inv.n()];
+
+              for (unsigned int r = 0; r < AA_inv.m(); ++r)
+                std::transform(AA_inv.begin(r),
+                               AA_inv.end(r),
+                               &vals[r * AA_inv.n()],
+                               [](auto m) -> Number { return m; });
+              // std::transform(exact_inverse.begin(),
+              //                  exact_inverse.end(),
+              //                  vals,
+              //                  [](auto m) -> Number { return m; });
 
               cudaError_t error_code =
                 cudaMemcpy(eigenvalues[0] +
-                             (k + j * 3 + i * 9) * exact_inverse.n_elements(),
+                             (k + j * 3 + z * 9) * AA_inv.n_elements(),
                            vals,
-                           exact_inverse.n_elements() * sizeof(Number),
+                           AA_inv.n_elements() * sizeof(Number),
                            cudaMemcpyHostToDevice);
               AssertCuda(error_code);
 
@@ -788,168 +1185,8 @@ namespace PSMF
             }
 
 
-            // Bila
-            {
-              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-                rank1_tensors;
-
-              for (auto direction = 0; direction < dim; ++direction)
-                rank1_tensors.emplace_back(BxMxM(direction, indices));
-
-              matrix_type local_matrices;
-
-              local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
-
-              auto eigenvalue_tensor  = local_matrices.get_eigenvalue_tensor();
-              auto eigenvector_tensor = local_matrices.get_eigenvector_tensor();
-
-              copy_vals(eigenvalue_tensor, eigenvalues[1], k + j * 3 + i * 9);
-              copy_vecs(eigenvector_tensor, eigenvectors[1], k + j * 3 + i * 9);
-            }
-
-
-
-            // KSVD
-            {
-              std::set<unsigned int> ksvd_tensor_indices = {0U, 1U};
-
-              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-                rank1_tensors;
-
-              for (auto direction = 0; direction < dim; ++direction)
-                rank1_tensors.emplace_back(BxMxM(direction, indices));
-
-              for (auto direction1 = 0; direction1 < dim; ++direction1)
-                for (auto direction2 = 0; direction2 < dim; ++direction2)
-                  if (direction1 != direction2)
-                    rank1_tensors.emplace_back(LxLxM(direction1, direction2));
-
-              AssertDimension(rank1_tensors.size(), dim * dim);
-
-              // KSVD
-              std::array<std::size_t, dim> rows, columns;
-              for (auto d = 0U; d < dim; ++d)
-                {
-                  const auto &A_d = rank1_tensors.front()[d];
-                  rows[d]         = A_d.size(0);
-                  columns[d]      = A_d.size(1);
-                }
-
-              const auto ksvd_rank = *(ksvd_tensor_indices.rbegin()) + 1;
-              AssertIndexRange(ksvd_rank, rank1_tensors.size() + 1);
-              auto ksvd_tensors =
-                Tensors::make_zero_rank1_tensors<dim, VectorizedArray<Number>>(
-                  ksvd_rank, rows, columns);
-
-              const auto &ksvd_singular_values =
-                compute_ksvd(rank1_tensors, ksvd_tensors, 5);
-
-              std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-                approximation;
-              for (auto n = 0U; n < ksvd_tensors.size(); ++n)
-                if (ksvd_tensor_indices.find(n) != ksvd_tensor_indices.cend())
-                  approximation.emplace_back(ksvd_tensors[n]);
-
-              AssertDimension(ksvd_tensor_indices.size(), approximation.size());
-
-              if (approximation.size() == 2U)
-                {
-                  Number addition_to_min_eigenvalue = 0.025;
-
-                  matrix_type local_matrices;
-
-                  /// first tensor must contain s.p.d. matrices ("mass
-                  /// matrices")
-                  typename matrix_type::AdditionalData additional_data;
-                  additional_data.state = matrix_state::ranktwo;
-
-                  local_matrices.reinit(approximation, additional_data);
-
-                  const auto &tensor_of_eigenvalues =
-                    local_matrices.get_eigenvalue_tensor();
-                  const auto eigenvalues_ksvd1 =
-                    Tensors::kronecker_product<dim, VectorizedArray<Number>>(
-                      tensor_of_eigenvalues);
-
-                  /// if the rank-2 KSVD isn't positive definite we scale the
-                  /// second tensor of matrices by a factor \alpha (with 0 <
-                  /// \alpha < 1), thus obtaing an approximation that is better
-                  /// than the best rank-1 approximation but worse than the best
-                  /// rank-2 approximation. \alpha is computed at negligible
-                  /// costs due to the specific eigendecomposition with tensor
-                  /// structure
-                  if (ksvd_tensor_indices == std::set<unsigned int>{0U, 1U})
-                    {
-                      VectorizedArray<Number> alpha(1.);
-                      for (auto lane = 0U;
-                           lane < VectorizedArray<Number>::size();
-                           ++lane)
-                        {
-                          // std::cout << "eigenvalues of KSVD[1]:\n"
-                          //           <<
-                          //           vector_to_string(alignedvector_to_vector(eigenvalues_ksvd1,
-                          //           lane))
-                          //           << std::endl;
-                          const auto min_elem =
-                            std::min_element(eigenvalues_ksvd1.begin(),
-                                             eigenvalues_ksvd1.end(),
-                                             [&](const auto &lhs,
-                                                 const auto &rhs) {
-                                               return lhs[lane] < rhs[lane];
-                                             });
-                          const Number lambda_min = (*min_elem)[lane];
-
-                          /// \alpha = -1 / ((1 + \epsilon) * \lambda_{min})
-                          if (lambda_min <
-                              -0.99) // KSVD isn't positive definite
-                            alpha[lane] /=
-                              -(1. + addition_to_min_eigenvalue) * lambda_min;
-                          if (alpha[lane] > 1.)
-                            alpha[lane] = 0.99;
-                        }
-
-                      // std::cout << "alpha: " << varray_to_string(alpha) <<
-                      // std::endl;
-                      Tensors::scaling<dim>(alpha, approximation.at(1U));
-                      local_matrices.reinit(approximation, additional_data);
-
-                      auto eigenvalue_tensor =
-                        local_matrices.get_eigenvalue_tensor();
-                      auto eigenvector_tensor =
-                        local_matrices.get_eigenvector_tensor();
-
-                      copy_vals(eigenvalue_tensor,
-                                eigenvalues[2],
-                                k + j * 3 + i * 9);
-                      copy_vecs(eigenvector_tensor,
-                                eigenvectors[2],
-                                k + j * 3 + i * 9);
-
-                      // auto eigenvalues_ = local_matrices.get_eigenvalues();
-                      // auto eigenvector_ = local_matrices.get_eigenvectors();
-
-                      // print_matrices(eigenvector_);
-
-                      // print_matrices(eigenvector_tensor[0]);
-                      // print_matrices(eigenvector_tensor[1]);
-
-                      // for (unsigned int j = 0; j < eigenvalues_.size(); ++j)
-                      //   std::cout << eigenvalues_[j] << " ";
-                      // std::cout << std::endl;
-
-                      // for (unsigned int i = 0; i < dim; ++i)
-                      //   for (unsigned int j = 0; j <
-                      //   eigenvalue_tensor[i].size();
-                      //   ++j)
-                      //     std::cout << eigenvalue_tensor[i][j] << " ";
-                      // std::cout << std::endl;
-                    }
-                }
-            }
-
-
             // Neural Network
-            if (fe_degree == 7) // TODO:
+            if (0 && fe_degree == 7) // TODO:
               {
                 // TODO: 3d
                 std::string filenamea0 =
@@ -1050,183 +1287,304 @@ namespace PSMF
   LevelVertexPatch<dim, fe_degree, Number>::reinit_tensor_product_laplace()
     const
   {
-    auto mass_tensor      = assemble_mass_tensor();
-    auto laplace_tensor   = assemble_laplace_tensor();
-    auto bilaplace_tensor = assemble_bilaplace_tensor();
+    auto RT_mass    = assemble_RTmass_tensor();
+    auto RT_laplace = assemble_RTlaplace_tensor();
+    auto Mix_mass   = assemble_Mixmass_tensor();
+    auto Mix_der    = assemble_Mixder_tensor();
 
     auto copy_to_device = [](auto tensor, auto dst) {
-      constexpr unsigned int n_dofs_2d = Util::pow(2 * fe_degree + 1, 2);
+      for (unsigned int d = 0; d < dim; ++d)
+        {
+          const unsigned int n_elements = tensor[d][0].n_elements();
 
-      auto mat = new Number[n_dofs_2d * 3];
-      for (unsigned int i = 0; i < 3; ++i)
-        std::transform(tensor[i].begin(),
-                       tensor[i].end(),
-                       &mat[n_dofs_2d * i],
-                       [](auto m) -> Number { return m.value()[0]; });
+          auto mat = new Number[n_elements * 3];
+          for (unsigned int i = 0; i < 3; ++i)
+            std::transform(tensor[d][i].begin(),
+                           tensor[d][i].end(),
+                           &mat[n_elements * i],
+                           [](auto m) -> Number { return m; });
 
-      cudaError_t error_code = cudaMemcpy(dst,
-                                          mat,
-                                          3 * n_dofs_2d * sizeof(Number),
-                                          cudaMemcpyHostToDevice);
-      AssertCuda(error_code);
+          cudaError_t error_code = cudaMemcpy(dst[d],
+                                              mat,
+                                              3 * n_elements * sizeof(Number),
+                                              cudaMemcpyHostToDevice);
+          AssertCuda(error_code);
 
-      delete[] mat;
+          delete[] mat;
+        }
     };
 
-    copy_to_device(mass_tensor, laplace_mass_1d);
-    copy_to_device(laplace_tensor, laplace_stiff_1d);
-    copy_to_device(bilaplace_tensor, bilaplace_stiff_1d);
+    copy_to_device(RT_mass, rt_mass_1d);
+    copy_to_device(RT_laplace, rt_laplace_1d);
+    copy_to_device(Mix_mass, mix_mass_1d);
+    copy_to_device(Mix_der, mix_der_1d);
+
+    constexpr unsigned dim_z = dim == 2 ? 1 : 3;
+
+    for (unsigned int z = 0; z < dim_z; ++z)
+      for (unsigned int j = 0; j < 3; ++j)
+        for (unsigned int k = 0; k < 3; ++k)
+          {
+            std::array<FullMatrix<Number>, dim> A;
+
+            if (dim == 2)
+              {
+                {
+                  FullMatrix<Number> t0 =
+                    Tensors::kronecker_product_(RT_mass[1][j],
+                                                RT_laplace[0][k]);
+                  FullMatrix<Number> t1 =
+                    Tensors::kronecker_product_(RT_laplace[1][j],
+                                                RT_mass[0][k]);
+                  t0.add(1., t1);
+                  A[0].copy_from(t0);
+                }
+
+                {
+                  FullMatrix<Number> t0 =
+                    Tensors::kronecker_product_(RT_mass[1][k],
+                                                RT_laplace[0][j]);
+                  FullMatrix<Number> t1 =
+                    Tensors::kronecker_product_(RT_laplace[1][k],
+                                                RT_mass[0][j]);
+                  t0.add(1., t1);
+                  A[1].copy_from(t0);
+                }
+              }
+            else
+              {
+                // TODO: x y z
+                FullMatrix<Number> t0 =
+                  Tensors::kronecker_product_(RT_mass[2][z],
+                                              RT_mass[1][j],
+                                              RT_laplace[0][k]);
+                FullMatrix<Number> t1 =
+                  Tensors::kronecker_product_(RT_mass[2][z],
+                                              RT_laplace[1][j],
+                                              RT_mass[0][k]);
+                FullMatrix<Number> t2 =
+                  Tensors::kronecker_product_(RT_laplace[2][z],
+                                              RT_mass[1][j],
+                                              RT_mass[0][k]);
+                t0.add(1., t1, 1., t2);
+                A[0].copy_from(t0);
+              }
+
+            // TODO:
+            FullMatrix<Number> B_x =
+              dim == 2 ?
+                Tensors::kronecker_product_(Mix_mass[1][j], Mix_der[0][k]) :
+                Tensors::kronecker_product_(Mix_mass[2][z],
+                                            Mix_mass[1][j],
+                                            Mix_der[0][k]);
+            FullMatrix<Number> B_y =
+              dim == 2 ?
+                Tensors::kronecker_product_(Mix_mass[1][k], Mix_der[0][j]) :
+                Tensors::kronecker_product_(Mix_mass[2][z],
+                                            Mix_mass[1][j],
+                                            Mix_der[0][k]);
+            B_x /= -1;
+            B_y /= -1;
+
+            FullMatrix<Number> Bt_x;
+            FullMatrix<Number> Bt_y;
+            Bt_x.copy_transposed(B_x);
+            Bt_y.copy_transposed(B_y);
+
+            FullMatrix<Number> PatchMatrix(A[0].n() * dim + B_x.n(),
+                                           A[0].n() * dim + B_x.n());
+            PatchMatrix.fill(A[0], 0, 0, 0, 0);
+            PatchMatrix.fill(A[1], A[0].m(), A[0].n(), 0, 0);
+            PatchMatrix.fill(B_x, 0, dim * A[0].n(), 0, 0);
+            PatchMatrix.fill(B_y, A[0].m(), dim * A[0].n(), 0, 0);
+            PatchMatrix.fill(Bt_x, dim * A[0].m(), 0, 0, 0);
+            PatchMatrix.fill(Bt_y, dim * A[0].m(), A[0].n(), 0, 0);
+
+            // std::ofstream out;
+            // out.open("patch_mat_L" + std::to_string(level));
+
+            // PatchMatrix.print_formatted(out, 3, false, 0, "0");
+            // out.close();
+
+            DoFMapping<dim, fe_degree> dm;
+
+            auto ind_v_b  = dm.get_l_to_h_rt();
+            auto ind_p1   = dm.get_h_to_l_dg_normal();
+            auto ind_p1_b = dm.get_l_to_h_dg_normal();
+            auto ind_p2_b = dm.get_l_to_h_dg_tangent();
+
+            FullMatrix<Number> AA(PatchMatrix.m(), PatchMatrix.n());
+
+            for (auto i = 0U; i < ind_v_b.size(); ++i)
+              for (auto j = 0U; j < ind_v_b.size(); ++j)
+                AA(i, j) = PatchMatrix(ind_v_b[i], ind_v_b[j]);
+
+            for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+              for (auto j = 0U; j < ind_p2_b.size(); ++j)
+                Bt_y(j, i) = B_y(i, ind_p2_b[j]);
+
+            for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+              for (auto j = 0U; j < ind_p1.size(); ++j)
+                PatchMatrix(i + ind_v_b.size() / dim, j + ind_v_b.size()) =
+                  Bt_y(ind_p1[j], i);
+
+            for (auto i = 0; i < ind_v_b.size(); ++i)
+              for (auto j = 0U; j < ind_p1_b.size(); ++j)
+                {
+                  AA(i, j + ind_v_b.size()) =
+                    PatchMatrix(ind_v_b[i], ind_p1_b[j] + ind_v_b.size());
+                  AA(j + ind_v_b.size(), i) = AA(i, j + ind_v_b.size());
+                }
+
+            // std::ofstream out1;
+            // out1.open("patch_mat_A_L" + std::to_string(level));
+
+            // AA.print_formatted(out1, 3, false, 0, "0");
+            // out1.close();
+
+            auto *vals = new Number[AA.m() * AA.n()];
+
+            for (unsigned int r = 0; r < AA.m(); ++r)
+              std::transform(AA.begin(r),
+                             AA.end(r),
+                             &vals[r * AA.n()],
+                             [](auto m) -> Number { return m; });
+
+            cudaError_t error_code =
+              cudaMemcpy(vertex_patch_matrices +
+                           (k + j * 3 + z * 9) * AA.n_elements(),
+                         vals,
+                         AA.n_elements() * sizeof(Number),
+                         cudaMemcpyHostToDevice);
+            AssertCuda(error_code);
+
+            delete[] vals;
+          }
   }
 
   template <int dim, int fe_degree, typename Number>
-  std::array<Table<2, VectorizedArray<Number>>, 3>
-  LevelVertexPatch<dim, fe_degree, Number>::assemble_mass_tensor() const
+  std::array<std::array<Table<2, Number>, 3>, dim>
+  LevelVertexPatch<dim, fe_degree, Number>::assemble_RTmass_tensor() const
   {
-    constexpr int n_cell_dofs  = fe_degree + 1;
-    constexpr int n_patch_dofs = 2 * n_cell_dofs - 1;
-
     const Number h              = Util::pow(2, level);
-    const Number penalty_factor = h * fe_degree * (fe_degree + 1);
+    const Number penalty_factor = h * (fe_degree + 1) * (fe_degree + 2);
 
-    FE_DGQ<1> fe(fe_degree);
-    QGauss<1> quadrature(fe_degree + 1);
+    FE_RaviartThomas_new<dim> fe(fe_degree);
+    QGauss<1>                 quadrature(fe_degree + 2);
 
-    Table<2, Number> patch_mass_01(n_patch_dofs, n_patch_dofs);
-    Table<2, Number> patch_mass_2(n_patch_dofs, n_patch_dofs);
+    const unsigned int n_quadrature = quadrature.size();
 
-    for (unsigned int i = 0; i < n_cell_dofs; ++i)
-      for (unsigned int j = 0; j < n_cell_dofs; ++j)
-        {
-          double sum_mass = 0;
-          for (unsigned int q = 0; q < quadrature.size(); ++q)
-            {
-              sum_mass += (fe.shape_value(i, quadrature.point(q)) *
-                           fe.shape_value(j, quadrature.point(q))) *
-                          quadrature.weight(q) / h;
-            }
+    std::array<unsigned int, dim> n_cell_dofs_1d, n_patch_dofs_1d;
 
-          patch_mass_01(i, j) = sum_mass;
-          patch_mass_2(i, j) += sum_mass;
-          patch_mass_2(i + n_cell_dofs - 1, j + n_cell_dofs - 1) += sum_mass;
-        }
-
-    std::array<Table<2, VectorizedArray<Number>>, 3> mass_matrices;
-    for (unsigned int d = 0; d < 3; ++d)
+    for (unsigned int d = 0; d < dim; ++d)
       {
-        mass_matrices[d].reinit(n_patch_dofs, n_patch_dofs);
-        if (d == 2)
-          std::transform(patch_mass_2.begin(),
-                         patch_mass_2.end(),
-                         mass_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
-        else
-          std::transform(patch_mass_01.begin(),
-                         patch_mass_01.end(),
-                         mass_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
+        n_cell_dofs_1d[d] = d == 0 ? fe_degree + 2 : fe_degree + 1;
+        n_patch_dofs_1d[d] =
+          d == 0 ? 2 * n_cell_dofs_1d[d] - 1 : 2 * n_cell_dofs_1d[d];
       }
+    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info;
+    shape_info.reinit(quadrature, fe);
 
-    return mass_matrices;
-  }
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+      shape_data;
+    for (auto d = 0U; d < dim; ++d)
+      shape_data[d] = shape_info.get_shape_data(d, 0);
 
-  template <int dim, int fe_degree, typename Number>
-  std::array<Table<2, VectorizedArray<Number>>, 3>
-  LevelVertexPatch<dim, fe_degree, Number>::assemble_laplace_tensor() const
-  {
-    constexpr int n_cell_dofs  = fe_degree + 1;
-    constexpr int n_patch_dofs = 2 * n_cell_dofs - 1;
+    auto cell_mass = [&](unsigned int pos) {
+      std::array<Table<2, Number>, dim> mass_matrices;
 
-    const Number h              = Util::pow(2, level);
-    const Number penalty_factor = h * fe_degree * (fe_degree + 1);
-
-    FE_DGQ<1> fe(fe_degree);
-    QGauss<1> quadrature(fe_degree + 1);
-
-    Table<2, Number> patch_laplace_01(n_patch_dofs, n_patch_dofs);
-    Table<2, Number> patch_laplace_2(n_patch_dofs, n_patch_dofs);
-
-    for (unsigned int i = 0; i < n_cell_dofs; ++i)
-      for (unsigned int j = 0; j < n_cell_dofs; ++j)
-        {
-          double sum_laplace = 0;
-          for (unsigned int q = 0; q < quadrature.size(); ++q)
-            {
-              sum_laplace += (fe.shape_grad(i, quadrature.point(q))[0] *
-                              fe.shape_grad(j, quadrature.point(q))[0]) *
-                             quadrature.weight(q);
-            }
-
-          patch_laplace_01(i, j) = sum_laplace * h;
-          patch_laplace_2(i, j) += sum_laplace * h;
-          patch_laplace_2(i + n_cell_dofs - 1, j + n_cell_dofs - 1) +=
-            sum_laplace * h;
-        }
-
-    std::array<Table<2, VectorizedArray<Number>>, 3> laplace_matrices;
-    for (unsigned int d = 0; d < 3; ++d)
-      {
-        laplace_matrices[d].reinit(n_patch_dofs, n_patch_dofs);
-        if (d == 2)
-          std::transform(patch_laplace_2.begin(),
-                         patch_laplace_2.end(),
-                         laplace_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
-        else
-          std::transform(patch_laplace_01.begin(),
-                         patch_laplace_01.end(),
-                         laplace_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
-      }
-
-    return laplace_matrices;
-  }
-
-  template <int dim, int fe_degree, typename Number>
-  std::array<Table<2, VectorizedArray<Number>>, 6>
-  LevelVertexPatch<dim, fe_degree, Number>::assemble_bilaplace_tensor() const
-  {
-    constexpr int n_cell_dofs  = fe_degree + 1;
-    constexpr int n_patch_dofs = 2 * n_cell_dofs - 1;
-
-    const Number h              = Util::pow(2, level);
-    const Number penalty_factor = h * fe_degree * (fe_degree + 1);
-
-    FE_DGQ<1> fe(fe_degree);
-    QGauss<1> quadrature(fe_degree + 1);
-
-    FullMatrix<Number> laplace_interface_mixed(n_cell_dofs, n_cell_dofs);
-    FullMatrix<Number> laplace_interface_penalty(n_cell_dofs, n_cell_dofs);
-
-    for (unsigned int i = 0; i < n_cell_dofs; ++i)
-      for (unsigned int j = 0; j < n_cell_dofs; ++j)
-        {
-          Number sum_mixed = 0, sum_penalty = 0;
-          sum_mixed += (-0.5 * fe.shape_grad_grad(i, Point<1>())[0] *
-                        fe.shape_grad(j, Point<1>(1.0)) * h * h * h);
-
-          sum_penalty +=
-            (-1. * fe.shape_grad(i, Point<1>()) *
-             fe.shape_grad(j, Point<1>(1.0)) * penalty_factor * h * h);
-
-          laplace_interface_mixed(n_cell_dofs - 1 - i, n_cell_dofs - 1 - j) =
-            sum_mixed;
-          laplace_interface_penalty(n_cell_dofs - 1 - i, n_cell_dofs - 1 - j) =
-            sum_penalty;
-        }
-
-    auto cell_bilaplace = [&](unsigned int type, unsigned int pos) {
-      Number boundary_factor_left  = 1.;
-      Number boundary_factor_right = 1.;
+      for (unsigned int d = 0; d < dim; ++d)
+        mass_matrices[d].reinit(n_cell_dofs_1d[d], n_cell_dofs_1d[d]);
 
       unsigned int is_first = pos == 0 ? 1 : 0;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+          for (unsigned int j = 0; j < n_cell_dofs_1d[d]; ++j)
+            {
+              Number sum_mass = 0;
+              for (unsigned int q = 0; q < n_quadrature; ++q)
+                {
+                  sum_mass += shape_data[d].shape_values[i * n_quadrature + q] *
+                              shape_data[d].shape_values[j * n_quadrature + q] *
+                              quadrature.weight(q) * is_first;
+                }
+
+              mass_matrices[d](i, j) += sum_mass;
+            }
+
+      return mass_matrices;
+    };
+
+    auto patch_mass = [&](auto left, auto right, auto d) {
+      Table<2, Number> mass_matrices;
+
+      mass_matrices.reinit(n_patch_dofs_1d[d], n_patch_dofs_1d[d]);
+
+      for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+        for (unsigned int j = 0; j < n_cell_dofs_1d[d]; ++j)
+          {
+            unsigned int shift = d == 0;
+            mass_matrices(i, j) += left(i, j);
+            mass_matrices(i + n_cell_dofs_1d[d] - shift,
+                          j + n_cell_dofs_1d[d] - shift) += right(i, j);
+          }
+      return mass_matrices;
+    };
+
+    auto cell_left  = cell_mass(0);
+    auto cell_right = cell_mass(1);
+
+    std::array<std::array<Table<2, Number>, 3>, dim> patch_mass_matrices;
+
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        patch_mass_matrices[d][0] = patch_mass(cell_left[d], cell_right[d], d);
+        patch_mass_matrices[d][1] = patch_mass(cell_left[d], cell_right[d], d);
+        patch_mass_matrices[d][2] = patch_mass(cell_left[d], cell_left[d], d);
+      }
+
+    return patch_mass_matrices;
+  }
+
+  template <int dim, int fe_degree, typename Number>
+  std::array<std::array<Table<2, Number>, 6>, dim>
+  LevelVertexPatch<dim, fe_degree, Number>::assemble_RTlaplace_tensor() const
+  {
+    const Number h              = Util::pow(2, level);
+    const Number penalty_factor = h * (fe_degree + 1) * (fe_degree + 2);
+
+    FE_RaviartThomas_new<dim> fe(fe_degree);
+    QGauss<1>                 quadrature(fe_degree + 2);
+
+    const unsigned int n_quadrature = quadrature.size();
+
+    std::array<unsigned int, dim> n_cell_dofs_1d, n_patch_dofs_1d;
+
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        n_cell_dofs_1d[d] = d == 0 ? fe_degree + 2 : fe_degree + 1;
+        n_patch_dofs_1d[d] =
+          d == 0 ? 2 * n_cell_dofs_1d[d] - 1 : 2 * n_cell_dofs_1d[d];
+      }
+    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info;
+    shape_info.reinit(quadrature, fe);
+
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+      shape_data;
+    for (auto d = 0U; d < dim; ++d)
+      shape_data[d] = shape_info.get_shape_data(d, 0);
+
+    auto cell_laplace = [&](unsigned int type, unsigned int pos) {
+      std::array<Table<2, Number>, dim> laplace_matrices;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        laplace_matrices[d].reinit(n_cell_dofs_1d[d], n_cell_dofs_1d[d]);
+
+      unsigned int is_first = pos == 0 ? 1 : 0;
+
+      Number boundary_factor_left  = 1.;
+      Number boundary_factor_right = 1.;
 
       if (type == 0)
         boundary_factor_left = 2.;
@@ -1239,141 +1597,363 @@ namespace PSMF
       else if (type == 3)
         is_first = 1;
 
-      FullMatrix<Number> cell(n_cell_dofs, n_cell_dofs);
+      for (unsigned int d = 0; d < dim; ++d)
+        for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+          for (unsigned int j = 0; j < n_cell_dofs_1d[d]; ++j)
+            {
+              Number sum_laplace = 0;
+              for (unsigned int q = 0; q < n_quadrature; ++q)
+                {
+                  sum_laplace +=
+                    shape_data[d].shape_gradients[i * n_quadrature + q] *
+                    shape_data[d].shape_gradients[j * n_quadrature + q] *
+                    quadrature.weight(q) * h * h * is_first;
+                }
 
-      for (unsigned int i = 0; i < n_cell_dofs; ++i)
-        for (unsigned int j = 0; j < n_cell_dofs; ++j)
+              // bd
+              if (d != 0)
+                {
+                  sum_laplace +=
+                    boundary_factor_left *
+                    (1. * shape_data[d].shape_data_on_face[0][i] *
+                       shape_data[d].shape_data_on_face[0][j] * penalty_factor +
+                     0.5 *
+                       shape_data[d]
+                         .shape_data_on_face[0][i + n_cell_dofs_1d[d]] *
+                       shape_data[d].shape_data_on_face[0][j] * h +
+                     0.5 *
+                       shape_data[d]
+                         .shape_data_on_face[0][j + n_cell_dofs_1d[d]] *
+                       shape_data[d].shape_data_on_face[0][i] * h) *
+                    h;
+
+                  sum_laplace +=
+                    boundary_factor_right *
+                    (1. * shape_data[d].shape_data_on_face[1][i] *
+                       shape_data[d].shape_data_on_face[1][j] * penalty_factor -
+                     0.5 *
+                       shape_data[d]
+                         .shape_data_on_face[1][i + n_cell_dofs_1d[d]] *
+                       shape_data[d].shape_data_on_face[1][j] * h -
+                     0.5 *
+                       shape_data[d]
+                         .shape_data_on_face[1][j + n_cell_dofs_1d[d]] *
+                       shape_data[d].shape_data_on_face[1][i] * h) *
+                    h;
+                }
+
+              laplace_matrices[d](i, j) += sum_laplace;
+            }
+
+      return laplace_matrices;
+    };
+
+    auto cell_mixed = [&]() {
+      std::array<Table<2, Number>, dim> mixed_matrices;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        mixed_matrices[d].reinit(n_cell_dofs_1d[d], n_cell_dofs_1d[d]);
+
+      for (unsigned int d = 0; d < dim; ++d)
+        for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+          for (unsigned int j = 0; j < n_cell_dofs_1d[d]; ++j)
+            {
+              if (d != 0)
+                {
+                  mixed_matrices[d](j, i) =
+                    -0.5 *
+                      shape_data[d]
+                        .shape_data_on_face[0][i + n_cell_dofs_1d[d]] *
+                      shape_data[d].shape_data_on_face[1][j] * h * h +
+                    0.5 * shape_data[d].shape_data_on_face[0][i] *
+                      shape_data[d]
+                        .shape_data_on_face[1][j + n_cell_dofs_1d[d]] *
+                      h * h;
+                }
+            }
+
+      return mixed_matrices;
+    };
+
+    auto cell_penalty = [&]() {
+      std::array<Table<2, Number>, dim> penalty_matrices;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        penalty_matrices[d].reinit(n_cell_dofs_1d[d], n_cell_dofs_1d[d]);
+
+      for (unsigned int d = 0; d < dim; ++d)
+        for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+          for (unsigned int j = 0; j < n_cell_dofs_1d[d]; ++j)
+            {
+              if (d != 0)
+                {
+                  penalty_matrices[d](j, i) =
+                    -1. * shape_data[d].shape_data_on_face[0][i] *
+                    shape_data[d].shape_data_on_face[1][j] * penalty_factor * h;
+                }
+            }
+
+      return penalty_matrices;
+    };
+
+    auto mixed   = cell_mixed();
+    auto penalty = cell_penalty();
+
+    auto patch_laplace = [&](auto left, auto right, auto d) {
+      Table<2, Number> laplace_matrices;
+
+      laplace_matrices.reinit(n_patch_dofs_1d[d], n_patch_dofs_1d[d]);
+
+      for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+        for (unsigned int j = 0; j < n_cell_dofs_1d[d]; ++j)
           {
-            Number sum_laplace = 0;
-            for (unsigned int q = 0; q < quadrature.size(); ++q)
+            unsigned int shift = d == 0;
+            laplace_matrices(i, j) += left(i, j);
+            laplace_matrices(i + n_cell_dofs_1d[d] - shift,
+                             j + n_cell_dofs_1d[d] - shift) += right(i, j);
+
+            laplace_matrices(i, j + n_cell_dofs_1d[d] - shift) +=
+              mixed[d](i, j);
+            laplace_matrices(i, j + n_cell_dofs_1d[d] - shift) +=
+              penalty[d](i, j);
+
+            if (d != 0)
               {
-                sum_laplace += (fe.shape_grad_grad(i, quadrature.point(q))[0] *
-                                fe.shape_grad_grad(j, quadrature.point(q))[0]) *
-                               quadrature.weight(q) * h * h * h * is_first;
+                laplace_matrices(j + n_cell_dofs_1d[d] - shift, i) =
+                  laplace_matrices(i, j + n_cell_dofs_1d[d] - shift);
               }
-
-            sum_laplace +=
-              boundary_factor_left *
-              (1. * fe.shape_grad(i, Point<1>()) *
-                 fe.shape_grad(j, Point<1>()) * penalty_factor * h * h +
-               0.5 * fe.shape_grad_grad(i, Point<1>())[0] *
-                 fe.shape_grad(j, Point<1>()) * h * h * h +
-               0.5 * fe.shape_grad_grad(j, Point<1>())[0] *
-                 fe.shape_grad(i, Point<1>()) * h * h * h);
-
-            sum_laplace +=
-              boundary_factor_right *
-              (1. * fe.shape_grad(i, Point<1>(1.0)) *
-                 fe.shape_grad(j, Point<1>(1.0)) * penalty_factor * h * h -
-               0.5 * fe.shape_grad_grad(i, Point<1>(1.0))[0] *
-                 fe.shape_grad(j, Point<1>(1.0)) * h * h * h -
-               0.5 * fe.shape_grad_grad(j, Point<1>(1.0))[0] *
-                 fe.shape_grad(i, Point<1>(1.0)) * h * h * h);
-
-            // scaling to real cells
-            cell(i, j) = sum_laplace;
           }
-
-      return cell;
+      return laplace_matrices;
     };
 
-    auto cell_left     = cell_bilaplace(0, 0);
-    auto cell_middle_0 = cell_bilaplace(1, 0);
-    auto cell_middle_1 = cell_bilaplace(1, 1);
-    auto cell_right    = cell_bilaplace(2, 0);
+    auto cell_left     = cell_laplace(0, 0);
+    auto cell_middle_0 = cell_laplace(1, 0);
+    auto cell_middle_1 = cell_laplace(1, 1);
+    auto cell_right    = cell_laplace(2, 0);
 
-    auto patch_bilaplace = [&](auto left, auto right) {
-      Table<2, Number> patch_bi(n_patch_dofs, n_patch_dofs);
+    auto cell_middle = cell_laplace(3, 0);
 
-      for (unsigned int i = 0; i < n_cell_dofs; ++i)
-        for (unsigned int j = 0; j < n_cell_dofs; ++j)
-          {
-            patch_bi(i, j) += left(i, j);
-            patch_bi(i + n_cell_dofs - 1, j + n_cell_dofs - 1) += right(i, j);
+    std::array<std::array<Table<2, Number>, 6>, dim> patch_laplace_matrices;
 
-            patch_bi(i, j + n_cell_dofs - 1) += laplace_interface_mixed(i, j);
-            patch_bi(i, j + n_cell_dofs - 1) +=
-              laplace_interface_mixed(n_cell_dofs - 1 - j, n_cell_dofs - 1 - i);
-            patch_bi(i, j + n_cell_dofs - 1) +=
-              laplace_interface_penalty(n_cell_dofs - 1 - j,
-                                        n_cell_dofs - 1 - i);
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        patch_laplace_matrices[d][0] =
+          patch_laplace(cell_left[d], cell_middle_1[d], d);
+        patch_laplace_matrices[d][1] =
+          patch_laplace(cell_middle_0[d], cell_middle_1[d], d);
+        patch_laplace_matrices[d][2] =
+          patch_laplace(cell_middle_0[d], cell_right[d], d);
 
-            patch_bi(i + n_cell_dofs - 1, j) += laplace_interface_mixed(j, i);
-            patch_bi(i + n_cell_dofs - 1, j) +=
-              laplace_interface_mixed(n_cell_dofs - 1 - i, n_cell_dofs - 1 - j);
-            patch_bi(i + n_cell_dofs - 1, j) +=
-              laplace_interface_penalty(n_cell_dofs - 1 - i,
-                                        n_cell_dofs - 1 - j);
-          }
-
-      return patch_bi;
-    };
-
-    auto patch0 = patch_bilaplace(cell_left, cell_middle_1);
-    auto patch1 = patch_bilaplace(cell_middle_0, cell_middle_1);
-    auto patch2 = patch_bilaplace(cell_middle_0, cell_right);
-
-    auto cell_middle = cell_bilaplace(3, 0);
-
-    auto patch3 = patch_bilaplace(cell_left, cell_middle);
-    auto patch4 = patch_bilaplace(cell_middle, cell_middle);
-    auto patch5 = patch_bilaplace(cell_middle, cell_right);
+        patch_laplace_matrices[d][3] =
+          patch_laplace(cell_left[d], cell_middle[d], d);
+        patch_laplace_matrices[d][4] =
+          patch_laplace(cell_middle[d], cell_middle[d], d);
+        patch_laplace_matrices[d][5] =
+          patch_laplace(cell_middle[d], cell_right[d], d);
+      }
 
     if (level == 1)
       {
-        patch2 = patch_bilaplace(cell_left, cell_right);
-        patch5 = patch_bilaplace(cell_left, cell_right);
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            patch_laplace_matrices[d][2] =
+              patch_laplace(cell_left[d], cell_right[d], d);
+            patch_laplace_matrices[d][5] =
+              patch_laplace(cell_left[d], cell_right[d], d);
+          }
       }
 
-    std::array<Table<2, VectorizedArray<Number>>, 6> bilaplace_matrices;
-    for (unsigned int d = 0; d < 6; ++d)
+    return patch_laplace_matrices;
+  }
+
+  template <int dim, int fe_degree, typename Number>
+  std::array<std::array<Table<2, Number>, 3>, dim>
+  LevelVertexPatch<dim, fe_degree, Number>::assemble_Mixmass_tensor() const
+  {
+    FE_RaviartThomas_new<dim> fe_v(fe_degree);
+    FE_DGQLegendre<dim>       fe_p(fe_degree);
+    QGauss<1>                 quadrature(fe_degree + 2);
+
+    const unsigned int n_quadrature = quadrature.size();
+
+    std::array<unsigned int, dim> n_cell_dofs_1d, n_patch_dofs_1d;
+
+    for (unsigned int d = 0; d < dim; ++d)
       {
-        bilaplace_matrices[d].reinit(n_patch_dofs, n_patch_dofs);
-        if (d == 0)
-          std::transform(patch0.begin(),
-                         patch0.end(),
-                         bilaplace_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
-        else if (d == 1)
-          std::transform(patch1.begin(),
-                         patch1.end(),
-                         bilaplace_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
-        else if (d == 2)
-          std::transform(patch2.begin(),
-                         patch2.end(),
-                         bilaplace_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
-        else if (d == 3)
-          std::transform(patch3.begin(),
-                         patch3.end(),
-                         bilaplace_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
-        else if (d == 4)
-          std::transform(patch4.begin(),
-                         patch4.end(),
-                         bilaplace_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
-        else if (d == 5)
-          std::transform(patch5.begin(),
-                         patch5.end(),
-                         bilaplace_matrices[d].begin(),
-                         [](Number i) -> VectorizedArray<Number> {
-                           return make_vectorized_array(i);
-                         });
+        n_cell_dofs_1d[d] = d == 0 ? fe_degree + 2 : fe_degree + 1;
+        n_patch_dofs_1d[d] =
+          d == 0 ? 2 * n_cell_dofs_1d[d] - 1 : 2 * n_cell_dofs_1d[d];
       }
 
-    return bilaplace_matrices;
+    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info_v;
+    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info_p;
+    shape_info_v.reinit(quadrature, fe_v);
+    shape_info_p.reinit(quadrature, fe_p);
+
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+      shape_data_v;
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+      shape_data_p;
+    for (auto d = 0U; d < dim; ++d)
+      {
+        shape_data_v[d] = shape_info_v.get_shape_data(d, 0);
+        shape_data_p[d] = shape_info_p.get_shape_data(d, 0);
+      }
+
+    auto cell_mass = [&](unsigned int pos) {
+      std::array<Table<2, Number>, dim> mass_matrices;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        mass_matrices[d].reinit(n_cell_dofs_1d[d], fe_degree + 1);
+
+      unsigned int is_first = pos == 0 ? 1 : 0;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+          for (unsigned int j = 0; j < fe_degree + 1; ++j)
+            {
+              Number sum_mass = 0;
+              for (unsigned int q = 0; q < n_quadrature; ++q)
+                {
+                  sum_mass +=
+                    shape_data_v[d].shape_values[i * n_quadrature + q] *
+                    shape_data_p[d].shape_values[j * n_quadrature + q] *
+                    quadrature.weight(q) * is_first;
+                }
+
+              mass_matrices[d](i, j) += sum_mass;
+            }
+
+      return mass_matrices;
+    };
+
+    auto patch_mass = [&](auto left, auto right, auto d) {
+      Table<2, Number> mass_matrices;
+
+      mass_matrices.reinit(n_patch_dofs_1d[d], 2 * fe_degree + 2);
+
+      if (d != 0)
+        for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+          for (unsigned int j = 0; j < fe_degree + 1; ++j)
+            {
+              unsigned int shift = d == 0;
+              mass_matrices(i, j) += left(i, j);
+              mass_matrices(i + n_cell_dofs_1d[d] - shift, j + fe_degree + 1) +=
+                right(i, j);
+            }
+      return mass_matrices;
+    };
+
+    auto cell_left  = cell_mass(0);
+    auto cell_right = cell_mass(1);
+
+    std::array<std::array<Table<2, Number>, 3>, dim> patch_mass_matrices;
+
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        patch_mass_matrices[d][0] = patch_mass(cell_left[d], cell_right[d], d);
+        patch_mass_matrices[d][1] = patch_mass(cell_left[d], cell_right[d], d);
+        patch_mass_matrices[d][2] = patch_mass(cell_left[d], cell_left[d], d);
+      }
+
+    return patch_mass_matrices;
+  }
+
+  template <int dim, int fe_degree, typename Number>
+  std::array<std::array<Table<2, Number>, 3>, dim>
+  LevelVertexPatch<dim, fe_degree, Number>::assemble_Mixder_tensor() const
+  {
+    FE_RaviartThomas_new<dim> fe_v(fe_degree);
+    FE_DGQLegendre<dim>       fe_p(fe_degree);
+    QGauss<1>                 quadrature(fe_degree + 2);
+
+    const unsigned int n_quadrature = quadrature.size();
+
+    std::array<unsigned int, dim> n_cell_dofs_1d, n_patch_dofs_1d;
+
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        n_cell_dofs_1d[d] = d == 0 ? fe_degree + 2 : fe_degree + 1;
+        n_patch_dofs_1d[d] =
+          d == 0 ? 2 * n_cell_dofs_1d[d] - 1 : 2 * n_cell_dofs_1d[d];
+      }
+
+    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info_v;
+    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info_p;
+    shape_info_v.reinit(quadrature, fe_v);
+    shape_info_p.reinit(quadrature, fe_p);
+
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+      shape_data_v;
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+      shape_data_p;
+    for (auto d = 0U; d < dim; ++d)
+      {
+        shape_data_v[d] = shape_info_v.get_shape_data(d, 0);
+        shape_data_p[d] = shape_info_p.get_shape_data(d, 0);
+      }
+
+    auto cell_laplace = [&](unsigned int pos) {
+      std::array<Table<2, Number>, dim> laplace_matrices;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        laplace_matrices[d].reinit(n_cell_dofs_1d[d], fe_degree + 1);
+
+      unsigned int is_first = pos == 0 ? 1 : 0;
+
+      // dir0, mass & laplace
+      for (unsigned int d = 0; d < dim; ++d)
+        for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+          for (unsigned int j = 0; j < fe_degree + 1; ++j)
+            {
+              Number sum_laplace = 0;
+              for (unsigned int q = 0; q < n_quadrature; ++q)
+                {
+                  sum_laplace +=
+                    shape_data_v[d].shape_gradients[i * n_quadrature + q] *
+                    shape_data_p[d].shape_values[j * n_quadrature + q] *
+                    quadrature.weight(q) * is_first;
+                }
+
+              laplace_matrices[d](i, j) += sum_laplace;
+            }
+
+      return laplace_matrices;
+    };
+
+    auto patch_laplace = [&](auto left, auto right, auto d) {
+      Table<2, Number> laplace_matrices;
+
+      laplace_matrices.reinit(n_patch_dofs_1d[d], 2 * fe_degree + 2);
+
+      if (d == 0)
+        for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
+          for (unsigned int j = 0; j < fe_degree + 1; ++j)
+            {
+              unsigned int shift = d == 0;
+              laplace_matrices(i, j) += left(i, j);
+              laplace_matrices(i + n_cell_dofs_1d[d] - shift,
+                               j + fe_degree + 1) += right(i, j);
+            }
+      return laplace_matrices;
+    };
+
+    auto cell_left  = cell_laplace(0);
+    auto cell_right = cell_laplace(1);
+
+    std::array<std::array<Table<2, Number>, 3>, dim> patch_laplace_matrices;
+
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        patch_laplace_matrices[d][0] =
+          patch_laplace(cell_left[d], cell_right[d], d);
+        patch_laplace_matrices[d][1] =
+          patch_laplace(cell_left[d], cell_right[d], d);
+        patch_laplace_matrices[d][2] =
+          patch_laplace(cell_left[d], cell_left[d], d);
+      }
+
+    return patch_laplace_matrices;
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -1387,12 +1967,14 @@ namespace PSMF
     this->first_dof_laplace.resize(n_colors);
     this->patch_id.resize(n_colors);
     this->patch_type.resize(n_colors);
+    this->patch_dof_laplace.resize(n_colors);
 
-    this->n_patches_smooth.resize(graph_ptr_colored.size());
-    this->grid_dim_smooth.resize(graph_ptr_colored.size());
-    this->block_dim_smooth.resize(graph_ptr_colored.size());
-    this->first_dof_smooth.resize(graph_ptr_colored.size());
-    this->patch_type_smooth.resize(graph_ptr_colored.size());
+    this->n_patches_smooth.resize(graph_ptr_colored_velocity.size());
+    this->grid_dim_smooth.resize(graph_ptr_colored_velocity.size());
+    this->block_dim_smooth.resize(graph_ptr_colored_velocity.size());
+    this->first_dof_smooth.resize(graph_ptr_colored_velocity.size());
+    this->patch_type_smooth.resize(graph_ptr_colored_velocity.size());
+    this->patch_dof_smooth.resize(graph_ptr_colored_velocity.size());
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -1413,7 +1995,7 @@ namespace PSMF
         block_dim_laplace[i] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
       }
 
-    for (unsigned int i = 0; i < graph_ptr_colored.size(); ++i)
+    for (unsigned int i = 0; i < graph_ptr_colored_velocity.size(); ++i)
       {
         auto         n_patches = n_patches_smooth[i];
         const double apply_n_blocks =
@@ -1469,6 +2051,39 @@ namespace PSMF
           dst.get_values(),
           dirichlet_indices.get_values(),
           len);
+        AssertCudaKernel();
+      }
+  }
+
+  template <typename Number>
+  __global__ void
+  set_constrained_values_kernel(Number             *dst,
+                                const unsigned int *indices,
+                                const unsigned int  len)
+  {
+    const unsigned int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx < len)
+      {
+        dst[indices[idx]] = 0;
+      }
+  }
+
+  template <int dim, int fe_degree, typename Number>
+  template <typename VectorType>
+  void
+  LevelVertexPatch<dim, fe_degree, Number>::set_constrained_values(
+    VectorType &dst) const
+  {
+    const unsigned int len = dirichlet_indices.size();
+    if (len > 0)
+      {
+        const unsigned int bksize  = 256;
+        const unsigned int nblocks = (len - 1) / bksize + 1;
+        dim3               bk_dim(bksize);
+        dim3               gd_dim(nblocks);
+
+        set_constrained_values_kernel<<<gd_dim, bk_dim>>>(
+          dst.get_values(), dirichlet_indices.get_values(), len);
         AssertCudaKernel();
       }
   }

@@ -53,12 +53,16 @@ namespace PSMF::internal
     void
     reinit(const DoFHandler<dim> &dof_handler)
     {
-      fe_degree             = dof_handler.get_fe().degree;
+      fe_degree             = dof_handler.get_fe().degree - 1;
       element_is_continuous = dof_handler.get_fe().n_dofs_per_vertex() > 0;
       n_components          = dof_handler.get_fe().n_components();
 
-      const unsigned int n_coarse = std::pow(fe_degree + 1, dim);
-      n_child_cell_dofs           = std::pow(2 * fe_degree + 1, dim);
+      const unsigned int n_coarse =
+        dim * std::pow(fe_degree + 1, dim - 1) * (fe_degree + 2) +
+        std::pow(fe_degree + 1, dim);
+      n_child_cell_dofs =
+        dim * std::pow(2 * fe_degree + 2, dim - 1) * (2 * fe_degree + 3) +
+        std::pow(2 * fe_degree + 2, dim);
     }
   };
 

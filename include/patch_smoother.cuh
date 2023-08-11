@@ -55,21 +55,42 @@ namespace PSMF
     {
       shared_mem = 0;
 
-      const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
-      // local_src, local_dst, local_residual
-      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
-      // local_eigenvectors, local_eigenvalues
-      shared_mem +=
-        2 * patch_per_block * n_dofs_1d * n_dofs_1d * dim * sizeof(Number);
-      // tmp
-      shared_mem += (dim - 1) * patch_per_block * local_dim * sizeof(Number);
+      if (solver == LocalSolverVariant::Direct)
+        {
+          constexpr unsigned int n_patch_dofs_inv =
+            dim * Util::pow(2 * fe_degree + 2, dim - 1) *
+              (2 * (fe_degree + 2) - 3) +
+            Util::pow(2 * fe_degree + 2, dim);
 
-      AssertCuda(
-        cudaFuncSetAttribute(loop_kernel_global<dim, fe_degree, Number, solver>,
-                             cudaFuncAttributeMaxDynamicSharedMemorySize,
-                             shared_mem));
+          // local_src, local_dst
+          shared_mem += 2 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
 
-      block_dim = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
+          AssertCuda(cudaFuncSetAttribute(
+            loop_kernel_global<dim, fe_degree, Number, solver>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            shared_mem));
+
+          block_dim = 256;
+        }
+      else
+        {
+          const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+          // local_src, local_dst, local_residual
+          shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+          // local_eigenvectors, local_eigenvalues
+          shared_mem +=
+            2 * patch_per_block * n_dofs_1d * n_dofs_1d * dim * sizeof(Number);
+          // tmp
+          shared_mem +=
+            (dim - 1) * patch_per_block * local_dim * sizeof(Number);
+
+          AssertCuda(cudaFuncSetAttribute(
+            loop_kernel_global<dim, fe_degree, Number, solver>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            shared_mem));
+
+          block_dim = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
+        }
     }
 
     template <typename VectorType, typename DataType>
