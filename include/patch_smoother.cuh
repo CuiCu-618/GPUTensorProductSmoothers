@@ -72,6 +72,23 @@ namespace PSMF
 
           block_dim = 256;
         }
+      else if (solver == LocalSolverVariant::SchurDirect)
+        {
+          constexpr unsigned int n_patch_dofs_inv =
+            dim * Util::pow(2 * fe_degree + 2, dim - 1) *
+              (2 * (fe_degree + 2) - 3) +
+            Util::pow(2 * fe_degree + 2, dim);
+
+          // local_src, local_dst
+          shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
+
+          AssertCuda(cudaFuncSetAttribute(
+            loop_kernel_global<dim, fe_degree, Number, solver>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            shared_mem));
+
+          block_dim = 256;
+        }
       else
         {
           const unsigned int local_dim = Util::pow(n_dofs_1d, dim);

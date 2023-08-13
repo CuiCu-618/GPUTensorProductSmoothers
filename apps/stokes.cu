@@ -436,51 +436,51 @@ namespace Step64
     using LA = PSMF::LaplaceVariant;
     using SM = PSMF::SmootherVariant;
 
-    // do_solve<CT::LOCAL_SOLVER_[0],
-    //          CT::LAPLACE_TYPE_[0],
-    //          CT::SMOOTH_VMULT_[0],
-    //          CT::SMOOTH_INV_[0]>(0, 0, 0, call_count);
+    do_solve<CT::LOCAL_SOLVER_[0],
+             CT::LAPLACE_TYPE_[0],
+             CT::SMOOTH_VMULT_[0],
+             CT::SMOOTH_INV_[0]>(0, call_count);
 
-    for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-      {
-        switch (CT::LOCAL_SOLVER_[k])
-          {
-            case PSMF::LocalSolverVariant::Direct:
-              {
-                do_solve<PSMF::LocalSolverVariant::Direct,
-                         CT::LAPLACE_TYPE_[0],
-                         CT::SMOOTH_VMULT_[0],
-                         CT::SMOOTH_INV_[0]>(k, call_count);
-                break;
-              }
-            case PSMF::LocalSolverVariant::Bila:
-              {
-                do_solve<PSMF::LocalSolverVariant::Bila,
-                         CT::LAPLACE_TYPE_[0],
-                         CT::SMOOTH_VMULT_[0],
-                         CT::SMOOTH_INV_[0]>(k, call_count);
-                break;
-              }
-            case PSMF::LocalSolverVariant::KSVD:
-              {
-                do_solve<PSMF::LocalSolverVariant::KSVD,
-                         CT::LAPLACE_TYPE_[0],
-                         CT::SMOOTH_VMULT_[0],
-                         CT::SMOOTH_INV_[0]>(k, call_count);
-                break;
-              }
-            case PSMF::LocalSolverVariant::NN:
-              {
-                do_solve<PSMF::LocalSolverVariant::NN,
-                         CT::LAPLACE_TYPE_[0],
-                         CT::SMOOTH_VMULT_[0],
-                         CT::SMOOTH_INV_[0]>(k, call_count);
-                break;
-              }
-            default:
-              AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
-          }
-      }
+    // for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+    //   {
+    //     switch (CT::LOCAL_SOLVER_[k])
+    //       {
+    //         case PSMF::LocalSolverVariant::Direct:
+    //           {
+    //             do_solve<PSMF::LocalSolverVariant::Direct,
+    //                      CT::LAPLACE_TYPE_[0],
+    //                      CT::SMOOTH_VMULT_[0],
+    //                      CT::SMOOTH_INV_[0]>(k, call_count);
+    //             break;
+    //           }
+    //         case PSMF::LocalSolverVariant::Bila:
+    //           {
+    //             do_solve<PSMF::LocalSolverVariant::Bila,
+    //                      CT::LAPLACE_TYPE_[0],
+    //                      CT::SMOOTH_VMULT_[0],
+    //                      CT::SMOOTH_INV_[0]>(k, call_count);
+    //             break;
+    //           }
+    //         case PSMF::LocalSolverVariant::KSVD:
+    //           {
+    //             do_solve<PSMF::LocalSolverVariant::KSVD,
+    //                      CT::LAPLACE_TYPE_[0],
+    //                      CT::SMOOTH_VMULT_[0],
+    //                      CT::SMOOTH_INV_[0]>(k, call_count);
+    //             break;
+    //           }
+    //         case PSMF::LocalSolverVariant::NN:
+    //           {
+    //             do_solve<PSMF::LocalSolverVariant::NN,
+    //                      CT::LAPLACE_TYPE_[0],
+    //                      CT::SMOOTH_VMULT_[0],
+    //                      CT::SMOOTH_INV_[0]>(k, call_count);
+    //             break;
+    //           }
+    //         default:
+    //           AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+    //       }
+    //   }
 
 
 
@@ -543,7 +543,7 @@ namespace Step64
         unsigned int n_levels = triangulation.n_global_levels();
 
         long long unsigned int n_dofs =
-          2 * std::pow(std::pow(2, n_levels) * (fe_degree + 1), dim);
+          3 * std::pow(std::pow(2, n_levels) * (fe_degree + 1), dim);
 
         if (n_dofs > CT::MAX_SIZES_)
           {

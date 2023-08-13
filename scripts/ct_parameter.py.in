@@ -104,7 +104,7 @@ def parse_args():
     parser.add_argument('-SOL','--local_solver',
                         default='D',
                         nargs='+',
-                        choices=['Direct','Bila','KSVD','NN'],
+                        choices=['Direct','SchurDirect','SchurIter','SchurTensorProduct'],
                         help="variant of the local solver operator"
     )
     parser.add_argument('-G','--granularity',
@@ -213,14 +213,14 @@ class Parameter:
             if kernel.startswith('D'):
                 kernel_str += r'PSMF::LocalSolverVariant::Direct, '
                 count += 1
-            elif kernel.endswith('la'):
-                kernel_str += r'PSMF::LocalSolverVariant::Bila, '
+            elif kernel.endswith('SchurDirect'):
+                kernel_str += r'PSMF::LocalSolverVariant::SchurDirect, '
                 count += 1
-            elif kernel.startswith('K'):
-                kernel_str += r'PSMF::LocalSolverVariant::KSVD, '
+            elif kernel.startswith('SchurIter'):
+                kernel_str += r'PSMF::LocalSolverVariant::SchurIter, '
                 count += 1   
-            elif kernel.endswith('NN'):
-                kernel_str += r'PSMF::LocalSolverVariant::NN, '
+            elif kernel.endswith('SchurTensorProduct'):
+                kernel_str += r'PSMF::LocalSolverVariant::SchurTensorProduct, '
                 count += 1 
         self.local_solver = ('constexpr std::array<PSMF::LocalSolverVariant, ' + str(count) + '>', kernel_str + '}}')
 

@@ -94,9 +94,9 @@ namespace PSMF
   enum class LocalSolverVariant
   {
     Direct,
-    Bila,
-    KSVD,
-    NN
+    SchurDirect,
+    SchurIter,
+    SchurTensorProduct
   };
 
 
@@ -786,7 +786,7 @@ namespace PSMF
   struct SharedDataSmoother;
 
   /**
-   * Exact local solver. TODO:
+   * Exact local solver.
    */
   template <int dim, typename Number, SmootherVariant smoother>
   struct SharedDataSmoother<dim, Number, smoother, LocalSolverVariant::Direct>
@@ -813,6 +813,29 @@ namespace PSMF
       local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
 
       tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+    }
+  };
+
+  template <int dim, typename Number, SmootherVariant smoother>
+  struct SharedDataSmoother<dim,
+                            Number,
+                            smoother,
+                            LocalSolverVariant::SchurDirect>
+    : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+    using SharedDataBase<Number>::tmp;
+
+    __device__
+    SharedDataSmoother(Number      *data,
+                       unsigned int n_buff,
+                       unsigned int n_dofs_1d,
+                       unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+      tmp       = local_dst + n_buff * local_dim;
     }
   };
 

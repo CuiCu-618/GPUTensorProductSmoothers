@@ -285,8 +285,170 @@ namespace PSMF
             int fe_degree,
             typename Number,
             LocalSolverVariant local_solver>
+  __global__ typename std::enable_if<local_solver ==
+                                     LocalSolverVariant::SchurDirect>::type
+  loop_kernel_global(
+    const Number                                                 *src,
+    Number                                                       *dst,
+    const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
+  {
+    constexpr unsigned int n_patch_dofs_all =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 1) +
+      Util::pow(2 * fe_degree + 2, dim);
+
+    constexpr unsigned int n_patch_dofs_rt =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 3);
+
+    constexpr unsigned int n_patch_dofs_dg = Util::pow(2 * fe_degree + 2, dim);
+
+    constexpr unsigned int n_patch_dofs =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 3) +
+      Util::pow(2 * fe_degree + 2, dim);
+
+    const unsigned int tid   = threadIdx.x;
+    const unsigned int patch = blockIdx.x;
+
+    SharedDataSmoother<dim, Number, SmootherVariant::GLOBAL, local_solver>
+      shared_data(get_shared_data_ptr<Number>(), 1, 0, n_patch_dofs);
+
+    if (patch < gpu_data.n_patches)
+      {
+        for (unsigned int i = 0; i < n_patch_dofs / blockDim.x + 1; ++i)
+          if (tid + i * blockDim.x < n_patch_dofs)
+            {
+              unsigned int global_dof_index =
+                gpu_data.patch_dof_smooth[patch * n_patch_dofs_all +
+                                          h_interior[tid + i * blockDim.x]];
+
+              shared_data.local_src[tid + i * blockDim.x] =
+                src[global_dof_index];
+              shared_data.local_dst[tid + i * blockDim.x] =
+                dst[global_dof_index];
+              shared_data.tmp[tid + i * blockDim.x] = 0;
+            }
+        __syncthreads();
+
+        unsigned int patch_type = 0;
+        for (unsigned int d = 0; d < dim; ++d)
+          patch_type += gpu_data.patch_type[patch * dim + d] * Util::pow(3, d);
+
+        constexpr unsigned int matrix_size   = Util::pow(n_patch_dofs, 2);
+        constexpr unsigned int matrix_size_U = Util::pow(n_patch_dofs_rt, 2);
+        constexpr unsigned int matrix_size_P = Util::pow(n_patch_dofs_dg, 2);
+
+        /// B^T M^-1 B P = B^T M^-1 F - G
+        // M^-1 F
+        for (unsigned int row = 0; row < n_patch_dofs_rt; ++row)
+          {
+            for (unsigned int i = 0; i < n_patch_dofs_rt / blockDim.x + 1; ++i)
+              if (tid + i * blockDim.x < n_patch_dofs_rt)
+                {
+                  auto val = gpu_data.eigenvalues[patch_type * matrix_size +
+                                                  row * n_patch_dofs_rt + tid +
+                                                  i * blockDim.x] *
+                             shared_data.local_src[tid + i * blockDim.x];
+
+                  atomicAdd(&shared_data.tmp[row], val);
+                }
+          }
+        __syncthreads();
+        // B^T M^-1 F - G
+        for (unsigned int row = 0; row < n_patch_dofs_dg; ++row)
+          {
+            for (unsigned int i = 0; i < n_patch_dofs_rt / blockDim.x + 1; ++i)
+              if (tid + i * blockDim.x < n_patch_dofs_rt)
+                {
+                  auto val =
+                    -gpu_data.eigenvalues[patch_type * matrix_size +
+                                          matrix_size_U + matrix_size_P +
+                                          n_patch_dofs_rt * n_patch_dofs_dg +
+                                          row * n_patch_dofs_rt + tid +
+                                          i * blockDim.x] *
+                    shared_data.tmp[tid + i * blockDim.x];
+
+                  atomicAdd(&shared_data.local_src[n_patch_dofs_rt + row], val);
+                }
+          }
+        __syncthreads();
+        // B^T M^-1 B P = B^T M^-1 F - G
+        for (unsigned int row = 0; row < n_patch_dofs_dg; ++row)
+          {
+            for (unsigned int i = 0; i < n_patch_dofs_dg / blockDim.x + 1; ++i)
+              if (tid + i * blockDim.x < n_patch_dofs_dg)
+                {
+                  auto val =
+                    -gpu_data
+                       .eigenvalues[patch_type * matrix_size + matrix_size_U +
+                                    row * n_patch_dofs_dg + tid +
+                                    i * blockDim.x] *
+                    shared_data
+                      .local_src[n_patch_dofs_rt + tid + i * blockDim.x];
+
+                  atomicAdd(&shared_data.tmp[n_patch_dofs_rt + row], val);
+                }
+          }
+        __syncthreads();
+        for (unsigned int i = 0; i < n_patch_dofs_dg / blockDim.x + 1; ++i)
+          if (tid + i * blockDim.x < n_patch_dofs_dg)
+            shared_data.local_dst[n_patch_dofs_rt + tid + i * blockDim.x] +=
+              shared_data.tmp[n_patch_dofs_rt + tid + i * blockDim.x];
+
+        /// M U = F - B P
+        // F - B P
+        for (unsigned int row = 0; row < n_patch_dofs_rt; ++row)
+          {
+            for (unsigned int i = 0; i < n_patch_dofs_dg / blockDim.x + 1; ++i)
+              if (tid + i * blockDim.x < n_patch_dofs_dg)
+                {
+                  auto val =
+                    -gpu_data
+                       .eigenvalues[patch_type * matrix_size + matrix_size_U +
+                                    matrix_size_P + row * n_patch_dofs_dg +
+                                    tid + i * blockDim.x] *
+                    shared_data.tmp[n_patch_dofs_rt + tid + i * blockDim.x];
+
+                  atomicAdd(&shared_data.local_src[row], val);
+                }
+          }
+        __syncthreads();
+        // M U = F - B P
+        for (unsigned int row = 0; row < n_patch_dofs_rt; ++row)
+          {
+            for (unsigned int i = 0; i < n_patch_dofs_rt / blockDim.x + 1; ++i)
+              if (tid + i * blockDim.x < n_patch_dofs_rt)
+                {
+                  auto val = gpu_data.eigenvalues[patch_type * matrix_size +
+                                                  row * n_patch_dofs_rt + tid +
+                                                  i * blockDim.x] *
+                             shared_data.local_src[tid + i * blockDim.x];
+
+                  atomicAdd(&shared_data.local_dst[row], val);
+                }
+          }
+        __syncthreads();
+        // store
+        for (unsigned int i = 0; i < n_patch_dofs / blockDim.x + 1; ++i)
+          if (tid + i * blockDim.x < n_patch_dofs)
+            {
+              unsigned int global_dof_index =
+                gpu_data.patch_dof_smooth[patch * n_patch_dofs_all +
+                                          h_interior[tid + i * blockDim.x]];
+
+              dst[global_dof_index] =
+                shared_data.local_dst[tid + i * blockDim.x] *
+                gpu_data.relaxation;
+            }
+      }
+  }
+
+  template <int dim,
+            int fe_degree,
+            typename Number,
+            LocalSolverVariant local_solver>
   __global__
-    typename std::enable_if<local_solver != LocalSolverVariant::Direct>::type
+    typename std::enable_if<local_solver != LocalSolverVariant::Direct &&
+                            local_solver !=
+                              LocalSolverVariant::SchurDirect>::type
     loop_kernel_global(
       const Number                                                 *src,
       Number                                                       *dst,

@@ -79,7 +79,8 @@ namespace PSMF
     Utilities::CUDA::free(vertex_patch_matrices);
 
     Utilities::CUDA::free(eigenvalues[0]);
-    for (unsigned int i = 1; i < 4; ++i)
+    Utilities::CUDA::free(eigenvalues[1]);
+    for (unsigned int i = 2; i < 4; ++i)
       {
         Utilities::CUDA::free(eigenvalues[i]);
         Utilities::CUDA::free(eigenvectors[i]);
@@ -680,7 +681,10 @@ namespace PSMF
 
     alloc_arrays(&eigenvalues[0],
                  Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
-    for (unsigned int i = 1; i < 4; ++i)
+    alloc_arrays(&eigenvalues[1],
+                 Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
+
+    for (unsigned int i = 2; i < 4; ++i)
       {
         alloc_arrays(&eigenvalues[i], n_dofs_1d * dim * Util::pow(3, dim));
         alloc_arrays(&eigenvectors[i], n_dofs_2d * dim * Util::pow(3, dim));
@@ -948,15 +952,6 @@ namespace PSMF
               std::array<FullMatrix<Number>, dim> A;
               if (dim == 2)
                 {
-                  // FullMatrix<Number> t0 =
-                  //   Tensors::kronecker_product_(patch_mass_inv[1],
-                  //                               patch_laplace_inv[0]);
-                  // FullMatrix<Number> t1 =
-                  //   Tensors::kronecker_product_(patch_laplace_inv[1],
-                  //                               patch_mass_inv[0]);
-                  // t0.add(1., t1);
-                  // A.copy_from(t0);
-
                   {
                     FullMatrix<Number> t0 =
                       Tensors::kronecker_product_(RT_mass[1][2],
@@ -997,17 +992,6 @@ namespace PSMF
                   A[0].copy_from(t0);
                 }
 
-              // print_matrices(patch_mass_inv);
-              // print_matrices(patch_laplace_inv);
-
-              // block (0,1)
-              // FullMatrix<Number> B =
-              //   dim == 2 ? Tensors::kronecker_product_(mix_mass_int[1][0],
-              //                                          mix_der_int[0][0]) :
-              //              Tensors::kronecker_product_(mix_mass_int[2][0],
-              //                                          mix_mass_int[1][0],
-              //                                          mix_der_int[0][0]);
-
               FullMatrix<Number> B =
                 dim == 2 ?
                   Tensors::kronecker_product_(Mix_mass[1][2], Mix_der[0][2]) :
@@ -1025,9 +1009,6 @@ namespace PSMF
                   (2 * (fe_degree + 2) - 3) +
                 Util::pow(2 * fe_degree + 2, dim);
 
-              // std::cout << A.m() << " " << B.m() << " " << B.n() <<
-              // std::endl;
-
               AssertDimension(A[0].n() * dim + B.n(), n_patch_dofs);
 
               FullMatrix<Number> PatchMatrix(n_patch_dofs, n_patch_dofs);
@@ -1037,22 +1018,6 @@ namespace PSMF
               PatchMatrix.fill(B, A[0].m(), dim * A[0].n(), 0, 0);
               PatchMatrix.fill(Bt, dim * A[0].m(), 0, 0, 0);
               PatchMatrix.fill(Bt, dim * A[0].m(), A[0].n(), 0, 0);
-
-              // {
-              //   std::ofstream out;
-              //   out.open("tp_mat" + std::to_string(level));
-
-              //   PatchMatrix.print_formatted(out, 3, false, 0, "0");
-
-              //   // for (unsigned int i = 0; i < PatchMatrix.m(); ++i)
-              //   //   {
-              //   //     for (unsigned int j = 0; j < PatchMatrix.n(); ++j)
-              //   //       out << PatchMatrix(i, j) << " ";
-              //   //     out << std::endl;
-              //   //   }
-
-              //   out.close();
-              // }
 
               DoFMapping<dim, fe_degree> dm;
 
@@ -1103,37 +1068,6 @@ namespace PSMF
                                             h_interior_host_rt,
                                             h_interior_host_rt);
 
-              // {
-              //   std::ofstream out;
-              //   out.open("mat" + std::to_string(level));
-
-              //   AA.print_formatted(out, 3, false, 0, "0");
-
-              //   // for (unsigned int i = 0; i < PatchMatrix.m(); ++i)
-              //   //   {
-              //   //     for (unsigned int j = 0; j < PatchMatrix.n(); ++j)
-              //   //       out << PatchMatrix(i, j) << " ";
-              //   //     out << std::endl;
-              //   //   }
-
-              //   out.close();
-              // }
-
-              // {
-              //   std::ofstream out;
-              //   out.open("mat_int" + std::to_string(level));
-
-              //   AA_inv.print_formatted(out, 3, false, 0, "0");
-
-              //   // for (unsigned int i = 0; i < PatchMatrix.m(); ++i)
-              //   //   {
-              //   //     for (unsigned int j = 0; j < PatchMatrix.n(); ++j)
-              //   //       out << PatchMatrix(i, j) << " ";
-              //   //     out << std::endl;
-              //   //   }
-
-              //   out.close();
-              // }
 
               LAPACKFullMatrix<Number> exact_inverse(AA_inv.m(), AA_inv.n());
               exact_inverse = AA_inv;
@@ -1150,134 +1084,110 @@ namespace PSMF
                   tmp[col] = 0;
                 }
 
-              // FullMatrix<Number> exact_inverse(AA_inv);
-              // exact_inverse.invert(AA_inv);
-
-              // if (k == 2 && j == 2)
-              //   for (unsigned int i = 0; i < AA_inv.m(); ++i)
-              //     {
-              //       for (unsigned int j = 0; j < AA_inv.n(); ++j)
-              //         std::cout << AA_inv(i, j) << " ";
-              //       std::cout << std::endl;
-              //     }
-
-              auto *vals = new Number[AA_inv.m() * AA_inv.n()];
-
-              for (unsigned int r = 0; r < AA_inv.m(); ++r)
-                std::transform(AA_inv.begin(r),
-                               AA_inv.end(r),
-                               &vals[r * AA_inv.n()],
-                               [](auto m) -> Number { return m; });
-              // std::transform(exact_inverse.begin(),
-              //                  exact_inverse.end(),
-              //                  vals,
-              //                  [](auto m) -> Number { return m; });
-
-              cudaError_t error_code =
-                cudaMemcpy(eigenvalues[0] +
-                             (k + j * 3 + z * 9) * AA_inv.n_elements(),
-                           vals,
-                           AA_inv.n_elements() * sizeof(Number),
-                           cudaMemcpyHostToDevice);
-              AssertCuda(error_code);
-
-              delete[] vals;
-            }
-
-
-            // Neural Network
-            if (0 && fe_degree == 7) // TODO:
+              // direct
               {
-                // TODO: 3d
-                std::string filenamea0 =
-                  "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a0_interior_Q" +
-                  std::to_string(fe_degree) + "_L" + std::to_string(level) +
-                  "_" + std::to_string(k) + "_" + std::to_string(j) + ".txt";
-                std::string filenamea1 =
-                  "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/a1_interior_Q" +
-                  std::to_string(fe_degree) + "_L" + std::to_string(level) +
-                  "_" + std::to_string(k) + "_" + std::to_string(j) + ".txt";
-                std::string filenamem0 =
-                  "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m0_interior_Q" +
-                  std::to_string(fe_degree) + "_L" + std::to_string(level) +
-                  "_" + std::to_string(k) + "_" + std::to_string(j) + ".txt";
-                std::string filenamem1 =
-                  "/export/home/cucui/CLionProjects/python-project-template/biharm/TensorProduct/m1_interior_Q" +
-                  std::to_string(fe_degree) + "_L" + std::to_string(level) +
-                  "_" + std::to_string(k) + "_" + std::to_string(j) + ".txt";
+                auto *vals = new Number[AA_inv.m() * AA_inv.n()];
 
-                std::ifstream filea0(filenamea0);
-                std::ifstream filea1(filenamea1);
-                std::ifstream filem0(filenamem0);
-                std::ifstream filem1(filenamem1);
+                for (unsigned int r = 0; r < AA_inv.m(); ++r)
+                  std::transform(AA_inv.begin(r),
+                                 AA_inv.end(r),
+                                 &vals[r * AA_inv.n()],
+                                 [](auto m) -> Number { return m; });
 
-                constexpr unsigned int n_dofs_2d =
-                  Util::pow(2 * fe_degree - 1, 2);
+                cudaError_t error_code =
+                  cudaMemcpy(eigenvalues[0] +
+                               (k + j * 3 + z * 9) * AA_inv.n_elements(),
+                             vals,
+                             AA_inv.n_elements() * sizeof(Number),
+                             cudaMemcpyHostToDevice);
+                AssertCuda(error_code);
 
-
-                auto read_nn = [&](auto &file) {
-                  Table<2, VectorizedArray<Number>> mat(2 * fe_degree - 1,
-                                                        2 * fe_degree - 1);
-                  if (file.is_open())
-                    {
-                      Number tmp[n_dofs_2d];
-
-                      std::istream_iterator<Number> fileIter(file);
-                      std::copy_n(fileIter, n_dofs_2d, tmp);
-
-                      std::transform(tmp,
-                                     tmp + n_dofs_2d,
-                                     mat.begin(),
-                                     [](auto m) -> VectorizedArray<Number> {
-                                       return make_vectorized_array(m);
-                                     });
-
-                      file.close();
-                    }
-                  else
-                    std::cout << "Error opening file!" << std::endl;
-
-
-                  return mat;
-                };
-
-                std::array<Table<2, VectorizedArray<Number>>, dim> t1;
-                std::array<Table<2, VectorizedArray<Number>>, dim> t2;
-
-                t1[0] = read_nn(filea1);
-                t1[1] = read_nn(filem0);
-                t2[0] = read_nn(filem1);
-                t2[1] = read_nn(filea0);
-
-                std::vector<std::array<Table<2, VectorizedArray<Number>>, dim>>
-                  rank1_tensors;
-
-                rank1_tensors.emplace_back(t1);
-                rank1_tensors.emplace_back(t2);
-
-                matrix_type local_matrices;
-
-                local_matrices.reinit(rank1_tensors, matrix_state::ranktwo);
-
-                auto eigenvalue_tensor = local_matrices.get_eigenvalue_tensor();
-                auto eigenvector_tensor =
-                  local_matrices.get_eigenvector_tensor();
-
-                copy_vals(eigenvalue_tensor, eigenvalues[3], k + j * 3);
-                copy_vecs(eigenvector_tensor, eigenvectors[3], k + j * 3);
-
-                // for (unsigned int i = 0; i < dim; ++i)
-                //   {
-                //     for (unsigned int j = 0; j < eigenvalue_tensor[i].size();
-                //     ++j)
-                //       std::cout << eigenvalue_tensor[i][j] << " ";
-                //     std::cout << std::endl;
-                //   }
-                // std::cout << std::endl;
-
-                // print_matrices(eigenvector_tensor[0]);
-                // print_matrices(eigenvector_tensor[1]);
+                delete[] vals;
               }
+
+              // Schur direct
+              {
+                auto h_interior_rt = dm.get_h_to_l_rt_interior();
+                auto h_interior_dg = dm.get_h_to_l_dg_normal();
+
+                std::sort(h_interior_rt.begin(), h_interior_rt.end());
+                std::sort(h_interior_dg.begin(), h_interior_dg.end());
+
+                for (auto &i : h_interior_dg)
+                  i += n_patch_dofs_rt;
+
+                FullMatrix<Number> A00(h_interior_rt.size());
+                A00.extract_submatrix_from(AA, h_interior_rt, h_interior_rt);
+
+                FullMatrix<Number> A01(h_interior_rt.size(),
+                                       h_interior_dg.size());
+                A01.extract_submatrix_from(AA, h_interior_rt, h_interior_dg);
+
+                FullMatrix<Number> A10;
+                A10.copy_transposed(A01);
+
+                FullMatrix<Number> A00inv(h_interior_rt.size());
+                A00inv.invert(A00);
+
+                FullMatrix<Number> SchurMatrix(h_interior_dg.size());
+                SchurMatrix.triple_product(A00inv, A10, A01);
+
+                LAPACKFullMatrix<Number> SchurInv(SchurMatrix.m());
+                SchurInv = SchurMatrix;
+                SchurInv.compute_inverse_svd_with_kernel(1);
+
+                Vector<Number> tmp(SchurMatrix.m());
+                Vector<Number> dst(SchurMatrix.m());
+                for (unsigned int col = 0; col < SchurMatrix.n(); ++col)
+                  {
+                    tmp[col] = 1;
+                    SchurInv.vmult(dst, tmp);
+                    for (unsigned int row = 0; row < SchurMatrix.n(); ++row)
+                      SchurMatrix(row, col) = dst[row];
+                    tmp[col] = 0;
+                  }
+
+                auto *vals = new Number[AA_inv.m() * AA_inv.n()];
+
+                for (unsigned int r = 0; r < A00inv.m(); ++r)
+                  std::transform(A00inv.begin(r),
+                                 A00inv.end(r),
+                                 &vals[r * A00inv.n()],
+                                 [](auto m) -> Number { return m; });
+
+                for (unsigned int r = 0; r < SchurMatrix.m(); ++r)
+                  std::transform(
+                    SchurMatrix.begin(r),
+                    SchurMatrix.end(r),
+                    &vals[A00inv.n_elements() + r * SchurMatrix.n()],
+                    [](auto m) -> Number { return m; });
+
+                for (unsigned int r = 0; r < A01.m(); ++r)
+                  std::transform(A01.begin(r),
+                                 A01.end(r),
+                                 &vals[A00inv.n_elements() +
+                                       SchurMatrix.n_elements() + r * A01.n()],
+                                 [](auto m) -> Number { return m; });
+
+                for (unsigned int r = 0; r < A10.m(); ++r)
+                  std::transform(
+                    A10.begin(r),
+                    A10.end(r),
+                    &vals[A00inv.n_elements() + SchurMatrix.n_elements() +
+                          A01.n_elements() + r * A10.n()],
+                    [](auto m) -> Number { return m; });
+
+                cudaError_t error_code =
+                  cudaMemcpy(eigenvalues[1] +
+                               (k + j * 3 + z * 9) * AA_inv.n_elements(),
+                             vals,
+                             AA_inv.n_elements() * sizeof(Number),
+                             cudaMemcpyHostToDevice);
+                AssertCuda(error_code);
+
+                delete[] vals;
+              }
+            }
           }
   }
 
