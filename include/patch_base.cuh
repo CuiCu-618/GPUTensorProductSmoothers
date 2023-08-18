@@ -19,6 +19,7 @@
 #include "cuda_vector.cuh"
 #include "tensor_product.h"
 #include "utilities.cuh"
+#include <cuda/std/array>
 
 using namespace dealii;
 
@@ -266,19 +267,24 @@ namespace PSMF
       unsigned int *h_to_l;
 
       /**
-       * Pointer to 1D mass matrix for bilapalace operator.
+       * Pointer to 1D RT mass matrix for Stokes operator.
        */
-      Number *laplace_mass_1d;
+      cuda::std::array<Number *, dim> rt_mass_1d;
 
       /**
-       * Pointer to 1D stiffness matrix for bilapalace operator.
+       * Pointer to 1D RT stiffness matrix for Stokes operator.
        */
-      Number *laplace_stiff_1d;
+      cuda::std::array<Number *, dim> rt_laplace_1d;
 
       /**
-       * Pointer to 1D stiffness matrix for bilapalace operator.
+       * Pointer to 1D mixed mass matrix for Stokes operator.
        */
-      Number *bilaplace_stiff_1d;
+      cuda::std::array<Number *, dim> mix_mass_1d;
+
+      /**
+       * Pointer to 1D mixed derivative matrix for Stokes operator.
+       */
+      cuda::std::array<Number *, dim> mix_der_1d;
 
       /**
        * Pointer to 1D mass matrix for smoothing operator.
@@ -638,22 +644,22 @@ namespace PSMF
     /**
      * Pointer to 1D RT mass matrix for Stokes operator.
      */
-    std::array<Number *, dim> rt_mass_1d;
+    cuda::std::array<Number *, dim> rt_mass_1d;
 
     /**
      * Pointer to 1D RT stiffness matrix for Stokes operator.
      */
-    std::array<Number *, dim> rt_laplace_1d;
+    cuda::std::array<Number *, dim> rt_laplace_1d;
 
     /**
      * Pointer to 1D mixed mass matrix for Stokes operator.
      */
-    std::array<Number *, dim> mix_mass_1d;
+    cuda::std::array<Number *, dim> mix_mass_1d;
 
     /**
      * Pointer to 1D mixed derivative matrix for Stokes operator.
      */
-    std::array<Number *, dim> mix_der_1d;
+    cuda::std::array<Number *, dim> mix_der_1d;
 
     /**
      * Pointer to patch matrices for Stokes operator.
@@ -720,9 +726,14 @@ namespace PSMF
     Number *local_laplace;
 
     /**
-     * Shared memory for computed 1D biLaplace matrix.
+     * Shared memory for computed 1D mixed mass matrix.
      */
-    Number *local_bilaplace;
+    Number *local_mix_mass;
+
+    /**
+     * Shared memory for computed 1D mixed derivative matrix.
+     */
+    Number *local_mix_der;
 
     /**
      * Shared memory for computed 1D eigenvalues.
@@ -741,21 +752,52 @@ namespace PSMF
   };
 
 
-  __constant__ unsigned int h_interior[Util::MAX_INTERIOR_PATCH_DOFS];
+  __constant__ unsigned int h_interior[Util::MAX_PATCH_DOFS_RT];
+  __constant__ unsigned int htol_rt_interior[Util::MAX_PATCH_DOFS_RT];
 
+  __constant__ unsigned int htol_rt[Util::MAX_PATCH_DOFS_RT];
+  __constant__ unsigned int ltoh_rt[Util::MAX_PATCH_DOFS_RT];
+
+  __constant__ unsigned int htol_dgn[Util::MAX_PATCH_DOFS_DG];
+  __constant__ unsigned int htol_dgt[Util::MAX_PATCH_DOFS_DG];
+  __constant__ unsigned int ltoh_dgn[Util::MAX_PATCH_DOFS_DG];
+  __constant__ unsigned int ltoh_dgt[Util::MAX_PATCH_DOFS_DG];
 
   /**
    * Structure to pass the shared memory into a general user function.
-   * Used for Bilaplace operator.
+   * Used for Stokes operator.
    */
+  template <int dim, typename Number, LaplaceVariant laplace>
+  struct SharedDataOp;
+
   template <int dim, typename Number>
-  struct SharedDataOp : SharedDataBase<Number>
+  struct SharedDataOp<dim, Number, LaplaceVariant::MatrixStruct>
+    : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+
+    __device__
+    SharedDataOp(Number      *data,
+                 unsigned int n_buff,
+                 unsigned int n_dofs_1d,
+                 unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+    }
+  };
+
+  template <int dim, typename Number>
+  struct SharedDataOp<dim, Number, LaplaceVariant::Basic>
+    : SharedDataBase<Number>
   {
     using SharedDataBase<Number>::local_src;
     using SharedDataBase<Number>::local_dst;
     using SharedDataBase<Number>::local_mass;
     using SharedDataBase<Number>::local_laplace;
-    using SharedDataBase<Number>::local_bilaplace;
+    using SharedDataBase<Number>::local_mix_mass;
+    using SharedDataBase<Number>::local_mix_der;
     using SharedDataBase<Number>::tmp;
 
     __device__
@@ -767,11 +809,14 @@ namespace PSMF
       local_src = data;
       local_dst = local_src + n_buff * local_dim;
 
-      local_mass      = local_dst + n_buff * local_dim;
-      local_laplace   = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim;
-      local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+      local_mass    = local_dst + n_buff * local_dim;
+      local_laplace = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_mass =
+        local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_der =
+        local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * dim * (dim - 1);
 
-      tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+      tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * dim;
     }
   };
 
@@ -796,7 +841,7 @@ namespace PSMF
     using SharedDataBase<Number>::local_dst;
     using SharedDataBase<Number>::local_mass;
     using SharedDataBase<Number>::local_laplace;
-    using SharedDataBase<Number>::local_bilaplace;
+    using SharedDataBase<Number>::local_mix_mass;
     using SharedDataBase<Number>::tmp;
 
     __device__
@@ -808,11 +853,11 @@ namespace PSMF
       local_src = data;
       local_dst = local_src + n_buff * local_dim;
 
-      local_mass      = local_dst + n_buff * local_dim;
-      local_laplace   = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim;
-      local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+      local_mass     = local_dst + n_buff * local_dim;
+      local_laplace  = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim;
+      local_mix_mass = local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
 
-      tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
+      tmp = local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * dim;
     }
   };
 
@@ -852,7 +897,7 @@ namespace PSMF
     using SharedDataBase<Number>::local_dst;
     using SharedDataBase<Number>::local_mass;
     using SharedDataBase<Number>::local_laplace;
-    using SharedDataBase<Number>::local_bilaplace;
+    using SharedDataBase<Number>::local_mix_mass;
     using SharedDataBase<Number>::tmp;
 
     __device__
@@ -872,11 +917,11 @@ namespace PSMF
         }
       else
         {
-          local_mass      = local_dst + n_buff * local_dim;
-          local_laplace   = local_mass + n_buff * n_dofs_1d * n_dofs_1d;
-          local_bilaplace = local_laplace + n_buff * n_dofs_1d * n_dofs_1d;
+          local_mass     = local_dst + n_buff * local_dim;
+          local_laplace  = local_mass + n_buff * n_dofs_1d * n_dofs_1d;
+          local_mix_mass = local_laplace + n_buff * n_dofs_1d * n_dofs_1d;
           // TODO: should be able to use less shared memory
-          tmp = local_bilaplace + n_buff * n_dofs_1d * n_dofs_1d * (dim - 1);
+          tmp = local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * (dim - 1);
         }
     }
   };

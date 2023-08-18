@@ -499,6 +499,12 @@ run()
     auto l1 = dm.get_h_to_l_rt_interior();
     print_vec(l1);
 
+    auto ll = dm.get_h_to_l_rt_x();
+    print_vec(ll);
+
+    auto ll1 = dm.get_h_to_l_rt_interior_x();
+    print_vec(ll1);
+
     auto l2 = dm.get_l_to_h_rt();
     print_vec(l2);
   }
@@ -510,13 +516,13 @@ run()
     auto l = dm.get_h_to_l_dg_normal();
     print_vec(l);
 
-    auto l1 = dm.get_h_to_l_dg_normal_interior();
+    auto l1 = dm.get_h_to_l_dg_tangent();
     print_vec(l1);
 
     auto l2 = dm.get_l_to_h_dg_tangent();
     print_vec(l2);
 
-    auto l3 = dm.get_l_to_h_dg_normal_interior();
+    auto l3 = dm.get_l_to_h_dg_normal();
     print_vec(l3);
   }
 }
@@ -571,8 +577,8 @@ main()
 
   // test<2, 5>();
 
-  run<2, 2>();
-  // run<3, 2>();
+  // run<2, 2>();
+  run<3, 2>();
 
   // print_dofs<2, 2>();
 }

@@ -16,6 +16,7 @@
 #include <iostream>
 
 #include "TPSS/tensor_product_matrix.h"
+#include "tensor_product.h"
 
 using namespace dealii;
 
@@ -277,6 +278,24 @@ test()
   print_matrices(mass);
   print_matrices(laplace);
 
+  PSMF::TensorProductData<dim, degree, Number> tensor_product;
+  tensor_product.reinit(mass, laplace);
+
+  std::array<AlignedVector<Number>, dim> eigenvalue_tensor;
+  std::array<Table<2, Number>, dim>      eigenvector_tensor;
+  tensor_product.get_eigenvalues(eigenvalue_tensor);
+  tensor_product.get_eigenvectors(eigenvector_tensor);
+
+  for (auto eigs : eigenvalue_tensor)
+    {
+      for (auto e : eigs)
+        std::cout << e << " ";
+      std::cout << std::endl;
+    }
+
+  std::cout << std::endl;
+  print_matrices(eigenvector_tensor);
+
   // kron(L2,M1)+kron(M2, L1)
 }
 
@@ -443,7 +462,9 @@ main()
 {
   test<2, 2>();
 
-  // test_mixed<2, 2>();
+  test_mixed<2, 2>();
+
+  // test_mixed<2, 6>();
 
   // test<2, 5>();
 }

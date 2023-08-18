@@ -254,6 +254,8 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   system_rhs_dp = 1.;
   solution_dp   = 0.;
 
+  std::cout << "TESTING Ax!!!\n";
+
   LinearAlgebra::ReadWriteVector<full_number> rw_vector(dof_handler.n_dofs());
   for (unsigned int i = 0; i < rw_vector.size(); ++i)
     rw_vector[i] = i;
@@ -261,18 +263,20 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   matrix_dp.vmult(solution_dp, system_rhs_dp);
   solution_dp.print(std::cout);
 
-  // rw_vector = 0;
-  // system_rhs_dp = 0.;
-  // for (unsigned int i = 0; i < 12; ++i)
-  //   {
-  //     rw_vector[i] = 1.;
-  //     system_rhs_dp.import(rw_vector, VectorOperation::insert);
-  //     matrix_dp.vmult(solution_dp, system_rhs_dp);
-  //     std::cout << i << std::endl;
-  //     solution_dp.print(std::cout);
-  //     // std::cout << i << " " << solution_dp.l2_norm() << std::endl;
-  //     rw_vector[i] = 0;
-  //   }
+  rw_vector     = 0;
+  system_rhs_dp = 0.;
+  for (unsigned int i = 0; i < rw_vector.size(); ++i)
+    {
+      rw_vector[i] = 1.;
+      system_rhs_dp.import(rw_vector, VectorOperation::insert);
+      matrix_dp.vmult(solution_dp, system_rhs_dp);
+      std::cout << i << std::endl;
+      solution_dp.print(std::cout);
+      // std::cout << i << " " << solution_dp.l2_norm() << std::endl;
+      rw_vector[i] = 0;
+    }
+
+  std::cout << "TESTING Ax!!!\n";
 
   Timer  time;
   double best_time = 1e10;
@@ -591,132 +595,134 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
 {
   *pcout << "Benchmarking Smoothing...\n";
 
-  for (unsigned int k = 0; k < CT::SMOOTH_VMULT_.size(); ++k)
-    switch (CT::SMOOTH_VMULT_[k])
-      {
-        case PSMF::LaplaceVariant::Basic:
-          for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
-            switch (CT::SMOOTH_INV_[j])
-              {
-                case PSMF::SmootherVariant::GLOBAL:
-                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-                    switch (CT::LOCAL_SOLVER_[k])
-                      {
-                        case PSMF::LocalSolverVariant::Direct:
-                          do_smooth<PSMF::LocalSolverVariant::Direct,
-                                    PSMF::LaplaceVariant::Basic,
-                                    PSMF::SmootherVariant::GLOBAL>();
-                          break;
-                        case PSMF::LocalSolverVariant::Bila:
-                        case PSMF::LocalSolverVariant::KSVD:
-                          do_smooth<PSMF::LocalSolverVariant::KSVD,
-                                    PSMF::LaplaceVariant::Basic,
-                                    PSMF::SmootherVariant::GLOBAL>();
-                          break;
-                      }
-                  break;
-                case PSMF::SmootherVariant::ConflictFree:
-                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-                    switch (CT::LOCAL_SOLVER_[k])
-                      {
-                        case PSMF::LocalSolverVariant::Direct:
-                          do_smooth<PSMF::LocalSolverVariant::Direct,
-                                    PSMF::LaplaceVariant::Basic,
-                                    PSMF::SmootherVariant::ConflictFree>();
-                          break;
-                        case PSMF::LocalSolverVariant::Bila:
-                        case PSMF::LocalSolverVariant::KSVD:
-                          do_smooth<PSMF::LocalSolverVariant::KSVD,
-                                    PSMF::LaplaceVariant::Basic,
-                                    PSMF::SmootherVariant::ConflictFree>();
-                          break;
-                      }
-                  break;
-              }
-          break;
-        case PSMF::LaplaceVariant::MatrixStruct:
-          for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
-            switch (CT::SMOOTH_INV_[j])
-              {
-                case PSMF::SmootherVariant::GLOBAL:
-                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-                    switch (CT::LOCAL_SOLVER_[k])
-                      {
-                        case PSMF::LocalSolverVariant::Direct:
-                          do_smooth<PSMF::LocalSolverVariant::Direct,
-                                    PSMF::LaplaceVariant::MatrixStruct,
-                                    PSMF::SmootherVariant::GLOBAL>();
-                          break;
-                        case PSMF::LocalSolverVariant::Bila:
-                        case PSMF::LocalSolverVariant::KSVD:
-                          do_smooth<PSMF::LocalSolverVariant::KSVD,
-                                    PSMF::LaplaceVariant::MatrixStruct,
-                                    PSMF::SmootherVariant::GLOBAL>();
-                          break;
-                      }
-                  break;
-                case PSMF::SmootherVariant::ConflictFree:
-                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-                    switch (CT::LOCAL_SOLVER_[k])
-                      {
-                        case PSMF::LocalSolverVariant::Direct:
-                          do_smooth<PSMF::LocalSolverVariant::Direct,
-                                    PSMF::LaplaceVariant::ConflictFree,
-                                    PSMF::SmootherVariant::ConflictFree>();
-                          break;
-                        case PSMF::LocalSolverVariant::Bila:
-                        case PSMF::LocalSolverVariant::KSVD:
-                          do_smooth<PSMF::LocalSolverVariant::KSVD,
-                                    PSMF::LaplaceVariant::ConflictFree,
-                                    PSMF::SmootherVariant::ConflictFree>();
-                          break;
-                      }
-                  break;
-              }
-          break;
-        case PSMF::LaplaceVariant::ConflictFree:
-          for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
-            switch (CT::SMOOTH_INV_[j])
-              {
-                case PSMF::SmootherVariant::GLOBAL:
-                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-                    switch (CT::LOCAL_SOLVER_[k])
-                      {
-                        case PSMF::LocalSolverVariant::Direct:
-                          do_smooth<PSMF::LocalSolverVariant::Direct,
-                                    PSMF::LaplaceVariant::ConflictFree,
-                                    PSMF::SmootherVariant::GLOBAL>();
-                          break;
-                        case PSMF::LocalSolverVariant::Bila:
-                        case PSMF::LocalSolverVariant::KSVD:
-                          do_smooth<PSMF::LocalSolverVariant::KSVD,
-                                    PSMF::LaplaceVariant::ConflictFree,
-                                    PSMF::SmootherVariant::GLOBAL>();
-                          break;
-                      }
-                  break;
-                case PSMF::SmootherVariant::ConflictFree:
-                  for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-                    switch (CT::LOCAL_SOLVER_[k])
-                      {
-                        case PSMF::LocalSolverVariant::Direct:
-                          do_smooth<PSMF::LocalSolverVariant::Direct,
-                                    PSMF::LaplaceVariant::ConflictFree,
-                                    PSMF::SmootherVariant::ConflictFree>();
-                          break;
-                        case PSMF::LocalSolverVariant::Bila:
-                        case PSMF::LocalSolverVariant::KSVD:
-                          do_smooth<PSMF::LocalSolverVariant::KSVD,
-                                    PSMF::LaplaceVariant::ConflictFree,
-                                    PSMF::SmootherVariant::ConflictFree>();
-                          break;
-                      }
-                  break;
-              }
-          break;
-        default:
-          AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
-      }
+  do_smooth<CT::LOCAL_SOLVER_[0], CT::SMOOTH_VMULT_[0], CT::SMOOTH_INV_[0]>();
+
+  // for (unsigned int k = 0; k < CT::SMOOTH_VMULT_.size(); ++k)
+  //   switch (CT::SMOOTH_VMULT_[k])
+  //     {
+  //       case PSMF::LaplaceVariant::Basic:
+  //         for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
+  //           switch (CT::SMOOTH_INV_[j])
+  //             {
+  //               case PSMF::SmootherVariant::GLOBAL:
+  //                 for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+  //                   switch (CT::LOCAL_SOLVER_[k])
+  //                     {
+  //                       case PSMF::LocalSolverVariant::Direct:
+  //                         do_smooth<PSMF::LocalSolverVariant::Direct,
+  //                                   PSMF::LaplaceVariant::Basic,
+  //                                   PSMF::SmootherVariant::GLOBAL>();
+  //                         break;
+  //                       case PSMF::LocalSolverVariant::Bila:
+  //                       case PSMF::LocalSolverVariant::KSVD:
+  //                         do_smooth<PSMF::LocalSolverVariant::KSVD,
+  //                                   PSMF::LaplaceVariant::Basic,
+  //                                   PSMF::SmootherVariant::GLOBAL>();
+  //                         break;
+  //                     }
+  //                 break;
+  //               case PSMF::SmootherVariant::ConflictFree:
+  //                 for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+  //                   switch (CT::LOCAL_SOLVER_[k])
+  //                     {
+  //                       case PSMF::LocalSolverVariant::Direct:
+  //                         do_smooth<PSMF::LocalSolverVariant::Direct,
+  //                                   PSMF::LaplaceVariant::Basic,
+  //                                   PSMF::SmootherVariant::ConflictFree>();
+  //                         break;
+  //                       case PSMF::LocalSolverVariant::Bila:
+  //                       case PSMF::LocalSolverVariant::KSVD:
+  //                         do_smooth<PSMF::LocalSolverVariant::KSVD,
+  //                                   PSMF::LaplaceVariant::Basic,
+  //                                   PSMF::SmootherVariant::ConflictFree>();
+  //                         break;
+  //                     }
+  //                 break;
+  //             }
+  //         break;
+  //       case PSMF::LaplaceVariant::MatrixStruct:
+  //         for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
+  //           switch (CT::SMOOTH_INV_[j])
+  //             {
+  //               case PSMF::SmootherVariant::GLOBAL:
+  //                 for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+  //                   switch (CT::LOCAL_SOLVER_[k])
+  //                     {
+  //                       case PSMF::LocalSolverVariant::Direct:
+  //                         do_smooth<PSMF::LocalSolverVariant::Direct,
+  //                                   PSMF::LaplaceVariant::MatrixStruct,
+  //                                   PSMF::SmootherVariant::GLOBAL>();
+  //                         break;
+  //                       case PSMF::LocalSolverVariant::Bila:
+  //                       case PSMF::LocalSolverVariant::KSVD:
+  //                         do_smooth<PSMF::LocalSolverVariant::KSVD,
+  //                                   PSMF::LaplaceVariant::MatrixStruct,
+  //                                   PSMF::SmootherVariant::GLOBAL>();
+  //                         break;
+  //                     }
+  //                 break;
+  //               case PSMF::SmootherVariant::ConflictFree:
+  //                 for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+  //                   switch (CT::LOCAL_SOLVER_[k])
+  //                     {
+  //                       case PSMF::LocalSolverVariant::Direct:
+  //                         do_smooth<PSMF::LocalSolverVariant::Direct,
+  //                                   PSMF::LaplaceVariant::ConflictFree,
+  //                                   PSMF::SmootherVariant::ConflictFree>();
+  //                         break;
+  //                       case PSMF::LocalSolverVariant::Bila:
+  //                       case PSMF::LocalSolverVariant::KSVD:
+  //                         do_smooth<PSMF::LocalSolverVariant::KSVD,
+  //                                   PSMF::LaplaceVariant::ConflictFree,
+  //                                   PSMF::SmootherVariant::ConflictFree>();
+  //                         break;
+  //                     }
+  //                 break;
+  //             }
+  //         break;
+  //       case PSMF::LaplaceVariant::ConflictFree:
+  //         for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
+  //           switch (CT::SMOOTH_INV_[j])
+  //             {
+  //               case PSMF::SmootherVariant::GLOBAL:
+  //                 for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+  //                   switch (CT::LOCAL_SOLVER_[k])
+  //                     {
+  //                       case PSMF::LocalSolverVariant::Direct:
+  //                         do_smooth<PSMF::LocalSolverVariant::Direct,
+  //                                   PSMF::LaplaceVariant::ConflictFree,
+  //                                   PSMF::SmootherVariant::GLOBAL>();
+  //                         break;
+  //                       case PSMF::LocalSolverVariant::Bila:
+  //                       case PSMF::LocalSolverVariant::KSVD:
+  //                         do_smooth<PSMF::LocalSolverVariant::KSVD,
+  //                                   PSMF::LaplaceVariant::ConflictFree,
+  //                                   PSMF::SmootherVariant::GLOBAL>();
+  //                         break;
+  //                     }
+  //                 break;
+  //               case PSMF::SmootherVariant::ConflictFree:
+  //                 for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
+  //                   switch (CT::LOCAL_SOLVER_[k])
+  //                     {
+  //                       case PSMF::LocalSolverVariant::Direct:
+  //                         do_smooth<PSMF::LocalSolverVariant::Direct,
+  //                                   PSMF::LaplaceVariant::ConflictFree,
+  //                                   PSMF::SmootherVariant::ConflictFree>();
+  //                         break;
+  //                       case PSMF::LocalSolverVariant::Bila:
+  //                       case PSMF::LocalSolverVariant::KSVD:
+  //                         do_smooth<PSMF::LocalSolverVariant::KSVD,
+  //                                   PSMF::LaplaceVariant::ConflictFree,
+  //                                   PSMF::SmootherVariant::ConflictFree>();
+  //                         break;
+  //                     }
+  //                 break;
+  //             }
+  //         break;
+  //       default:
+  //         AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+  //     }
 }
 
 template <int dim, int fe_degree>

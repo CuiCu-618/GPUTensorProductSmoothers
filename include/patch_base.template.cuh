@@ -80,7 +80,8 @@ namespace PSMF
 
     Utilities::CUDA::free(eigenvalues[0]);
     Utilities::CUDA::free(eigenvalues[1]);
-    for (unsigned int i = 2; i < 4; ++i)
+    Utilities::CUDA::free(eigenvalues[2]);
+    for (unsigned int i = 3; i < 4; ++i)
       {
         Utilities::CUDA::free(eigenvalues[i]);
         Utilities::CUDA::free(eigenvectors[i]);
@@ -91,8 +92,6 @@ namespace PSMF
     patch_id_host.clear();
     patch_type_host.clear();
     first_dof_host.clear();
-    h_to_l_host.clear();
-    l_to_h_host.clear();
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -562,6 +561,15 @@ namespace PSMF
     auto h_interior_host_rt = dm.get_h_to_l_rt_interior();
     auto h_interior_host_dg = dm.get_h_to_l_dg_normal();
 
+    auto htol_rt_host = dm.get_h_to_l_rt();
+    auto ltoh_rt_host = dm.get_l_to_h_rt();
+
+    auto htol_dgn_host = dm.get_h_to_l_dg_normal();
+    auto htol_dgt_host = dm.get_h_to_l_dg_tangent();
+    auto ltoh_dgn_host = dm.get_l_to_h_dg_normal();
+    auto ltoh_dgt_host = dm.get_l_to_h_dg_tangent();
+
+
     std::sort(h_interior_host_rt.begin(), h_interior_host_rt.end());
     std::sort(h_interior_host_dg.begin(), h_interior_host_dg.end());
 
@@ -575,79 +583,26 @@ namespace PSMF
     // for (auto i : h_interior_host_rt)
     //   std::cout << i << " ";
 
-    cudaError_t cuda_error =
-      cudaMemcpyToSymbol(h_interior,
-                         h_interior_host_rt.data(),
-                         h_interior_host_rt.size() * sizeof(unsigned int),
-                         0,
-                         cudaMemcpyHostToDevice);
-    AssertCuda(cuda_error);
-
-    if (dim == 2)
-      {
-        lookup_table.insert({123, {{0, 1}}}); // x-y
-        lookup_table.insert({213, {{1, 0}}}); // y-x
-      }
-    else if (dim == 3)
-      {
-        lookup_table.insert({1234567, {{0, 1, 2}}}); // x-y-z
-        lookup_table.insert({1452367, {{0, 2, 1}}}); // x-z-y
-        lookup_table.insert({2134657, {{1, 0, 2}}}); // y-x-z
-        lookup_table.insert({2461357, {{1, 2, 0}}}); // y-z-x
-        lookup_table.insert({4152637, {{2, 0, 1}}}); // z-x-y
-        lookup_table.insert({4261537, {{2, 1, 0}}}); // z-y-x
-      }
-
-    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
-    constexpr unsigned int N         = fe_degree + 1;
-    constexpr unsigned int z         = dim == 2 ? 1 : fe_degree + 1;
-    h_to_l_host.resize(Util::pow(n_dofs_1d, dim) * dim * (dim - 1));
-    l_to_h_host.resize(Util::pow(n_dofs_1d, dim) * dim * (dim - 1));
-
-    auto generate_indices = [&](unsigned int label, unsigned int type) {
-      const unsigned int          offset = type * Util::pow(n_dofs_1d, dim);
-      std::array<unsigned int, 3> strides;
-      for (unsigned int i = 0; i < 3; ++i)
-        strides[i] = Util::pow(n_dofs_1d, lookup_table[label][i]);
-
-      unsigned int count = 0;
-
-      for (unsigned i = 0; i < dim - 1; ++i)
-        for (unsigned int j = 0; j < 2; ++j)
-          for (unsigned int k = 0; k < 2; ++k)
-            for (unsigned int l = 0; l < z; ++l)
-              for (unsigned int m = 0; m < fe_degree + 1; ++m)
-                for (unsigned int n = 0; n < fe_degree + 1; ++n)
-                  {
-                    h_to_l_host[offset + (i * N) * strides[2] +
-                                l * n_dofs_1d * n_dofs_1d +
-                                (j * N) * strides[1] + m * n_dofs_1d +
-                                (k * N) * strides[0] + n] = count;
-                    l_to_h_host[offset + count++] =
-                      (i * N) * strides[2] + l * n_dofs_1d * n_dofs_1d +
-                      (j * N) * strides[1] + m * n_dofs_1d +
-                      (k * N) * strides[0] + n;
-                  }
+    auto copy_mappings = [](auto &device, const auto &host) {
+      cudaError_t cuda_error =
+        cudaMemcpyToSymbol(device,
+                           host.data(),
+                           host.size() * sizeof(unsigned int),
+                           0,
+                           cudaMemcpyHostToDevice);
+      AssertCuda(cuda_error);
     };
-    for (auto &el : ordering_to_type)
-      generate_indices(el.first, el.second);
 
-    alloc_arrays(&l_to_h, Util::pow(n_dofs_1d, dim) * dim * (dim - 1));
-    alloc_arrays(&h_to_l, Util::pow(n_dofs_1d, dim) * dim * (dim - 1));
+    copy_mappings(h_interior, h_interior_host_rt);
 
-    cudaError_t error_code = cudaMemcpy(l_to_h,
-                                        l_to_h_host.data(),
-                                        Util::pow(n_dofs_1d, dim) * dim *
-                                          (dim - 1) * sizeof(unsigned int),
-                                        cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
+    copy_mappings(htol_rt, htol_rt_host);
+    copy_mappings(ltoh_rt, ltoh_rt_host);
 
-    error_code = cudaMemcpy(h_to_l,
-                            h_to_l_host.data(),
-                            Util::pow(n_dofs_1d, dim) * dim * (dim - 1) *
-                              sizeof(unsigned int),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
+    copy_mappings(htol_dgn, htol_dgn_host);
+    copy_mappings(htol_dgt, htol_dgt_host);
+    copy_mappings(ltoh_dgn, ltoh_dgn_host);
+    copy_mappings(ltoh_dgt, ltoh_dgt_host);
+
 
     auto copy_to_device = [](auto &device, const auto &host) {
       LinearAlgebra::ReadWriteVector<unsigned int> rw_vector(host.size());
@@ -665,8 +620,9 @@ namespace PSMF
         copy_to_device(dirichlet_indices, dirichlet_index_vector);
       }
 
-    constexpr unsigned n_dofs_2d =
-      (2 * fe_degree + 2) * (2 * (fe_degree + 2) - 1);
+    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 3;
+    constexpr unsigned int n_dofs_2d =
+      (2 * fe_degree + 3) * (2 * fe_degree + 3);
 
     constexpr unsigned int n_patch_dofs =
       dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 1) +
@@ -683,8 +639,10 @@ namespace PSMF
                  Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
     alloc_arrays(&eigenvalues[1],
                  Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
+    alloc_arrays(&eigenvalues[2],
+                 Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
 
-    for (unsigned int i = 2; i < 4; ++i)
+    for (unsigned int i = 3; i < 4; ++i)
       {
         alloc_arrays(&eigenvalues[i], n_dofs_1d * dim * Util::pow(3, dim));
         alloc_arrays(&eigenvectors[i], n_dofs_2d * dim * Util::pow(3, dim));
@@ -714,17 +672,16 @@ namespace PSMF
   {
     Data data_copy;
 
-    data_copy.n_dofs_per_dim     = (1 << level) * fe_degree + 1;
-    data_copy.n_patches          = n_patches_laplace[color];
-    data_copy.patch_per_block    = patch_per_block;
-    data_copy.first_dof          = first_dof_laplace[color];
-    data_copy.patch_id           = patch_id[color];
-    data_copy.patch_type         = patch_type[color];
-    data_copy.l_to_h             = l_to_h;
-    data_copy.h_to_l             = h_to_l;
-    data_copy.laplace_mass_1d    = rt_mass_1d[0];
-    data_copy.laplace_stiff_1d   = rt_mass_1d[0];
-    data_copy.bilaplace_stiff_1d = rt_mass_1d[0];
+    data_copy.n_dofs_per_dim  = (1 << level) * fe_degree + 1;
+    data_copy.n_patches       = n_patches_laplace[color];
+    data_copy.patch_per_block = patch_per_block;
+    data_copy.first_dof       = first_dof_laplace[color];
+    data_copy.patch_id        = patch_id[color];
+    data_copy.patch_type      = patch_type[color];
+    data_copy.rt_mass_1d      = rt_mass_1d;
+    data_copy.rt_laplace_1d   = rt_laplace_1d;
+    data_copy.mix_mass_1d     = mix_mass_1d;
+    data_copy.mix_der_1d      = mix_der_1d;
 
     data_copy.patch_dof_laplace     = patch_dof_laplace[color];
     data_copy.vertex_patch_matrices = vertex_patch_matrices;
@@ -747,8 +704,6 @@ namespace PSMF
         data_copy[i].relaxation          = relaxation;
         data_copy[i].first_dof           = first_dof_smooth[color];
         data_copy[i].patch_type          = patch_type_smooth[color];
-        data_copy[i].l_to_h              = l_to_h;
-        data_copy[i].h_to_l              = h_to_l;
         data_copy[i].eigenvalues         = eigenvalues[i];
         data_copy[i].eigenvectors        = eigenvectors[i];
         data_copy[i].smooth_mass_1d      = rt_mass_1d[0];
@@ -1041,7 +996,7 @@ namespace PSMF
                   PatchMatrix(i + ind_v_b.size() / dim, j + ind_v_b.size()) =
                     Bt(ind_p1[j], i);
 
-              for (auto i = 0; i < ind_v_b.size(); ++i)
+              for (auto i = 0U; i < ind_v_b.size(); ++i)
                 for (auto j = 0U; j < ind_p1_b.size(); ++j)
                   {
                     AA(i, j + ind_v_b.size()) =
@@ -1068,6 +1023,13 @@ namespace PSMF
                                             h_interior_host_rt,
                                             h_interior_host_rt);
 
+              // if (k == 2 && j == 2)
+              //   {
+              //     std::ofstream out;
+              //     out.open("AA_" + std::to_string(level));
+              //     AA.print_formatted(out, 3, true, 0, "0");
+              //     out.close();
+              //   }
 
               LAPACKFullMatrix<Number> exact_inverse(AA_inv.m(), AA_inv.n());
               exact_inverse = AA_inv;
@@ -1136,6 +1098,40 @@ namespace PSMF
                 SchurInv = SchurMatrix;
                 SchurInv.compute_inverse_svd_with_kernel(1);
 
+                // if (k == 2 && j == 2)
+                //   {
+                //     {
+                //       std::ofstream out;
+                //       out.open("AA_inv_" + std::to_string(level));
+                //       AA_inv.print_formatted(out, 3, true, 0, "0");
+                //       out.close();
+                //     }
+                //     {
+                //       std::ofstream out;
+                //       out.open("A00_" + std::to_string(level));
+                //       A00.print_formatted(out, 3, true, 0, "0");
+                //       out.close();
+                //     }
+                //     {
+                //       std::ofstream out;
+                //       out.open("A00inv_" + std::to_string(level));
+                //       A00inv.print_formatted(out, 3, true, 0, "0");
+                //       out.close();
+                //     }
+                //     {
+                //       std::ofstream out;
+                //       out.open("A01_" + std::to_string(level));
+                //       A01.print_formatted(out, 3, true, 0, "0");
+                //       out.close();
+                //     }
+                //     {
+                //       std::ofstream out;
+                //       out.open("SchurMatrix_" + std::to_string(level));
+                //       SchurMatrix.print_formatted(out, 3, true, 0, "0");
+                //       out.close();
+                //     }
+                //   }
+
                 Vector<Number> tmp(SchurMatrix.m());
                 Vector<Number> dst(SchurMatrix.m());
                 for (unsigned int col = 0; col < SchurMatrix.n(); ++col)
@@ -1146,6 +1142,14 @@ namespace PSMF
                       SchurMatrix(row, col) = dst[row];
                     tmp[col] = 0;
                   }
+
+                // if (k == 2 && j == 2)
+                //   {
+                //     std::ofstream out;
+                //     out.open("SchurInv_" + std::to_string(level));
+                //     SchurMatrix.print_formatted(out, 3, true, 0, "0");
+                //     out.close();
+                //   }
 
                 auto *vals = new Number[AA_inv.m() * AA_inv.n()];
 
@@ -1187,6 +1191,89 @@ namespace PSMF
 
                 delete[] vals;
               }
+
+              // Schur Iterative
+              {
+                auto h_interior_rt = dm.get_h_to_l_rt_interior();
+                auto h_interior_dg = dm.get_h_to_l_dg_normal();
+
+                std::sort(h_interior_rt.begin(), h_interior_rt.end());
+                std::sort(h_interior_dg.begin(), h_interior_dg.end());
+
+                for (auto &i : h_interior_dg)
+                  i += n_patch_dofs_rt;
+
+                FullMatrix<Number> A00(h_interior_rt.size());
+                A00.extract_submatrix_from(AA, h_interior_rt, h_interior_rt);
+
+                FullMatrix<Number> A01(h_interior_rt.size(),
+                                       h_interior_dg.size());
+                A01.extract_submatrix_from(AA, h_interior_rt, h_interior_dg);
+
+                FullMatrix<Number> A10;
+                A10.copy_transposed(A01);
+
+                FullMatrix<Number> A00inv(h_interior_rt.size());
+                A00inv.invert(A00);
+
+                FullMatrix<Number> SchurMatrix(h_interior_dg.size());
+                SchurMatrix.triple_product(A00inv, A10, A01);
+
+                // LAPACKFullMatrix<Number> SchurInv(SchurMatrix.m());
+                // SchurInv = SchurMatrix;
+                // SchurInv.compute_inverse_svd_with_kernel(1);
+
+                // Vector<Number> tmp(SchurMatrix.m());
+                // Vector<Number> dst(SchurMatrix.m());
+                // for (unsigned int col = 0; col < SchurMatrix.n(); ++col)
+                //   {
+                //     tmp[col] = 1;
+                //     SchurInv.vmult(dst, tmp);
+                //     for (unsigned int row = 0; row < SchurMatrix.n(); ++row)
+                //       SchurMatrix(row, col) = dst[row];
+                //     tmp[col] = 0;
+                //   }
+
+                auto *vals = new Number[AA_inv.m() * AA_inv.n()];
+
+                for (unsigned int r = 0; r < A00inv.m(); ++r)
+                  std::transform(A00inv.begin(r),
+                                 A00inv.end(r),
+                                 &vals[r * A00inv.n()],
+                                 [](auto m) -> Number { return m; });
+
+                for (unsigned int r = 0; r < SchurMatrix.m(); ++r)
+                  std::transform(
+                    SchurMatrix.begin(r),
+                    SchurMatrix.end(r),
+                    &vals[A00inv.n_elements() + r * SchurMatrix.n()],
+                    [](auto m) -> Number { return m; });
+
+                for (unsigned int r = 0; r < A01.m(); ++r)
+                  std::transform(A01.begin(r),
+                                 A01.end(r),
+                                 &vals[A00inv.n_elements() +
+                                       SchurMatrix.n_elements() + r * A01.n()],
+                                 [](auto m) -> Number { return m; });
+
+                for (unsigned int r = 0; r < A10.m(); ++r)
+                  std::transform(
+                    A10.begin(r),
+                    A10.end(r),
+                    &vals[A00inv.n_elements() + SchurMatrix.n_elements() +
+                          A01.n_elements() + r * A10.n()],
+                    [](auto m) -> Number { return m; });
+
+                cudaError_t error_code =
+                  cudaMemcpy(eigenvalues[2] +
+                               (k + j * 3 + z * 9) * AA_inv.n_elements(),
+                             vals,
+                             AA_inv.n_elements() * sizeof(Number),
+                             cudaMemcpyHostToDevice);
+                AssertCuda(error_code);
+
+                delete[] vals;
+              }
             }
           }
   }
@@ -1205,7 +1292,7 @@ namespace PSMF
     auto copy_to_device = [](auto tensor, auto dst) {
       for (unsigned int d = 0; d < dim; ++d)
         {
-          const unsigned int n_elements = tensor[d][0].n_elements();
+          const unsigned int n_elements = Util::pow(2 * fe_degree + 3, 2);
 
           auto mat = new Number[n_elements * 3];
           for (unsigned int i = 0; i < 3; ++i)
@@ -1313,7 +1400,7 @@ namespace PSMF
             // std::ofstream out;
             // out.open("patch_mat_L" + std::to_string(level));
 
-            // PatchMatrix.print_formatted(out, 3, false, 0, "0");
+            // PatchMatrix.print_formatted(out, 3, true, 0, "0");
             // out.close();
 
             DoFMapping<dim, fe_degree> dm;
@@ -1349,7 +1436,7 @@ namespace PSMF
             // std::ofstream out1;
             // out1.open("patch_mat_A_L" + std::to_string(level));
 
-            // AA.print_formatted(out1, 3, false, 0, "0");
+            // AA.print_formatted(out1, 3, true, 0, "0");
             // out1.close();
 
             auto *vals = new Number[AA.m() * AA.n()];

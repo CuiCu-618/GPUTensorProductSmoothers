@@ -41,9 +41,9 @@ namespace Util
 
   constexpr unsigned int DIM        = 2;
   constexpr unsigned int MAX_DEGREE = 10;
-  constexpr unsigned int MAX_INTERIOR_PATCH_DOFS =
-    DIM * pow(2 * MAX_DEGREE, DIM - 1) * (2 * (MAX_DEGREE + 2) - 3) +
-    pow(2 * MAX_DEGREE, DIM);
+  constexpr unsigned int MAX_PATCH_DOFS_RT =
+    DIM * pow(2 * MAX_DEGREE + 2, DIM - 1) * (2 * MAX_DEGREE + 3);
+  constexpr unsigned int MAX_PATCH_DOFS_DG = pow(2 * MAX_DEGREE + 2, DIM);
 
   /**
    * Compute dofs in a patch based on first_dof.
