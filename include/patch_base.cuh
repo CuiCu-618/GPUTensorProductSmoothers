@@ -421,25 +421,25 @@ namespace PSMF
     /**
      * Helper function. Assemble 1d RT mass matrices.
      */
-    std::array<std::array<Table<2, Number>, 3>, dim>
+    std::array<std::array<Table<2, double>, 3>, dim>
     assemble_RTmass_tensor() const;
 
     /**
      * Helper function. Assemble 1d RT laplace matrices.
      */
-    std::array<std::array<Table<2, Number>, 6>, dim>
+    std::array<std::array<Table<2, double>, 6>, dim>
     assemble_RTlaplace_tensor() const;
 
     /**
      * Helper function. Assemble 1d Mixed mass matrices.
      */
-    std::array<std::array<Table<2, Number>, 3>, dim>
+    std::array<std::array<Table<2, double>, 3>, dim>
     assemble_Mixmass_tensor() const;
 
     /**
      * Helper function. Assemble 1d Mixed derivative matrices.
      */
-    std::array<std::array<Table<2, Number>, 3>, dim>
+    std::array<std::array<Table<2, double>, 3>, dim>
     assemble_Mixder_tensor() const;
 
   private:

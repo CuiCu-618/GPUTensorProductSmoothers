@@ -19,6 +19,7 @@
 #include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_interface_values.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_raviart_thomas_new.h>
 
@@ -47,7 +48,82 @@
 
 namespace Step64
 {
+  static unsigned int call_count = 0;
+
   using namespace dealii;
+
+  template <std::size_t I, std::size_t J, std::size_t K>
+  struct Tester
+  {
+    template <typename T>
+    static void
+    run(T &t)
+    {
+      t.template do_solve<CT::LAPLACE_TYPE_[I],
+                          CT::SMOOTH_VMULT_[I],
+                          CT::SMOOTH_INV_[J],
+                          CT::LOCAL_SOLVER_[K]>(I, J, K, call_count);
+      if constexpr (J == 0 && K == 0)
+        {
+          Tester<I - 1,
+                 CT::SMOOTH_INV_.size() - 1,
+                 CT::LOCAL_SOLVER_.size() - 1>::run();
+        }
+      else if constexpr (K == 0)
+        {
+          Tester<I, J - 1, CT::LOCAL_SOLVER_.size() - 1>::run(t);
+        }
+      else
+        {
+          Tester<I, J, K - 1>::run(t);
+        }
+    }
+  };
+
+  template <std::size_t I, std::size_t J>
+  struct Tester<I, J, 0>
+  {
+    template <typename T>
+    static void
+    run(T &t)
+    {
+      t.template do_solve<CT::LAPLACE_TYPE_[I],
+                          CT::SMOOTH_VMULT_[I],
+                          CT::SMOOTH_INV_[J],
+                          CT::LOCAL_SOLVER_[0]>(I, J, 0, call_count);
+      Tester<I, J - 1, CT::LOCAL_SOLVER_.size() - 1>::run(t);
+    }
+  };
+
+  template <std::size_t I>
+  struct Tester<I, 0, 0>
+  {
+    template <typename T>
+    static void
+    run(T &t)
+    {
+      t.template do_solve<CT::LAPLACE_TYPE_[I],
+                          CT::SMOOTH_VMULT_[I],
+                          CT::SMOOTH_INV_[0],
+                          CT::LOCAL_SOLVER_[0]>(I, 0, 0, call_count);
+      Tester<I - 1, CT::SMOOTH_INV_.size() - 1, CT::LOCAL_SOLVER_.size() - 1>::
+        run(t);
+    }
+  };
+
+  template <>
+  struct Tester<0, 0, 0>
+  {
+    template <typename T>
+    static void
+    run(T &t)
+    {
+      t.template do_solve<CT::LAPLACE_TYPE_[0],
+                          CT::SMOOTH_VMULT_[0],
+                          CT::SMOOTH_INV_[0],
+                          CT::LOCAL_SOLVER_[0]>(0, 0, 0, call_count);
+    }
+  };
 
   template <int dim>
   using Solution = Stokes::NoSlipExp::Solution<dim>;
@@ -75,22 +151,27 @@ namespace Step64
     void
     run(const unsigned int n_cycles);
 
+    template <PSMF::LaplaceVariant     laplace,
+              PSMF::LaplaceVariant     smooth_vmult,
+              PSMF::SmootherVariant    smooth_inv,
+              PSMF::LocalSolverVariant local_solver>
+    void
+    do_solve(unsigned int k,
+             unsigned int j,
+             unsigned int i,
+             unsigned int call_count);
+
   private:
     void
     setup_system();
+    void
+    assemble_rhs();
     void
     assemble_mg();
     void
     solve_mg(unsigned int n_mg_cycles);
     std::tuple<double, double, double>
     compute_error();
-
-    template <PSMF::LocalSolverVariant local_solver,
-              PSMF::LaplaceVariant     laplace,
-              PSMF::LaplaceVariant     smooth_vmult,
-              PSMF::SmootherVariant    smooth_inv>
-    void
-    do_solve(unsigned int k, unsigned int call_count);
 
     Triangulation<dim>                  triangulation;
     std::shared_ptr<FiniteElement<dim>> fe;
@@ -110,6 +191,9 @@ namespace Step64
     MGLevelObject<std::shared_ptr<MatrixFreeSP>> mfdata_sp;
     MGConstrainedDoFs                            mg_constrained_dofs;
     AffineConstraints<double>                    constraints;
+
+    LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA>
+      system_rhs_dev;
 
     LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
       solution_velocity_host;
@@ -146,7 +230,8 @@ namespace Step64
     fout.open(filename + ".log", std::ios_base::out);
     pcout = std::make_shared<ConditionalOStream>(fout, true);
 
-    info_table.resize(CT::LOCAL_SOLVER_.size());
+    info_table.resize(CT::LAPLACE_TYPE_.size() * CT::SMOOTH_INV_.size() *
+                      CT::LOCAL_SOLVER_.size());
   }
 
   template <int dim, int fe_degree>
@@ -188,6 +273,179 @@ namespace Step64
     setup_time += time.wall_time();
 
     *pcout << "DoF setup time:         " << setup_time << "s" << std::endl;
+  }
+  template <int dim, int fe_degree>
+  void
+  LaplaceProblem<dim, fe_degree>::assemble_rhs()
+  {
+    Timer time;
+
+    SolutionVelocity<dim> exact_solution;
+    RightHandSide<dim>    rhs_function(std::make_shared<Solution<dim>>());
+
+    const unsigned int n_dofs = dof_handler.n_dofs();
+
+    system_rhs_dev.reinit(n_dofs);
+
+    LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+      system_rhs_host(n_dofs);
+
+    LinearAlgebra::ReadWriteVector<double> rw_vector(n_dofs);
+
+    AffineConstraints<double> constraints;
+    constraints.clear();
+    VectorToolsFix::project_boundary_values_div_conforming(dof_handler_velocity,
+                                                           0,
+                                                           exact_solution,
+                                                           0,
+                                                           constraints,
+                                                           MappingQ1<dim>());
+    constraints.close();
+
+    const QGauss<dim>      quadrature_formula(fe_degree + 2);
+    FEValues<dim>          fe_values(dof_handler_velocity.get_fe(),
+                            quadrature_formula,
+                            update_values | update_quadrature_points |
+                              update_JxW_values);
+    FEInterfaceValues<dim> fe_interface_values(
+      dof_handler_velocity.get_fe(),
+      QGauss<dim - 1>(fe_degree + 2),
+      update_values | update_gradients | update_quadrature_points |
+        update_hessians | update_JxW_values | update_normal_vectors);
+
+    const unsigned int dofs_per_cell =
+      dof_handler_velocity.get_fe().n_dofs_per_cell();
+
+    const unsigned int        n_q_points = quadrature_formula.size();
+    Vector<double>            cell_rhs(dofs_per_cell);
+    std::vector<unsigned int> local_dof_indices(dofs_per_cell);
+
+    auto begin = dof_handler_velocity.begin_mg(
+      dof_handler.get_triangulation().n_global_levels() - 1);
+    auto end = dof_handler_velocity.end_mg(
+      dof_handler.get_triangulation().n_global_levels() - 1);
+
+    const FEValuesExtractors::Vector velocities(0);
+
+    for (auto cell = begin; cell != end; ++cell)
+      if (cell->is_locally_owned_on_level())
+        {
+          cell_rhs = 0;
+          fe_values.reinit(cell);
+
+          std::vector<Tensor<1, dim>> load_values;
+          const auto &q_points = fe_values.get_quadrature_points();
+          std::transform(q_points.cbegin(),
+                         q_points.cend(),
+                         std::back_inserter(load_values),
+                         [&](const auto &x_q) {
+                           Tensor<1, dim> value;
+                           for (auto c = 0U; c < dim; ++c)
+                             value[c] = rhs_function.value(x_q, c);
+                           return value;
+                         });
+
+          for (unsigned int q_index = 0; q_index < n_q_points; ++q_index)
+            {
+              for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                cell_rhs(i) += (fe_values[velocities].value(i, q_index) *
+                                load_values[q_index] * fe_values.JxW(q_index));
+            }
+
+          cell->get_mg_dof_indices(local_dof_indices);
+          constraints.distribute_local_to_global(cell_rhs,
+                                                 local_dof_indices,
+                                                 system_rhs_host);
+        }
+
+    for (auto cell = begin; cell != end; ++cell)
+      if (cell->is_locally_owned_on_level())
+        {
+          for (const unsigned int face_no : cell->face_indices())
+            if (cell->at_boundary(face_no))
+              {
+                fe_interface_values.reinit(cell, face_no);
+
+                const unsigned int n_interface_dofs =
+                  fe_interface_values.n_current_interface_dofs();
+                Vector<double> cell_rhs_face(n_interface_dofs);
+                cell_rhs_face = 0;
+
+                const auto &q_points =
+                  fe_interface_values.get_quadrature_points();
+                const std::vector<double> &JxW =
+                  fe_interface_values.get_JxW_values();
+                const std::vector<Tensor<1, dim>> &normals =
+                  fe_interface_values.get_normal_vectors();
+
+                std::vector<Tensor<1, dim>> tangential_solution_values;
+                std::vector<Tensor<1, dim>> solution_values;
+                std::transform(q_points.cbegin(),
+                               q_points.cend(),
+                               std::back_inserter(solution_values),
+                               [&](const auto &x_q) {
+                                 Tensor<1, dim> value;
+                                 for (auto c = 0U; c < dim; ++c)
+                                   value[c] = exact_solution.value(x_q, c);
+                                 return value;
+                               });
+                std::transform(solution_values.cbegin(),
+                               solution_values.cend(),
+                               normals.cbegin(),
+                               std::back_inserter(tangential_solution_values),
+                               [](const auto &u_q, const auto &normal) {
+                                 return u_q - ((u_q * normal) * normal);
+                               });
+
+                const unsigned int p = fe_degree;
+                const auto         h = cell->extent_in_direction(
+                  GeometryInfo<dim>::unit_normal_direction[face_no]);
+                const auto   one_over_h   = (0.5 / h) + (0.5 / h);
+                const auto   gamma        = p == 0 ? 1 : p * (p + 1);
+                const double gamma_over_h = 2.0 * gamma * one_over_h;
+
+                for (unsigned int qpoint = 0; qpoint < q_points.size();
+                     ++qpoint)
+                  {
+                    const auto &n = normals[qpoint];
+
+                    for (unsigned int i = 0; i < n_interface_dofs; ++i)
+                      {
+                        const auto av_gradients_i_dot_n_dot_n =
+                          (fe_interface_values.average_of_shape_gradients(
+                             i, qpoint) *
+                           n * n);
+                        const auto jump_val_i_dot_n =
+                          (fe_interface_values.jump_in_shape_values(i, qpoint) *
+                           n);
+                        cell_rhs_face(i) +=
+                          (-av_gradients_i_dot_n_dot_n * // - {grad v n n }
+                             (tangential_solution_values[qpoint]) //   (u_exact
+                                                                  //   . n)
+                           +                                      // +
+                           gamma_over_h                           //  gamma/h
+                             * jump_val_i_dot_n                   // [v n]
+                             * (tangential_solution_values[qpoint]) // (u_exact
+                                                                    // . n)
+                           ) *
+                          JxW[qpoint];                              // dx
+                      }
+                  }
+
+                auto dof_indices =
+                  fe_interface_values.get_interface_dof_indices();
+                constraints.distribute_local_to_global(cell_rhs_face,
+                                                       dof_indices,
+                                                       system_rhs_host);
+              }
+        }
+
+    system_rhs_host.compress(VectorOperation::add);
+    rw_vector.import(system_rhs_host, VectorOperation::insert);
+    system_rhs_dev.import(rw_vector, VectorOperation::insert);
+
+    *pcout << "RHS setup time:         " << time.wall_time() << "s"
+           << std::endl;
   }
   template <int dim, int fe_degree>
   void
@@ -277,12 +535,14 @@ namespace Step64
   }
 
   template <int dim, int fe_degree>
-  template <PSMF::LocalSolverVariant local_solver,
-            PSMF::LaplaceVariant     laplace,
+  template <PSMF::LaplaceVariant     laplace,
             PSMF::LaplaceVariant     smooth_vmult,
-            PSMF::SmootherVariant    smooth_inv>
+            PSMF::SmootherVariant    smooth_inv,
+            PSMF::LocalSolverVariant local_solver>
   void
   LaplaceProblem<dim, fe_degree>::do_solve(unsigned int k,
+                                           unsigned int j,
+                                           unsigned int i,
                                            unsigned int call_count)
   {
     PSMF::MultigridSolver<dim,
@@ -298,17 +558,17 @@ namespace Step64
              mfdata_dp,
              mfdata_sp,
              transfer,
-             SolutionVelocity<dim>(),
-             RightHandSide<dim>(std::make_shared<Solution<dim>>()),
+             system_rhs_dev,
              pcout,
              1);
 
-    *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
-           << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
-           << SmootherToString(CT::SMOOTH_INV_[0]) << " "
-           << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << "]\n";
+    *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
+           << LaplaceToString(CT::SMOOTH_VMULT_[k]) << " "
+           << SmootherToString(CT::SMOOTH_INV_[j]) << " "
+           << LocalSolverToString(CT::LOCAL_SOLVER_[i]) << "]\n";
 
-    unsigned int index = k;
+    unsigned int index =
+      (k * CT::SMOOTH_INV_.size() + j) * CT::LOCAL_SOLVER_.size() + i;
 
     info_table[index].add_value("level", triangulation.n_global_levels());
     info_table[index].add_value("cells", triangulation.n_global_active_cells());
@@ -431,58 +691,16 @@ namespace Step64
   void
   LaplaceProblem<dim, fe_degree>::solve_mg(unsigned int n_mg_cycles)
   {
-    static unsigned int call_count = 0;
+    // static unsigned int call_count = 0;
 
-    using LA = PSMF::LaplaceVariant;
-    using SM = PSMF::SmootherVariant;
+    Tester<CT::LAPLACE_TYPE_.size() - 1,
+           CT::SMOOTH_INV_.size() - 1,
+           CT::LOCAL_SOLVER_.size() - 1>::run(*this);
 
-    do_solve<CT::LOCAL_SOLVER_[0],
-             CT::LAPLACE_TYPE_[0],
-             CT::SMOOTH_VMULT_[0],
-             CT::SMOOTH_INV_[0]>(0, call_count);
-
-    // for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-    //   {
-    //     switch (CT::LOCAL_SOLVER_[k])
-    //       {
-    //         case PSMF::LocalSolverVariant::Direct:
-    //           {
-    //             do_solve<PSMF::LocalSolverVariant::Direct,
-    //                      CT::LAPLACE_TYPE_[0],
-    //                      CT::SMOOTH_VMULT_[0],
-    //                      CT::SMOOTH_INV_[0]>(k, call_count);
-    //             break;
-    //           }
-    //         case PSMF::LocalSolverVariant::Bila:
-    //           {
-    //             do_solve<PSMF::LocalSolverVariant::Bila,
-    //                      CT::LAPLACE_TYPE_[0],
-    //                      CT::SMOOTH_VMULT_[0],
-    //                      CT::SMOOTH_INV_[0]>(k, call_count);
-    //             break;
-    //           }
-    //         case PSMF::LocalSolverVariant::KSVD:
-    //           {
-    //             do_solve<PSMF::LocalSolverVariant::KSVD,
-    //                      CT::LAPLACE_TYPE_[0],
-    //                      CT::SMOOTH_VMULT_[0],
-    //                      CT::SMOOTH_INV_[0]>(k, call_count);
-    //             break;
-    //           }
-    //         case PSMF::LocalSolverVariant::NN:
-    //           {
-    //             do_solve<PSMF::LocalSolverVariant::NN,
-    //                      CT::LAPLACE_TYPE_[0],
-    //                      CT::SMOOTH_VMULT_[0],
-    //                      CT::SMOOTH_INV_[0]>(k, call_count);
-    //             break;
-    //           }
-    //         default:
-    //           AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
-    //       }
-    //   }
-
-
+    // do_solve<CT::LAPLACE_TYPE_[0],
+    //          CT::SMOOTH_VMULT_[0],
+    //          CT::SMOOTH_INV_[0],
+    //          CT::LOCAL_SOLVER_[0]>(0, 0, 0, call_count);
 
     call_count++;
   }
@@ -550,20 +768,24 @@ namespace Step64
             *pcout << "Max size reached, terminating." << std::endl;
             *pcout << std::endl;
 
-            for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
-              {
-                unsigned int index = k;
+            for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
+              for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
+                for (unsigned int i = 0; i < CT::LOCAL_SOLVER_.size(); ++i)
+                  {
+                    unsigned int index = (k * CT::SMOOTH_INV_.size() + j) *
+                                           CT::LOCAL_SOLVER_.size() +
+                                         i;
 
-                std::ostringstream oss;
+                    std::ostringstream oss;
 
-                oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
-                    << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
-                    << SmootherToString(CT::SMOOTH_INV_[0]) << " "
-                    << LocalSolverToString(CT::LOCAL_SOLVER_[k]) << "]\n";
-                info_table[index].write_text(oss);
+                    oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
+                        << LaplaceToString(CT::SMOOTH_VMULT_[k]) << " "
+                        << SmootherToString(CT::SMOOTH_INV_[j]) << " "
+                        << LocalSolverToString(CT::LOCAL_SOLVER_[i]) << "]\n";
+                    info_table[index].write_text(oss);
 
-                *pcout << oss.str() << std::endl;
-              }
+                    *pcout << oss.str() << std::endl;
+                  }
 
             return;
           }
@@ -577,6 +799,7 @@ namespace Step64
           triangulation.refine_global(1);
 
         setup_system();
+        assemble_rhs();
         assemble_mg();
 
         solve_mg(1);

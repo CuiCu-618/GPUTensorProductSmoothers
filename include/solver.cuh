@@ -40,41 +40,6 @@ using namespace dealii;
 
 namespace PSMF
 {
-  template <bool is_zero, typename Number>
-  __global__ void
-  set_inhomogeneous_dofs(const unsigned int *indicex,
-                         const Number       *values,
-                         const unsigned int  n_inhomogeneous_dofs,
-                         Number             *dst)
-  {
-    const unsigned int dof =
-      threadIdx.x + blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
-
-    if (dof < n_inhomogeneous_dofs)
-      {
-        if (is_zero)
-          dst[indicex[dof]] = 0;
-        else
-          dst[indicex[dof]] = values[dof];
-      }
-  }
-
-  template <bool is_d2f, typename number, typename number2>
-  __global__ void
-  copy_vector(number *dst, const number2 *src, const unsigned n_dofs)
-  {
-    const unsigned int dof =
-      threadIdx.x + blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
-
-    if (dof < n_dofs)
-      {
-        if (is_d2f)
-          dst[dof] = __double2float_rn(src[dof]);
-        else
-          dst[dof] = src[dof];
-      }
-  }
-
   // A coarse solver defined via the smoother
   template <typename VectorType, typename SmootherType>
   class MGCoarseFromSmoother : public MGCoarseGridBase<VectorType>
@@ -204,8 +169,7 @@ namespace PSMF
       const MGLevelObject<std::shared_ptr<MatrixFreeType>>  &mfdata_dp,
       const MGLevelObject<std::shared_ptr<MatrixFreeType2>> &mfdata,
       const MGTransferCUDA<dim, Number2>                    &transfer,
-      const Function<dim, Number>                           &boundary_values,
-      const Function<dim, Number>                           &right_hand_side,
+      const VectorType                                      &right_hand_side,
       std::shared_ptr<ConditionalOStream>                    pcout,
       const unsigned int                                     n_cycles = 1)
       : dof_handler(&dof_handler)
@@ -214,16 +178,12 @@ namespace PSMF
       , maxlevel(dof_handler.get_triangulation().n_global_levels() - 1)
       , solution(minlevel, maxlevel)
       , rhs(minlevel, maxlevel)
-      , residual(minlevel, maxlevel)
       , defect(minlevel, maxlevel)
-      , t(minlevel, maxlevel)
       , solution_update(minlevel, maxlevel)
       , n_cycles(n_cycles)
-      , timings(maxlevel + 1)
-      , analytic_solution(boundary_values)
       , pcout(pcout)
     {
-      AssertDimension(fe_degree, dof_handler.get_fe().degree);
+      AssertDimension(fe_degree + 1, dof_handler.get_fe().degree);
 
       matrix_dp.resize(minlevel, maxlevel);
       matrix.resize(minlevel, maxlevel);
@@ -234,66 +194,14 @@ namespace PSMF
           matrix[level].initialize(mfdata[level], dof_handler, level);
 
           matrix[level].initialize_dof_vector(defect[level]);
-          t[level].reinit(defect[level]);
           solution_update[level].reinit(defect[level]);
 
           if (level == maxlevel)
             {
               matrix_dp[level].initialize_dof_vector(solution[level]);
               rhs[level].reinit(solution[level]);
-              residual[level].reinit(solution[level]);
             }
         }
-
-      // set up a mapping for the geometry representation
-      MappingQ1<dim> mapping;
-
-      // interpolate the inhomogeneous boundary conditions
-      inhomogeneous_bc.clear();
-      inhomogeneous_bc.resize(maxlevel + 1);
-      if (CT::SETS_ == "error_analysis")
-        for (unsigned int level = minlevel; level <= maxlevel; ++level)
-          {
-            // Quadrature<dim - 1> face_quad(
-            //   dof_handler.get_fe().get_unit_face_support_points());
-            // FEFaceValues<dim>                    fe_values(mapping,
-            //                             dof_handler.get_fe(),
-            //                             face_quad,
-            //                             update_quadrature_points);
-            // std::vector<types::global_dof_index> face_dof_indices(
-            //   dof_handler.get_fe().dofs_per_face);
-
-            // typename DoFHandler<dim>::cell_iterator cell =
-            //                                           dof_handler.begin(level),
-            //                                         endc =
-            //                                           dof_handler.end(level);
-            // for (; cell != endc; ++cell)
-            //   if (cell->level_subdomain_id() !=
-            //       numbers::artificial_subdomain_id)
-            //     for (unsigned int face_no = 0;
-            //          face_no < GeometryInfo<dim>::faces_per_cell;
-            //          ++face_no)
-            //       if (cell->at_boundary(face_no))
-            //         {
-            //           const typename DoFHandler<dim>::face_iterator face =
-            //             cell->face(face_no);
-            //           face->get_mg_dof_indices(level, face_dof_indices);
-            //           fe_values.reinit(cell, face_no);
-            //           for (unsigned int i = 0; i < face_dof_indices.size();
-            //           ++i)
-            //             if
-            //             (dof_handler.locally_owned_mg_dofs(level).is_element(
-            //                   face_dof_indices[i]))
-            //               {
-            //                 const double value = analytic_solution.value(
-            //                   fe_values.quadrature_point(i));
-            //                 if (value != 0.0)
-            //                   inhomogeneous_bc[level][face_dof_indices[i]] =
-            //                     value;
-            //               }
-            //         }
-          }
-
 
       {
         // evaluate the right hand side in the equation, including the
@@ -301,11 +209,7 @@ namespace PSMF
         // set_inhomogeneous_bc<false>(maxlevel);
         rhs[maxlevel] = 0.;
         if (CT::SETS_ == "error_analysis")
-          matrix_dp[maxlevel].compute_residual(rhs[maxlevel],
-                                               solution[maxlevel],
-                                               right_hand_side,
-                                               boundary_values,
-                                               maxlevel);
+          rhs[maxlevel] = right_hand_side;
         else
           rhs[maxlevel] = 1.;
       }
@@ -332,64 +236,6 @@ namespace PSMF
       }
     }
 
-    // Print a summary of computation times on the various levels
-    void
-    print_wall_times(unsigned int N)
-    {
-      *pcout << "Coarse solver " << (int)timings[minlevel][1] / N
-             << " times: " << timings[minlevel][0] / 1e3 / N << " tot prec "
-             << timings[minlevel][2] / 1e3 / N << std::endl;
-      *pcout
-        << "level  smoother    mg_mv     mg_vec    restrict  prolongate  inhomBC   total"
-        << std::endl;
-      double l_L = 0;
-      for (unsigned int level = minlevel + 1; level <= maxlevel; ++level)
-        {
-          *pcout << "L" << std::setw(2) << std::left << level << "    ";
-          *pcout << std::setprecision(4) << std::setw(12)
-                 << timings[level][5] / 1e3 / N << std::setw(10)
-                 << timings[level][0] / 1e3 / N << std::setw(10)
-                 << timings[level][4] / 1e3 / N << std::setw(10)
-                 << timings[level][1] / 1e3 / N << std::setw(12)
-                 << timings[level][2] / 1e3 / N << std::setw(10)
-                 << timings[level][3] / 1e3 / N << std::setw(10)
-                 << (timings[level][5] + timings[level][0] + timings[level][4] +
-                     timings[level][1] + timings[level][2] +
-                     timings[level][3]) /
-                      1e3 / N
-                 << std::endl;
-          if (level < maxlevel)
-            {
-              l_L += timings[level][5] / 1e3 / N;
-              l_L += timings[level][0] / 1e3 / N;
-              l_L += timings[level][4] / 1e3 / N;
-              l_L += timings[level][1] / 1e3 / N;
-              l_L += timings[level][2] / 1e3 / N;
-              l_L += timings[level][3] / 1e3 / N;
-            }
-        }
-      *pcout << "l < L: " << l_L << "\t grid transfer:"
-             << (timings[maxlevel][1] + timings[maxlevel][2]) / 1e3 / N
-             << std::endl;
-
-      *pcout << std::setprecision(5);
-
-      for (unsigned int l = 0; l < timings.size(); ++l)
-        for (unsigned int j = 0; j < timings[l].size(); ++j)
-          timings[l][j] = 0.;
-    }
-
-
-
-    // Return the solution vector for further processing
-    const VectorType &
-    get_solution()
-    {
-      set_inhomogeneous_bc<false>(maxlevel);
-      return solution[maxlevel];
-    }
-
-
     std::vector<SolverData>
     static_comp()
     {
@@ -400,7 +246,7 @@ namespace PSMF
       std::string comp_name = "";
 
       const unsigned int n_dofs = dof_handler->n_dofs();
-      const unsigned int n_mv   = n_dofs < 10000000 ? 20 : 4;
+      const unsigned int n_mv   = n_dofs < 10000000 ? 10 : 4;
 
       auto tester = [&](auto kernel) {
         Timer              time;
@@ -421,7 +267,7 @@ namespace PSMF
         comp_data.push_back(data);
       };
 
-      for (unsigned int s = 0; s < 4; ++s)
+      for (unsigned int s = 0; s < 3; ++s)
         {
           switch (s)
             {
@@ -447,25 +293,101 @@ namespace PSMF
                   tester(kernel);
                   break;
                 }
-              case 3:
-                {
-                  auto kernel = std::mem_fn(&MultigridSolver::do_vcycle);
-                  comp_name   = "V-cycle";
-                  tester(kernel);
-                  break;
-                }
               default:
                 AssertThrow(false, ExcMessage("Invalid Solver Variant."));
             }
         }
 
-      {
-        for (unsigned int l = 0; l < timings.size(); ++l)
-          for (unsigned int j = 0; j < timings[l].size(); ++j)
-            timings[l][j] = 0.;
-      }
-
       return comp_data;
+    }
+
+    // Implement the vmult() function needed by the preconditioner interface
+    void
+    vmult(VectorType &dst, const VectorType &src) const
+    {
+      all_mg_counter++;
+
+      transfer->copy_to_mg(*dof_handler, defect, src);
+
+      preconditioner_mg->vmult(solution_update[maxlevel], defect[maxlevel]);
+
+      transfer->copy_from_mg(*dof_handler, dst, solution_update);
+    }
+
+    // Return the solution vector for further processing
+    const VectorType &
+    get_solution()
+    {
+      return solution[maxlevel];
+    }
+
+    void
+    print_timings() const
+    {
+      // if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+      {
+        *pcout << " - #N of calls of multigrid: " << all_mg_counter << std::endl
+               << std::endl;
+        *pcout << " - Times of multigrid (levels):" << std::endl;
+
+        const auto print_line = [&](const auto &vector) {
+          for (const auto &i : vector)
+            *pcout << std::scientific << std::setprecision(2) << std::setw(10)
+                   << i.first;
+
+          double sum = 0;
+
+          for (const auto &i : vector)
+            sum += i.first;
+
+          *pcout << "   | " << std::scientific << std::setprecision(2)
+                 << std::setw(10) << sum;
+
+          *pcout << "\n";
+        };
+
+        for (unsigned int l = 0; l < all_mg_timers.size(); ++l)
+          {
+            *pcout << std::setw(4) << l << ": ";
+
+            print_line(all_mg_timers[l]);
+          }
+
+        std::vector<
+          std::pair<double, std::chrono::time_point<std::chrono::system_clock>>>
+          sums(all_mg_timers[0].size());
+
+        for (unsigned int i = 0; i < sums.size(); ++i)
+          for (unsigned int j = 0; j < all_mg_timers.size(); ++j)
+            sums[i].first += all_mg_timers[j][i].first;
+
+        *pcout
+          << "   ----------------------------------------------------------------------------+-----------\n";
+        *pcout << "      ";
+        print_line(sums);
+
+        *pcout << std::endl;
+
+        *pcout << " - Times of multigrid (solver <-> mg): ";
+
+        for (const auto &i : all_mg_precon_timers)
+          *pcout << i.first << " ";
+        *pcout << std::endl;
+        *pcout << std::endl;
+      }
+    }
+
+    void
+    clear_timings() const
+    {
+      for (auto &is : all_mg_timers)
+        for (auto &i : is)
+          i.first = 0.0;
+
+      for (auto &i : all_mg_precon_timers)
+        i.first = 0.0;
+
+      all_mg_counter = 0;
     }
 
 
@@ -489,8 +411,9 @@ namespace PSMF
                                 minlevel,
                                 maxlevel);
 
-      PreconditionMG<dim, VectorType2, MGTransferCUDA<dim, Number2>>
-        preconditioner_mg(*dof_handler, mg, *transfer);
+      preconditioner_mg = std::make_unique<
+        PreconditionMG<dim, VectorType2, MGTransferCUDA<dim, Number2>>>(
+        *dof_handler, mg, *transfer);
 
       ReductionControl solver_control(CT::MAX_STEPS_, 1e-15, CT::REDUCE_);
       solver_control.enable_history_data();
@@ -499,7 +422,7 @@ namespace PSMF
       SolverGMRES<VectorType> solver(solver_control);
 
       Timer              time;
-      const unsigned int N         = 10;
+      const unsigned int N         = 5;
       double             best_time = 1e10;
       for (unsigned int i = 0; i < N; ++i)
         {
@@ -510,12 +433,10 @@ namespace PSMF
           solver.solve(matrix_dp[maxlevel],
                        solution[maxlevel],
                        rhs[maxlevel],
-                       preconditioner_mg);
+                       *this);
 
           best_time = std::min(time.wall_time(), best_time);
         }
-
-      print_wall_times(N);
 
       auto n_iter     = solver_control.last_step();
       auto residual_0 = solver_control.initial_value();
@@ -554,53 +475,11 @@ namespace PSMF
       return solver_data;
     }
 
-    // Implement the vmult() function needed by the preconditioner interface
-    void
-    vmult(VectorType &dst, const VectorType &src) const
-    {
-      // Timer time1, time;
-      cudaEvent_t start, stop;
-      AssertCuda(cudaEventCreate(&start));
-      AssertCuda(cudaEventCreate(&stop));
-      float gpu_time1 = 0.0f, gpu_time2 = 0.0f;
-
-      cudaEventRecord(start);
-      // defect[maxlevel] = src;
-      convert_precision<true>(defect[maxlevel], src);
-
-      cudaEventRecord(stop);
-      cudaDeviceSynchronize();
-      AssertCuda(cudaEventElapsedTime(&gpu_time1, start, stop));
-      timings[maxlevel][4] += gpu_time1;
-
-      cudaEventRecord(start);
-      v_cycle(maxlevel, 1);
-
-      cudaEventRecord(stop);
-      cudaDeviceSynchronize();
-      AssertCuda(cudaEventElapsedTime(&gpu_time2, start, stop));
-
-      timings[minlevel][2] += gpu_time1 + gpu_time2;
-
-      cudaEventRecord(start);
-      // dst = solution_update[maxlevel];
-      convert_precision<false>(dst, solution_update[maxlevel]);
-
-      cudaEventRecord(stop);
-      cudaDeviceSynchronize();
-      AssertCuda(cudaEventElapsedTime(&gpu_time1, start, stop));
-      timings[maxlevel][4] += gpu_time1;
-      timings[minlevel][2] += gpu_time1;
-
-      AssertCuda(cudaEventDestroy(start));
-      AssertCuda(cudaEventDestroy(stop));
-    }
-
     // run matrix-vector product in double precision
     void
     do_matvec()
     {
-      matrix_dp[maxlevel].vmult(residual[maxlevel], solution[maxlevel]);
+      matrix_dp[maxlevel].vmult(solution[maxlevel], solution[maxlevel]);
       cudaDeviceSynchronize();
     }
 
@@ -621,196 +500,9 @@ namespace PSMF
       cudaDeviceSynchronize();
     }
 
-    // run v-cycle in single precision
-    void
-    do_vcycle()
-    {
-      v_cycle(maxlevel, 1);
-    }
-
   private:
-    template <bool is_zero = false>
-    void
-    set_inhomogeneous_bc(const unsigned int level)
-    {
-      unsigned int n_inhomogeneous_bc = inhomogeneous_bc[level].size();
-      if (n_inhomogeneous_bc != 0)
-        {
-          const unsigned int block_size = 256;
-          const unsigned int inhomogeneous_n_blocks =
-            std::ceil(static_cast<double>(n_inhomogeneous_bc) /
-                      static_cast<double>(block_size));
-          const unsigned int inhomogeneous_x_n_blocks =
-            std::round(std::sqrt(inhomogeneous_n_blocks));
-          const unsigned int inhomogeneous_y_n_blocks =
-            std::ceil(static_cast<double>(inhomogeneous_n_blocks) /
-                      static_cast<double>(inhomogeneous_x_n_blocks));
-
-          dim3 inhomogeneous_grid_dim(inhomogeneous_x_n_blocks,
-                                      inhomogeneous_y_n_blocks);
-          dim3 inhomogeneous_block_dim(block_size);
-
-          std::vector<unsigned int> inhomogeneous_index_host(
-            n_inhomogeneous_bc);
-          std::vector<Number> inhomogeneous_value_host(n_inhomogeneous_bc);
-          unsigned int        count = 0;
-          for (auto &i : inhomogeneous_bc[level])
-            {
-              inhomogeneous_index_host[count] = i.first;
-              inhomogeneous_value_host[count] = i.second;
-              count++;
-            }
-
-          unsigned int *inhomogeneous_index;
-          Number       *inhomogeneous_value;
-
-          cudaError_t cuda_error =
-            cudaMalloc(&inhomogeneous_index,
-                       n_inhomogeneous_bc * sizeof(unsigned int));
-          AssertCuda(cuda_error);
-
-          cuda_error = cudaMemcpy(inhomogeneous_index,
-                                  inhomogeneous_index_host.data(),
-                                  n_inhomogeneous_bc * sizeof(unsigned int),
-                                  cudaMemcpyHostToDevice);
-          AssertCuda(cuda_error);
-
-          cuda_error = cudaMalloc(&inhomogeneous_value,
-                                  n_inhomogeneous_bc * sizeof(Number2));
-          AssertCuda(cuda_error);
-
-          cuda_error = cudaMemcpy(inhomogeneous_value,
-                                  inhomogeneous_value_host.data(),
-                                  n_inhomogeneous_bc * sizeof(Number2),
-                                  cudaMemcpyHostToDevice);
-          AssertCuda(cuda_error);
-
-
-          set_inhomogeneous_dofs<is_zero, Number>
-            <<<inhomogeneous_grid_dim, inhomogeneous_block_dim>>>(
-              inhomogeneous_index,
-              inhomogeneous_value,
-              n_inhomogeneous_bc,
-              solution[level].get_values());
-          AssertCudaKernel();
-        }
-    }
-
-    template <bool is_d2f = true, typename number, typename number2>
-    void
-    convert_precision(
-      LinearAlgebra::distributed::Vector<number, MemorySpace::CUDA>        &dst,
-      const LinearAlgebra::distributed::Vector<number2, MemorySpace::CUDA> &src)
-      const
-    {
-      unsigned int n_dofs = dst.size();
-      if (n_dofs != 0)
-        {
-          const unsigned int block_size = 256;
-          const unsigned int n_blocks   = std::ceil(
-            static_cast<double>(n_dofs) / static_cast<double>(block_size));
-          const unsigned int x_n_blocks = std::round(std::sqrt(n_blocks));
-          const unsigned int y_n_blocks = std::ceil(
-            static_cast<double>(n_blocks) / static_cast<double>(x_n_blocks));
-
-          dim3 grid_dim(x_n_blocks, y_n_blocks);
-          dim3 block_dim(block_size);
-          copy_vector<is_d2f, number, number2>
-            <<<grid_dim, block_dim>>>(dst.get_values(),
-                                      src.get_values(),
-                                      n_dofs);
-          AssertCudaKernel();
-        }
-    }
-
-    // Implement the V-cycle
-    void
-    v_cycle(const unsigned int level, const unsigned int my_n_cycles) const
-    {
-      cudaEvent_t start, stop;
-      AssertCuda(cudaEventCreate(&start));
-      AssertCuda(cudaEventCreate(&stop));
-      float gpu_time = 0.0f;
-
-      if (level == minlevel)
-        {
-          // Timer time;
-          cudaEventRecord(start);
-          (mg_coarse)(level, solution_update[level], defect[level]);
-          cudaEventRecord(stop);
-          cudaDeviceSynchronize();
-          AssertCuda(cudaEventElapsedTime(&gpu_time, start, stop));
-          timings[level][0] += gpu_time;
-          timings[level][1] += 1;
-          return;
-        }
-
-      for (unsigned int c = 0; c < my_n_cycles; ++c)
-        {
-          // Timer time;
-          cudaEventRecord(start);
-          if (c == 0)
-            (mg_smoother).apply(level, solution_update[level], defect[level]);
-          else
-            (mg_smoother).smooth(level, solution_update[level], defect[level]);
-          cudaEventRecord(stop);
-          cudaDeviceSynchronize();
-          AssertCuda(cudaEventElapsedTime(&gpu_time, start, stop));
-          timings[level][5] += gpu_time;
-
-          cudaEventRecord(start);
-          matrix[level].vmult(t[level], solution_update[level]);
-          cudaEventRecord(stop);
-          cudaDeviceSynchronize();
-          AssertCuda(cudaEventElapsedTime(&gpu_time, start, stop));
-          timings[level][0] += gpu_time;
-
-          cudaEventRecord(start);
-          t[level].sadd(-1.0, 1.0, defect[level]);
-          timings[level][4] += gpu_time;
-
-          cudaEventRecord(start);
-          defect[level - 1] = 0;
-          transfer->restrict_and_add(level, defect[level - 1], t[level]);
-          cudaEventRecord(stop);
-          cudaDeviceSynchronize();
-          AssertCuda(cudaEventElapsedTime(&gpu_time, start, stop));
-          timings[level][1] += gpu_time;
-
-          v_cycle(level - 1, 1);
-
-          cudaEventRecord(start);
-          transfer->prolongate_and_add(level,
-                                       solution_update[level],
-                                       solution_update[level - 1]);
-          cudaEventRecord(stop);
-          cudaDeviceSynchronize();
-          AssertCuda(cudaEventElapsedTime(&gpu_time, start, stop));
-          timings[level][2] += gpu_time;
-
-          cudaEventRecord(start);
-          // solution_update[level] += t[level];
-          cudaEventRecord(stop);
-          cudaDeviceSynchronize();
-          AssertCuda(cudaEventElapsedTime(&gpu_time, start, stop));
-          timings[level][4] += gpu_time;
-
-          cudaEventRecord(start);
-          (mg_smoother).smooth(level, solution_update[level], defect[level]);
-          cudaEventRecord(stop);
-          cudaDeviceSynchronize();
-          AssertCuda(cudaEventElapsedTime(&gpu_time, start, stop));
-          timings[level][5] += gpu_time;
-        }
-      AssertCuda(cudaEventDestroy(start));
-      AssertCuda(cudaEventDestroy(stop));
-    }
-
-    const SmartPointer<const DoFHandler<dim>> dof_handler;
-
+    const SmartPointer<const DoFHandler<dim>>              dof_handler;
     const SmartPointer<const MGTransferCUDA<dim, Number2>> transfer;
-
-    std::vector<std::map<unsigned int, Number>> inhomogeneous_bc;
 
     MGLevelObject<MatrixType>  matrix_dp;
     MGLevelObject<MatrixType2> matrix;
@@ -836,21 +528,10 @@ namespace PSMF
     mutable MGLevelObject<VectorType> rhs;
 
     /**
-     * Residual vector before it is passed down into float through the
-     * v-cycle
-     */
-    mutable MGLevelObject<VectorType> residual;
-
-    /**
      * Input vector for the cycle. Contains the defect of the outer method
      * projected to the multilevel vectors.
      */
     mutable MGLevelObject<VectorType2> defect;
-
-    /**
-     * Auxiliary vector.
-     */
-    mutable MGLevelObject<VectorType2> t;
 
     /**
      * Auxiliary vector for the solution update
@@ -870,8 +551,6 @@ namespace PSMF
 
     MGCoarseGridApplySmoother<VectorType2> mg_coarse;
 
-    // MGCoarseFromSmoother<VectorType2, MGLevelObject<SmootherType>> coarse;
-
     /**
      * Number of cycles to be done in the FMG cycle
      */
@@ -880,19 +559,23 @@ namespace PSMF
     /**
      * Collection of compute times on various levels
      */
-    mutable std::vector<std::array<double, 6>> timings;
-
-    /**
-     * Collection of compute times on various levels
-     */
     mutable std::vector<SolverData> solver_data;
 
-    /**
-     * Function for boundary values that we keep as analytic solution
-     */
-    const Function<dim, Number> &analytic_solution;
-
     std::shared_ptr<ConditionalOStream> pcout;
+
+    mutable std::unique_ptr<
+      PreconditionMG<dim, VectorType2, MGTransferCUDA<dim, Number2>>>
+      preconditioner_mg;
+
+    mutable unsigned int all_mg_counter = 0;
+
+    mutable std::vector<std::vector<
+      std::pair<double, std::chrono::time_point<std::chrono::system_clock>>>>
+      all_mg_timers;
+
+    mutable std::vector<
+      std::pair<double, std::chrono::time_point<std::chrono::system_clock>>>
+      all_mg_precon_timers;
   };
 
 
@@ -937,20 +620,14 @@ namespace PSMF
       const MGLevelObject<std::shared_ptr<MatrixFreeType>> &mfdata_dp,
       const MGLevelObject<std::shared_ptr<MatrixFreeType>> &,
       const MGTransferCUDA<dim, Number>  &transfer_dp,
-      const Function<dim, Number>        &boundary_values,
-      const Function<dim, Number>        &right_hand_side,
+      const VectorType                   &right_hand_side,
       std::shared_ptr<ConditionalOStream> pcout,
       const unsigned int                  n_cycles = 1)
       : dof_handler(&dof_handler)
       , transfer(&transfer_dp)
       , minlevel(1)
       , maxlevel(dof_handler.get_triangulation().n_global_levels() - 1)
-      , solution(minlevel, maxlevel)
-      , rhs(minlevel, maxlevel)
-      , defect(minlevel, maxlevel)
-      , t(minlevel, maxlevel)
       , n_cycles(n_cycles)
-      , analytic_solution(boundary_values)
       , pcout(pcout)
     {
       AssertDimension(fe_degree + 1, dof_handler_v.get_fe().degree);
@@ -963,80 +640,15 @@ namespace PSMF
                                    dof_handler,
                                    dof_handler_v,
                                    level);
-
-          matrix[level].initialize_dof_vector(solution[level]);
-          defect[level] = solution[level];
-          rhs[level]    = solution[level];
-          t[level]      = solution[level];
         }
 
-      // set up a mapping for the geometry representation
-      MappingQ1<dim> mapping;
+      matrix[maxlevel].initialize_dof_vector(solution);
 
-      // interpolate the inhomogeneous boundary conditions
-      inhomogeneous_bc.clear();
-      inhomogeneous_bc.resize(maxlevel + 1);
       if (CT::SETS_ == "error_analysis")
-        for (unsigned int level = minlevel; level <= maxlevel; ++level)
-          {
-            // Quadrature<dim - 1> face_quad(
-            //   dof_handler.get_fe().get_unit_face_support_points());
-            // FEFaceValues<dim>                    fe_values(mapping,
-            //                             dof_handler.get_fe(),
-            //                             face_quad,
-            //                             update_quadrature_points);
-            // std::vector<types::global_dof_index> face_dof_indices(
-            //   dof_handler.get_fe().dofs_per_face);
+        rhs = right_hand_side;
+      else
+        rhs = 1.;
 
-            // typename DoFHandler<dim>::cell_iterator cell =
-            //                                           dof_handler.begin(level),
-            //                                         endc =
-            //                                           dof_handler.end(level);
-            // for (; cell != endc; ++cell)
-            //   if (cell->level_subdomain_id() !=
-            //       numbers::artificial_subdomain_id)
-            //     for (unsigned int face_no = 0;
-            //          face_no < GeometryInfo<dim>::faces_per_cell;
-            //          ++face_no)
-            //       if (cell->at_boundary(face_no))
-            //         {
-            //           const typename DoFHandler<dim>::face_iterator face =
-            //             cell->face(face_no);
-            //           face->get_mg_dof_indices(level, face_dof_indices);
-            //           fe_values.reinit(cell, face_no);
-            //           for (unsigned int i = 0; i < face_dof_indices.size();
-            //           ++i)
-            //             if
-            //             (dof_handler.locally_owned_mg_dofs(level).is_element(
-            //                   face_dof_indices[i]))
-            //               {
-            //                 const double value = analytic_solution.value(
-            //                   fe_values.quadrature_point(i));
-            //                 if (value != 0.0)
-            //                   inhomogeneous_bc[level][face_dof_indices[i]] =
-            //                     value;
-            //               }
-            //         }
-          }
-
-      for (int level = maxlevel; level >= minlevel; --level)
-        {
-          // evaluate the right hand side in the equation, including the
-          // residual from the inhomogeneous boundary conditions
-          // set_inhomogeneous_bc<false>(level);
-          rhs[level] = 0.;
-          if (level == maxlevel)
-            if (CT::SETS_ == "error_analysis")
-              matrix[level].compute_residual(rhs[level],
-                                             solution[level],
-                                             right_hand_side,
-                                             boundary_values,
-                                             level);
-            else
-              rhs[level] = 1.;
-          else
-            transfer_dp.restrict_and_add(level + 1, rhs[level], rhs[level + 1]);
-        }
 
       {
         MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
@@ -1119,9 +731,7 @@ namespace PSMF
 
     // Implement the vmult() function needed by the preconditioner interface
     void
-    vmult(LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
-          const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
-            &src) const
+    vmult(VectorType &dst, const VectorType &src) const
     {
       all_mg_counter++;
 
@@ -1129,11 +739,10 @@ namespace PSMF
     }
 
     // Return the solution vector for further processing
-    const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &
+    const VectorType &
     get_solution()
     {
-      // set_inhomogeneous_bc<false>(maxlevel);
-      return solution[maxlevel];
+      return solution;
     }
 
     void
@@ -1214,6 +823,14 @@ namespace PSMF
       *pcout << "Solving...\n";
 
       mg::Matrix<VectorType> mg_matrix(matrix);
+
+      Multigrid<VectorType> mg_obj(mg_matrix,
+                                   mg_coarse,
+                                   *transfer,
+                                   mg_smoother,
+                                   mg_smoother,
+                                   minlevel,
+                                   maxlevel);
 
       Multigrid<VectorType> mg(mg_matrix,
                                mg_coarse,
@@ -1301,14 +918,15 @@ namespace PSMF
       SolverGMRES<VectorType> solver(solver_control);
 
       {
-        solution[maxlevel] = 0;
-        solver.solve(matrix[maxlevel],
-                     solution[maxlevel],
-                     rhs[maxlevel],
-                     *this);
+        solution = 0;
+        solver.solve(matrix[maxlevel], solution, rhs, *this);
         print_timings();
         clear_timings();
       }
+
+      preconditioner_mg = std::make_unique<
+        PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>>(
+        *dof_handler, mg_obj, *transfer);
 
       Timer              time;
       const unsigned int N         = 5;
@@ -1318,11 +936,8 @@ namespace PSMF
           time.reset();
           time.start();
 
-          solution[maxlevel] = 0;
-          solver.solve(matrix[maxlevel],
-                       solution[maxlevel],
-                       rhs[maxlevel],
-                       *this);
+          solution = 0;
+          solver.solve(matrix[maxlevel], solution, rhs, *this);
 
           best_time = std::min(time.wall_time(), best_time);
         }
@@ -1331,8 +946,6 @@ namespace PSMF
       auto residual_0 = solver_control.initial_value();
       auto residual_n = solver_control.last_value();
       auto reduction  = solver_control.reduction();
-
-      // std::cout << residual_0 << " " << residual_n << std::endl;
 
       // *** average reduction: r_n = rho^n * r_0
       const double rho =
@@ -1370,7 +983,7 @@ namespace PSMF
     void
     do_smooth()
     {
-      (mg_smoother).smooth(maxlevel, solution[maxlevel], rhs[maxlevel]);
+      (mg_smoother).smooth(maxlevel, solution, rhs);
       cudaDeviceSynchronize();
     }
 
@@ -1378,85 +991,15 @@ namespace PSMF
     void
     do_matvec()
     {
-      matrix[maxlevel].vmult(solution[maxlevel], rhs[maxlevel]);
+      matrix[maxlevel].vmult(solution, rhs);
       cudaDeviceSynchronize();
     }
 
   private:
-    template <bool is_zero = false>
-    void
-    set_inhomogeneous_bc(const unsigned int level)
-    {
-      unsigned int n_inhomogeneous_bc = inhomogeneous_bc[level].size();
-      if (n_inhomogeneous_bc != 0)
-        {
-          const unsigned int block_size = 256;
-          const unsigned int inhomogeneous_n_blocks =
-            std::ceil(static_cast<double>(n_inhomogeneous_bc) /
-                      static_cast<double>(block_size));
-          const unsigned int inhomogeneous_x_n_blocks =
-            std::round(std::sqrt(inhomogeneous_n_blocks));
-          const unsigned int inhomogeneous_y_n_blocks =
-            std::ceil(static_cast<double>(inhomogeneous_n_blocks) /
-                      static_cast<double>(inhomogeneous_x_n_blocks));
-
-          dim3 inhomogeneous_grid_dim(inhomogeneous_x_n_blocks,
-                                      inhomogeneous_y_n_blocks);
-          dim3 inhomogeneous_block_dim(block_size);
-
-          std::vector<unsigned int> inhomogeneous_index_host(
-            n_inhomogeneous_bc);
-          std::vector<Number> inhomogeneous_value_host(n_inhomogeneous_bc);
-          unsigned int        count = 0;
-          for (auto &i : inhomogeneous_bc[level])
-            {
-              inhomogeneous_index_host[count] = i.first;
-              inhomogeneous_value_host[count] = i.second;
-              count++;
-            }
-
-          unsigned int *inhomogeneous_index;
-          Number       *inhomogeneous_value;
-
-          cudaError_t cuda_error =
-            cudaMalloc(&inhomogeneous_index,
-                       n_inhomogeneous_bc * sizeof(unsigned int));
-          AssertCuda(cuda_error);
-
-          cuda_error = cudaMemcpy(inhomogeneous_index,
-                                  inhomogeneous_index_host.data(),
-                                  n_inhomogeneous_bc * sizeof(unsigned int),
-                                  cudaMemcpyHostToDevice);
-          AssertCuda(cuda_error);
-
-          cuda_error = cudaMalloc(&inhomogeneous_value,
-                                  n_inhomogeneous_bc * sizeof(Number));
-          AssertCuda(cuda_error);
-
-          cuda_error = cudaMemcpy(inhomogeneous_value,
-                                  inhomogeneous_value_host.data(),
-                                  n_inhomogeneous_bc * sizeof(Number),
-                                  cudaMemcpyHostToDevice);
-          AssertCuda(cuda_error);
-
-
-          set_inhomogeneous_dofs<is_zero, Number>
-            <<<inhomogeneous_grid_dim, inhomogeneous_block_dim>>>(
-              inhomogeneous_index,
-              inhomogeneous_value,
-              n_inhomogeneous_bc,
-              solution[level].get_values());
-          AssertCudaKernel();
-        }
-    }
-
-
     const SmartPointer<const DoFHandler<dim>>             dof_handler;
     const SmartPointer<const MGTransferCUDA<dim, Number>> transfer;
 
     MGLevelObject<MatrixType> matrix;
-
-    std::vector<std::map<unsigned int, Number>> inhomogeneous_bc;
 
     /**
      * Lowest level of cells.
@@ -1471,23 +1014,12 @@ namespace PSMF
     /**
      * The solution vector
      */
-    mutable MGLevelObject<VectorType> solution;
+    mutable VectorType solution;
 
     /**
      * Original right hand side vector
      */
-    mutable MGLevelObject<VectorType> rhs;
-
-    /**
-     * Input vector for the cycle. Contains the defect of the
-     * outer method projected to the multilevel vectors.
-     */
-    mutable MGLevelObject<VectorType> defect;
-
-    /**
-     * Auxiliary vector.
-     */
-    mutable MGLevelObject<VectorType> t;
+    mutable VectorType rhs;
 
 
     // MGLevelObject<SmootherType> smooth;
@@ -1501,7 +1033,6 @@ namespace PSMF
       mg_smoother_coarse;
 
     MGCoarseGridApplySmoother<VectorType> mg_coarse;
-    // MGCoarseFromSmoother<VectorType, MGLevelObject<SmootherType>> coarse;
 
     /**
      * Number of cycles to be done in the FMG cycle
@@ -1512,12 +1043,6 @@ namespace PSMF
      * Collection of compute times on various levels
      */
     mutable std::vector<SolverData> solver_data;
-
-    /**
-     * Function for boundary values that we keep as analytic
-     * solution
-     */
-    const Function<dim, Number> &analytic_solution;
 
     std::shared_ptr<ConditionalOStream> pcout;
 

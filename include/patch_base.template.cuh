@@ -891,27 +891,27 @@ namespace PSMF
       for (unsigned int j = 0; j < 3; ++j)
         for (unsigned int k = 0; k < 3; ++k)
           {
-            std::array<Table<2, Number>, dim> patch_mass_inv;
-            std::array<Table<2, Number>, dim> patch_laplace_inv;
+            // std::array<Table<2, Number>, dim> patch_mass_inv;
+            // std::array<Table<2, Number>, dim> patch_laplace_inv;
 
             // Exact
             {
               // block (0,0)
-              for (unsigned int d = 0; d < dim; ++d)
-                {
-                  patch_mass_inv[d]    = rt_mass_int[d][0];
-                  patch_laplace_inv[d] = d == 0 ? rt_laplace_int[d][k] :
-                                         d == 1 ? rt_laplace_int[d][j] :
-                                                  rt_laplace_int[d][z];
-                }
-              std::array<FullMatrix<Number>, dim> A;
+              // for (unsigned int d = 0; d < dim; ++d)
+              //   {
+              //     patch_mass_inv[d]    = rt_mass_int[d][0];
+              //     patch_laplace_inv[d] = d == 0 ? rt_laplace_int[d][k] :
+              //                            d == 1 ? rt_laplace_int[d][j] :
+              //                                     rt_laplace_int[d][z];
+              //   }
+              std::array<FullMatrix<double>, dim> A;
               if (dim == 2)
                 {
                   {
-                    FullMatrix<Number> t0 =
+                    FullMatrix<double> t0 =
                       Tensors::kronecker_product_(RT_mass[1][2],
                                                   RT_laplace[0][3 + k]);
-                    FullMatrix<Number> t1 =
+                    FullMatrix<double> t1 =
                       Tensors::kronecker_product_(RT_laplace[1][3 + j],
                                                   RT_mass[0][2]);
                     t0.add(1., t1);
@@ -919,10 +919,10 @@ namespace PSMF
                   }
 
                   {
-                    FullMatrix<Number> t0 =
+                    FullMatrix<double> t0 =
                       Tensors::kronecker_product_(RT_mass[1][2],
                                                   RT_laplace[0][3 + j]);
-                    FullMatrix<Number> t1 =
+                    FullMatrix<double> t1 =
                       Tensors::kronecker_product_(RT_laplace[1][3 + k],
                                                   RT_mass[0][2]);
                     t0.add(1., t1);
@@ -931,23 +931,23 @@ namespace PSMF
                 }
               else
                 {
-                  FullMatrix<Number> t0 =
-                    Tensors::kronecker_product_(patch_mass_inv[2],
-                                                patch_mass_inv[1],
-                                                patch_laplace_inv[0]);
-                  FullMatrix<Number> t1 =
-                    Tensors::kronecker_product_(patch_mass_inv[2],
-                                                patch_laplace_inv[1],
-                                                patch_mass_inv[0]);
-                  FullMatrix<Number> t2 =
-                    Tensors::kronecker_product_(patch_laplace_inv[2],
-                                                patch_mass_inv[1],
-                                                patch_mass_inv[0]);
-                  t0.add(1., t1, 1., t2);
-                  A[0].copy_from(t0);
+                  // FullMatrix<double> t0 =
+                  //   Tensors::kronecker_product_(patch_mass_inv[2],
+                  //                               patch_mass_inv[1],
+                  //                               patch_laplace_inv[0]);
+                  // FullMatrix<double> t1 =
+                  //   Tensors::kronecker_product_(patch_mass_inv[2],
+                  //                               patch_laplace_inv[1],
+                  //                               patch_mass_inv[0]);
+                  // FullMatrix<double> t2 =
+                  //   Tensors::kronecker_product_(patch_laplace_inv[2],
+                  //                               patch_mass_inv[1],
+                  //                               patch_mass_inv[0]);
+                  // t0.add(1., t1, 1., t2);
+                  // A[0].copy_from(t0);
                 }
 
-              FullMatrix<Number> B =
+              FullMatrix<double> B =
                 dim == 2 ?
                   Tensors::kronecker_product_(Mix_mass[1][2], Mix_der[0][2]) :
                   Tensors::kronecker_product_(Mix_mass[2][2],
@@ -956,7 +956,7 @@ namespace PSMF
 
               B /= -1;
 
-              FullMatrix<Number> Bt;
+              FullMatrix<double> Bt;
               Bt.copy_transposed(B);
 
               const unsigned int n_patch_dofs_inv =
@@ -966,7 +966,7 @@ namespace PSMF
 
               AssertDimension(A[0].n() * dim + B.n(), n_patch_dofs);
 
-              FullMatrix<Number> PatchMatrix(n_patch_dofs, n_patch_dofs);
+              FullMatrix<double> PatchMatrix(n_patch_dofs, n_patch_dofs);
               PatchMatrix.fill(A[0], 0, 0, 0, 0);
               PatchMatrix.fill(A[1], A[0].m(), A[0].n(), 0, 0);
               PatchMatrix.fill(B, 0, dim * A[0].n(), 0, 0);
@@ -981,7 +981,7 @@ namespace PSMF
               auto ind_p1_b = dm.get_l_to_h_dg_normal();
               auto ind_p2_b = dm.get_l_to_h_dg_tangent();
 
-              FullMatrix<Number> AA(PatchMatrix.m(), PatchMatrix.n());
+              FullMatrix<double> AA(PatchMatrix.m(), PatchMatrix.n());
 
               for (auto i = 0U; i < ind_v_b.size(); ++i)
                 for (auto j = 0U; j < ind_v_b.size(); ++j)
@@ -1017,7 +1017,7 @@ namespace PSMF
                                         h_interior_host_dg.begin(),
                                         h_interior_host_dg.end());
 
-              FullMatrix<Number> AA_inv(n_patch_dofs_inv, n_patch_dofs_inv);
+              FullMatrix<double> AA_inv(n_patch_dofs_inv, n_patch_dofs_inv);
 
               AA_inv.extract_submatrix_from(AA,
                                             h_interior_host_rt,
@@ -1031,12 +1031,12 @@ namespace PSMF
               //     out.close();
               //   }
 
-              LAPACKFullMatrix<Number> exact_inverse(AA_inv.m(), AA_inv.n());
+              LAPACKFullMatrix<double> exact_inverse(AA_inv.m(), AA_inv.n());
               exact_inverse = AA_inv;
               exact_inverse.compute_inverse_svd_with_kernel(1);
 
-              Vector<Number> tmp(AA_inv.m());
-              Vector<Number> dst(AA_inv.m());
+              Vector<double> tmp(AA_inv.m());
+              Vector<double> dst(AA_inv.m());
               for (unsigned int col = 0; col < exact_inverse.n(); ++col)
                 {
                   tmp[col] = 1;
@@ -1078,23 +1078,23 @@ namespace PSMF
                 for (auto &i : h_interior_dg)
                   i += n_patch_dofs_rt;
 
-                FullMatrix<Number> A00(h_interior_rt.size());
+                FullMatrix<double> A00(h_interior_rt.size());
                 A00.extract_submatrix_from(AA, h_interior_rt, h_interior_rt);
 
-                FullMatrix<Number> A01(h_interior_rt.size(),
+                FullMatrix<double> A01(h_interior_rt.size(),
                                        h_interior_dg.size());
                 A01.extract_submatrix_from(AA, h_interior_rt, h_interior_dg);
 
-                FullMatrix<Number> A10;
+                FullMatrix<double> A10;
                 A10.copy_transposed(A01);
 
-                FullMatrix<Number> A00inv(h_interior_rt.size());
+                FullMatrix<double> A00inv(h_interior_rt.size());
                 A00inv.invert(A00);
 
-                FullMatrix<Number> SchurMatrix(h_interior_dg.size());
+                FullMatrix<double> SchurMatrix(h_interior_dg.size());
                 SchurMatrix.triple_product(A00inv, A10, A01);
 
-                LAPACKFullMatrix<Number> SchurInv(SchurMatrix.m());
+                LAPACKFullMatrix<double> SchurInv(SchurMatrix.m());
                 SchurInv = SchurMatrix;
                 SchurInv.compute_inverse_svd_with_kernel(1);
 
@@ -1132,8 +1132,8 @@ namespace PSMF
                 //     }
                 //   }
 
-                Vector<Number> tmp(SchurMatrix.m());
-                Vector<Number> dst(SchurMatrix.m());
+                Vector<double> tmp(SchurMatrix.m());
+                Vector<double> dst(SchurMatrix.m());
                 for (unsigned int col = 0; col < SchurMatrix.n(); ++col)
                   {
                     tmp[col] = 1;
@@ -1203,20 +1203,20 @@ namespace PSMF
                 for (auto &i : h_interior_dg)
                   i += n_patch_dofs_rt;
 
-                FullMatrix<Number> A00(h_interior_rt.size());
+                FullMatrix<double> A00(h_interior_rt.size());
                 A00.extract_submatrix_from(AA, h_interior_rt, h_interior_rt);
 
-                FullMatrix<Number> A01(h_interior_rt.size(),
+                FullMatrix<double> A01(h_interior_rt.size(),
                                        h_interior_dg.size());
                 A01.extract_submatrix_from(AA, h_interior_rt, h_interior_dg);
 
-                FullMatrix<Number> A10;
+                FullMatrix<double> A10;
                 A10.copy_transposed(A01);
 
-                FullMatrix<Number> A00inv(h_interior_rt.size());
+                FullMatrix<double> A00inv(h_interior_rt.size());
                 A00inv.invert(A00);
 
-                FullMatrix<Number> SchurMatrix(h_interior_dg.size());
+                FullMatrix<double> SchurMatrix(h_interior_dg.size());
                 SchurMatrix.triple_product(A00inv, A10, A01);
 
                 // LAPACKFullMatrix<Number> SchurInv(SchurMatrix.m());
@@ -1322,15 +1322,15 @@ namespace PSMF
       for (unsigned int j = 0; j < 3; ++j)
         for (unsigned int k = 0; k < 3; ++k)
           {
-            std::array<FullMatrix<Number>, dim> A;
+            std::array<FullMatrix<double>, dim> A;
 
             if (dim == 2)
               {
                 {
-                  FullMatrix<Number> t0 =
+                  FullMatrix<double> t0 =
                     Tensors::kronecker_product_(RT_mass[1][j],
                                                 RT_laplace[0][k]);
-                  FullMatrix<Number> t1 =
+                  FullMatrix<double> t1 =
                     Tensors::kronecker_product_(RT_laplace[1][j],
                                                 RT_mass[0][k]);
                   t0.add(1., t1);
@@ -1338,10 +1338,10 @@ namespace PSMF
                 }
 
                 {
-                  FullMatrix<Number> t0 =
+                  FullMatrix<double> t0 =
                     Tensors::kronecker_product_(RT_mass[1][k],
                                                 RT_laplace[0][j]);
-                  FullMatrix<Number> t1 =
+                  FullMatrix<double> t1 =
                     Tensors::kronecker_product_(RT_laplace[1][k],
                                                 RT_mass[0][j]);
                   t0.add(1., t1);
@@ -1351,15 +1351,15 @@ namespace PSMF
             else
               {
                 // TODO: x y z
-                FullMatrix<Number> t0 =
+                FullMatrix<double> t0 =
                   Tensors::kronecker_product_(RT_mass[2][z],
                                               RT_mass[1][j],
                                               RT_laplace[0][k]);
-                FullMatrix<Number> t1 =
+                FullMatrix<double> t1 =
                   Tensors::kronecker_product_(RT_mass[2][z],
                                               RT_laplace[1][j],
                                               RT_mass[0][k]);
-                FullMatrix<Number> t2 =
+                FullMatrix<double> t2 =
                   Tensors::kronecker_product_(RT_laplace[2][z],
                                               RT_mass[1][j],
                                               RT_mass[0][k]);
@@ -1368,13 +1368,13 @@ namespace PSMF
               }
 
             // TODO:
-            FullMatrix<Number> B_x =
+            FullMatrix<double> B_x =
               dim == 2 ?
                 Tensors::kronecker_product_(Mix_mass[1][j], Mix_der[0][k]) :
                 Tensors::kronecker_product_(Mix_mass[2][z],
                                             Mix_mass[1][j],
                                             Mix_der[0][k]);
-            FullMatrix<Number> B_y =
+            FullMatrix<double> B_y =
               dim == 2 ?
                 Tensors::kronecker_product_(Mix_mass[1][k], Mix_der[0][j]) :
                 Tensors::kronecker_product_(Mix_mass[2][z],
@@ -1383,12 +1383,12 @@ namespace PSMF
             B_x /= -1;
             B_y /= -1;
 
-            FullMatrix<Number> Bt_x;
-            FullMatrix<Number> Bt_y;
+            FullMatrix<double> Bt_x;
+            FullMatrix<double> Bt_y;
             Bt_x.copy_transposed(B_x);
             Bt_y.copy_transposed(B_y);
 
-            FullMatrix<Number> PatchMatrix(A[0].n() * dim + B_x.n(),
+            FullMatrix<double> PatchMatrix(A[0].n() * dim + B_x.n(),
                                            A[0].n() * dim + B_x.n());
             PatchMatrix.fill(A[0], 0, 0, 0, 0);
             PatchMatrix.fill(A[1], A[0].m(), A[0].n(), 0, 0);
@@ -1410,7 +1410,7 @@ namespace PSMF
             auto ind_p1_b = dm.get_l_to_h_dg_normal();
             auto ind_p2_b = dm.get_l_to_h_dg_tangent();
 
-            FullMatrix<Number> AA(PatchMatrix.m(), PatchMatrix.n());
+            FullMatrix<double> AA(PatchMatrix.m(), PatchMatrix.n());
 
             for (auto i = 0U; i < ind_v_b.size(); ++i)
               for (auto j = 0U; j < ind_v_b.size(); ++j)
@@ -1460,11 +1460,11 @@ namespace PSMF
   }
 
   template <int dim, int fe_degree, typename Number>
-  std::array<std::array<Table<2, Number>, 3>, dim>
+  std::array<std::array<Table<2, double>, 3>, dim>
   LevelVertexPatch<dim, fe_degree, Number>::assemble_RTmass_tensor() const
   {
-    const Number h              = Util::pow(2, level);
-    const Number penalty_factor = h * (fe_degree + 1) * (fe_degree + 2);
+    const double h              = Util::pow(2, level);
+    const double penalty_factor = h * (fe_degree + 1) * (fe_degree + 2);
 
     FE_RaviartThomas_new<dim> fe(fe_degree);
     QGauss<1>                 quadrature(fe_degree + 2);
@@ -1479,16 +1479,16 @@ namespace PSMF
         n_patch_dofs_1d[d] =
           d == 0 ? 2 * n_cell_dofs_1d[d] - 1 : 2 * n_cell_dofs_1d[d];
       }
-    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info;
+    internal::MatrixFreeFunctions::ShapeInfo<double> shape_info;
     shape_info.reinit(quadrature, fe);
 
-    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<double>, dim>
       shape_data;
     for (auto d = 0U; d < dim; ++d)
       shape_data[d] = shape_info.get_shape_data(d, 0);
 
     auto cell_mass = [&](unsigned int pos) {
-      std::array<Table<2, Number>, dim> mass_matrices;
+      std::array<Table<2, double>, dim> mass_matrices;
 
       for (unsigned int d = 0; d < dim; ++d)
         mass_matrices[d].reinit(n_cell_dofs_1d[d], n_cell_dofs_1d[d]);
@@ -1499,7 +1499,7 @@ namespace PSMF
         for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
           for (unsigned int j = 0; j < n_cell_dofs_1d[d]; ++j)
             {
-              Number sum_mass = 0;
+              double sum_mass = 0;
               for (unsigned int q = 0; q < n_quadrature; ++q)
                 {
                   sum_mass += shape_data[d].shape_values[i * n_quadrature + q] *
@@ -1514,7 +1514,7 @@ namespace PSMF
     };
 
     auto patch_mass = [&](auto left, auto right, auto d) {
-      Table<2, Number> mass_matrices;
+      Table<2, double> mass_matrices;
 
       mass_matrices.reinit(n_patch_dofs_1d[d], n_patch_dofs_1d[d]);
 
@@ -1532,7 +1532,7 @@ namespace PSMF
     auto cell_left  = cell_mass(0);
     auto cell_right = cell_mass(1);
 
-    std::array<std::array<Table<2, Number>, 3>, dim> patch_mass_matrices;
+    std::array<std::array<Table<2, double>, 3>, dim> patch_mass_matrices;
 
     for (unsigned int d = 0; d < dim; ++d)
       {
@@ -1545,11 +1545,11 @@ namespace PSMF
   }
 
   template <int dim, int fe_degree, typename Number>
-  std::array<std::array<Table<2, Number>, 6>, dim>
+  std::array<std::array<Table<2, double>, 6>, dim>
   LevelVertexPatch<dim, fe_degree, Number>::assemble_RTlaplace_tensor() const
   {
-    const Number h              = Util::pow(2, level);
-    const Number penalty_factor = h * (fe_degree + 1) * (fe_degree + 2);
+    const double h              = Util::pow(2, level);
+    const double penalty_factor = h * (fe_degree + 1) * (fe_degree + 2);
 
     FE_RaviartThomas_new<dim> fe(fe_degree);
     QGauss<1>                 quadrature(fe_degree + 2);
@@ -1564,24 +1564,24 @@ namespace PSMF
         n_patch_dofs_1d[d] =
           d == 0 ? 2 * n_cell_dofs_1d[d] - 1 : 2 * n_cell_dofs_1d[d];
       }
-    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info;
+    internal::MatrixFreeFunctions::ShapeInfo<double> shape_info;
     shape_info.reinit(quadrature, fe);
 
-    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<double>, dim>
       shape_data;
     for (auto d = 0U; d < dim; ++d)
       shape_data[d] = shape_info.get_shape_data(d, 0);
 
     auto cell_laplace = [&](unsigned int type, unsigned int pos) {
-      std::array<Table<2, Number>, dim> laplace_matrices;
+      std::array<Table<2, double>, dim> laplace_matrices;
 
       for (unsigned int d = 0; d < dim; ++d)
         laplace_matrices[d].reinit(n_cell_dofs_1d[d], n_cell_dofs_1d[d]);
 
       unsigned int is_first = pos == 0 ? 1 : 0;
 
-      Number boundary_factor_left  = 1.;
-      Number boundary_factor_right = 1.;
+      double boundary_factor_left  = 1.;
+      double boundary_factor_right = 1.;
 
       if (type == 0)
         boundary_factor_left = 2.;
@@ -1598,7 +1598,7 @@ namespace PSMF
         for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
           for (unsigned int j = 0; j < n_cell_dofs_1d[d]; ++j)
             {
-              Number sum_laplace = 0;
+              double sum_laplace = 0;
               for (unsigned int q = 0; q < n_quadrature; ++q)
                 {
                   sum_laplace +=
@@ -1646,7 +1646,7 @@ namespace PSMF
     };
 
     auto cell_mixed = [&]() {
-      std::array<Table<2, Number>, dim> mixed_matrices;
+      std::array<Table<2, double>, dim> mixed_matrices;
 
       for (unsigned int d = 0; d < dim; ++d)
         mixed_matrices[d].reinit(n_cell_dofs_1d[d], n_cell_dofs_1d[d]);
@@ -1673,7 +1673,7 @@ namespace PSMF
     };
 
     auto cell_penalty = [&]() {
-      std::array<Table<2, Number>, dim> penalty_matrices;
+      std::array<Table<2, double>, dim> penalty_matrices;
 
       for (unsigned int d = 0; d < dim; ++d)
         penalty_matrices[d].reinit(n_cell_dofs_1d[d], n_cell_dofs_1d[d]);
@@ -1697,7 +1697,7 @@ namespace PSMF
     auto penalty = cell_penalty();
 
     auto patch_laplace = [&](auto left, auto right, auto d) {
-      Table<2, Number> laplace_matrices;
+      Table<2, double> laplace_matrices;
 
       laplace_matrices.reinit(n_patch_dofs_1d[d], n_patch_dofs_1d[d]);
 
@@ -1730,7 +1730,7 @@ namespace PSMF
 
     auto cell_middle = cell_laplace(3, 0);
 
-    std::array<std::array<Table<2, Number>, 6>, dim> patch_laplace_matrices;
+    std::array<std::array<Table<2, double>, 6>, dim> patch_laplace_matrices;
 
     for (unsigned int d = 0; d < dim; ++d)
       {
@@ -1764,7 +1764,7 @@ namespace PSMF
   }
 
   template <int dim, int fe_degree, typename Number>
-  std::array<std::array<Table<2, Number>, 3>, dim>
+  std::array<std::array<Table<2, double>, 3>, dim>
   LevelVertexPatch<dim, fe_degree, Number>::assemble_Mixmass_tensor() const
   {
     FE_RaviartThomas_new<dim> fe_v(fe_degree);
@@ -1782,14 +1782,14 @@ namespace PSMF
           d == 0 ? 2 * n_cell_dofs_1d[d] - 1 : 2 * n_cell_dofs_1d[d];
       }
 
-    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info_v;
-    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info_p;
+    internal::MatrixFreeFunctions::ShapeInfo<double> shape_info_v;
+    internal::MatrixFreeFunctions::ShapeInfo<double> shape_info_p;
     shape_info_v.reinit(quadrature, fe_v);
     shape_info_p.reinit(quadrature, fe_p);
 
-    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<double>, dim>
       shape_data_v;
-    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<double>, dim>
       shape_data_p;
     for (auto d = 0U; d < dim; ++d)
       {
@@ -1798,7 +1798,7 @@ namespace PSMF
       }
 
     auto cell_mass = [&](unsigned int pos) {
-      std::array<Table<2, Number>, dim> mass_matrices;
+      std::array<Table<2, double>, dim> mass_matrices;
 
       for (unsigned int d = 0; d < dim; ++d)
         mass_matrices[d].reinit(n_cell_dofs_1d[d], fe_degree + 1);
@@ -1809,7 +1809,7 @@ namespace PSMF
         for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
           for (unsigned int j = 0; j < fe_degree + 1; ++j)
             {
-              Number sum_mass = 0;
+              double sum_mass = 0;
               for (unsigned int q = 0; q < n_quadrature; ++q)
                 {
                   sum_mass +=
@@ -1825,7 +1825,7 @@ namespace PSMF
     };
 
     auto patch_mass = [&](auto left, auto right, auto d) {
-      Table<2, Number> mass_matrices;
+      Table<2, double> mass_matrices;
 
       mass_matrices.reinit(n_patch_dofs_1d[d], 2 * fe_degree + 2);
 
@@ -1844,7 +1844,7 @@ namespace PSMF
     auto cell_left  = cell_mass(0);
     auto cell_right = cell_mass(1);
 
-    std::array<std::array<Table<2, Number>, 3>, dim> patch_mass_matrices;
+    std::array<std::array<Table<2, double>, 3>, dim> patch_mass_matrices;
 
     for (unsigned int d = 0; d < dim; ++d)
       {
@@ -1857,7 +1857,7 @@ namespace PSMF
   }
 
   template <int dim, int fe_degree, typename Number>
-  std::array<std::array<Table<2, Number>, 3>, dim>
+  std::array<std::array<Table<2, double>, 3>, dim>
   LevelVertexPatch<dim, fe_degree, Number>::assemble_Mixder_tensor() const
   {
     FE_RaviartThomas_new<dim> fe_v(fe_degree);
@@ -1875,14 +1875,14 @@ namespace PSMF
           d == 0 ? 2 * n_cell_dofs_1d[d] - 1 : 2 * n_cell_dofs_1d[d];
       }
 
-    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info_v;
-    internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info_p;
+    internal::MatrixFreeFunctions::ShapeInfo<double> shape_info_v;
+    internal::MatrixFreeFunctions::ShapeInfo<double> shape_info_p;
     shape_info_v.reinit(quadrature, fe_v);
     shape_info_p.reinit(quadrature, fe_p);
 
-    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<double>, dim>
       shape_data_v;
-    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+    std::array<internal::MatrixFreeFunctions::UnivariateShapeData<double>, dim>
       shape_data_p;
     for (auto d = 0U; d < dim; ++d)
       {
@@ -1891,7 +1891,7 @@ namespace PSMF
       }
 
     auto cell_laplace = [&](unsigned int pos) {
-      std::array<Table<2, Number>, dim> laplace_matrices;
+      std::array<Table<2, double>, dim> laplace_matrices;
 
       for (unsigned int d = 0; d < dim; ++d)
         laplace_matrices[d].reinit(n_cell_dofs_1d[d], fe_degree + 1);
@@ -1903,7 +1903,7 @@ namespace PSMF
         for (unsigned int i = 0; i < n_cell_dofs_1d[d]; ++i)
           for (unsigned int j = 0; j < fe_degree + 1; ++j)
             {
-              Number sum_laplace = 0;
+              double sum_laplace = 0;
               for (unsigned int q = 0; q < n_quadrature; ++q)
                 {
                   sum_laplace +=
@@ -1919,7 +1919,7 @@ namespace PSMF
     };
 
     auto patch_laplace = [&](auto left, auto right, auto d) {
-      Table<2, Number> laplace_matrices;
+      Table<2, double> laplace_matrices;
 
       laplace_matrices.reinit(n_patch_dofs_1d[d], 2 * fe_degree + 2);
 
@@ -1938,7 +1938,7 @@ namespace PSMF
     auto cell_left  = cell_laplace(0);
     auto cell_right = cell_laplace(1);
 
-    std::array<std::array<Table<2, Number>, 3>, dim> patch_laplace_matrices;
+    std::array<std::array<Table<2, double>, 3>, dim> patch_laplace_matrices;
 
     for (unsigned int d = 0; d < dim; ++d)
       {
