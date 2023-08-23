@@ -66,6 +66,9 @@ namespace PSMF
         Utilities::CUDA::free(smooth_stiff_1d[d]);
         Utilities::CUDA::free(smooth_mixmass_1d[d]);
         Utilities::CUDA::free(smooth_mixder_1d[d]);
+
+        Utilities::CUDA::free(eigvals[d]);
+        Utilities::CUDA::free(eigvecs[d]);
       }
 
     for (unsigned int d = 0; d < dim; ++d)
@@ -76,17 +79,12 @@ namespace PSMF
         Utilities::CUDA::free(mix_der_1d[d]);
       }
 
+    Utilities::CUDA::free(inverse_schur);
     Utilities::CUDA::free(vertex_patch_matrices);
 
     Utilities::CUDA::free(eigenvalues[0]);
     Utilities::CUDA::free(eigenvalues[1]);
     Utilities::CUDA::free(eigenvalues[2]);
-    for (unsigned int i = 3; i < 4; ++i)
-      {
-        Utilities::CUDA::free(eigenvalues[i]);
-        Utilities::CUDA::free(eigenvectors[i]);
-      }
-
 
     ordering_to_type.clear();
     patch_id_host.clear();
@@ -564,6 +562,8 @@ namespace PSMF
     auto htol_rt_host = dm.get_h_to_l_rt();
     auto ltoh_rt_host = dm.get_l_to_h_rt();
 
+    auto htol_rt_interior_host = dm.get_h_to_l_rt_interior();
+
     auto htol_dgn_host = dm.get_h_to_l_dg_normal();
     auto htol_dgt_host = dm.get_h_to_l_dg_tangent();
     auto ltoh_dgn_host = dm.get_l_to_h_dg_normal();
@@ -597,6 +597,8 @@ namespace PSMF
 
     copy_mappings(htol_rt, htol_rt_host);
     copy_mappings(ltoh_rt, ltoh_rt_host);
+
+    copy_mappings(htol_rt_interior, htol_rt_interior_host);
 
     copy_mappings(htol_dgn, htol_dgn_host);
     copy_mappings(htol_dgt, htol_dgt_host);
@@ -635,6 +637,9 @@ namespace PSMF
     alloc_arrays(&vertex_patch_matrices,
                  Util::pow(n_patch_dofs, 2) * Util::pow(3, dim));
 
+    alloc_arrays(&inverse_schur,
+                 Util::pow(n_patch_dofs_dg, 2) * Util::pow(3, dim));
+
     alloc_arrays(&eigenvalues[0],
                  Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
     alloc_arrays(&eigenvalues[1],
@@ -642,11 +647,6 @@ namespace PSMF
     alloc_arrays(&eigenvalues[2],
                  Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
 
-    for (unsigned int i = 3; i < 4; ++i)
-      {
-        alloc_arrays(&eigenvalues[i], n_dofs_1d * dim * Util::pow(3, dim));
-        alloc_arrays(&eigenvectors[i], n_dofs_2d * dim * Util::pow(3, dim));
-      }
 
     for (unsigned int d = 0; d < dim; ++d)
       {
@@ -659,6 +659,9 @@ namespace PSMF
         alloc_arrays(&rt_laplace_1d[d], n_dofs_2d * 3 * dim);
         alloc_arrays(&mix_mass_1d[d], n_dofs_2d * 3 * dim);
         alloc_arrays(&mix_der_1d[d], n_dofs_2d * 3 * dim);
+
+        alloc_arrays(&eigvals[d], n_dofs_1d * dim * Util::pow(3, dim));
+        alloc_arrays(&eigvecs[d], n_dofs_2d * dim * Util::pow(3, dim));
       }
 
     reinit_tensor_product_laplace();
@@ -698,17 +701,21 @@ namespace PSMF
 
     for (unsigned int i = 0; i < 4; ++i)
       {
-        data_copy[i].n_dofs_per_dim      = (1 << level) * fe_degree + 1;
-        data_copy[i].n_patches           = n_patches_smooth[color];
-        data_copy[i].patch_per_block     = patch_per_block;
-        data_copy[i].relaxation          = relaxation;
-        data_copy[i].first_dof           = first_dof_smooth[color];
-        data_copy[i].patch_type          = patch_type_smooth[color];
-        data_copy[i].eigenvalues         = eigenvalues[i];
-        data_copy[i].eigenvectors        = eigenvectors[i];
-        data_copy[i].smooth_mass_1d      = rt_mass_1d[0];
-        data_copy[i].smooth_stiff_1d     = rt_mass_1d[0];
-        data_copy[i].smooth_bilaplace_1d = rt_mass_1d[0];
+        data_copy[i].n_patches         = n_patches_smooth[color];
+        data_copy[i].patch_per_block   = patch_per_block;
+        data_copy[i].relaxation        = relaxation;
+        data_copy[i].first_dof         = first_dof_smooth[color];
+        data_copy[i].patch_type        = patch_type_smooth[color];
+        data_copy[i].eigenvalues       = eigenvalues[i];
+        data_copy[i].eigenvectors      = eigenvectors[i];
+        data_copy[i].smooth_mass_1d    = smooth_mass_1d;
+        data_copy[i].smooth_stiff_1d   = smooth_stiff_1d;
+        data_copy[i].smooth_mixmass_1d = smooth_mixmass_1d;
+        data_copy[i].smooth_mixder_1d  = smooth_mixder_1d;
+
+        data_copy[i].eigvals       = eigvals;
+        data_copy[i].eigvecs       = eigvecs;
+        data_copy[i].inverse_schur = inverse_schur;
 
         data_copy[i].patch_dof_smooth = patch_dof_smooth[color];
       }
@@ -750,7 +757,6 @@ namespace PSMF
     for (unsigned int i = 0; i < n_colors; ++i)
       if (n_patches_laplace[i] > 0)
         {
-          // std::cout << n_patches_laplace[i] << std::endl;
           op.loop_kernel(src,
                          dst,
                          get_laplace_data(i),
@@ -771,58 +777,68 @@ namespace PSMF
     auto Mix_mass   = assemble_Mixmass_tensor();
     auto Mix_der    = assemble_Mixder_tensor();
 
-    auto copy_to_device =
-      [](auto tensor, auto dst, unsigned int s, unsigned int e) {
-        for (unsigned int d = 0; d < dim; ++d)
-          {
-            const unsigned int n_elements = tensor[d][s].n_elements();
-
-            auto mat = new Number[n_elements * (e - s)];
-            for (unsigned int i = s; i < e; ++i)
-              std::transform(tensor[d][i].begin(),
-                             tensor[d][i].end(),
-                             &mat[n_elements * (i - s)],
-                             [](auto m) -> Number { return m; });
-
-            cudaError_t error_code =
-              cudaMemcpy(dst[d],
-                         mat,
-                         (e - s) * n_elements * sizeof(Number),
-                         cudaMemcpyHostToDevice);
-            AssertCuda(error_code);
-
-            delete[] mat;
-          }
-      };
-
-    copy_to_device(RT_mass, smooth_mass_1d, 2, 3);
-    copy_to_device(RT_laplace, smooth_stiff_1d, 3, 6);
-    copy_to_device(Mix_mass, smooth_mixmass_1d, 2, 3);
-    copy_to_device(Mix_der, smooth_mixder_1d, 2, 3);
-
-    auto interior = [](auto matrix, unsigned int s, unsigned int e) {
-      std::array<std::vector<Table<2, Number>>, dim> dst;
-
+    auto copy_to_device = [](auto tensor, auto dst, unsigned int n) {
       for (unsigned int d = 0; d < dim; ++d)
         {
-          dst[d].resize(e - s);
-          for (unsigned int m = s; m < e; ++m)
-            {
-              dst[d][m - s].reinit(matrix[d][m].n_rows() - 2,
-                                   matrix[d][m].n_cols() - 2);
+          const unsigned int n_elements = Util::pow(2 * fe_degree + 3, 2);
 
-              for (unsigned int i = 0; i < matrix[d][m].n_rows() - 2; ++i)
-                for (unsigned int j = 0; j < matrix[d][m].n_cols() - 2; ++j)
-                  dst[d][m - s](i, j) = matrix[d][m](i + 1, j + 1);
-            }
+          auto mat = new Number[n_elements * n];
+          for (unsigned int i = 0; i < n; ++i)
+            std::transform(tensor[d][i].begin(),
+                           tensor[d][i].end(),
+                           &mat[n_elements * i],
+                           [](auto m) -> Number { return m; });
+
+          cudaError_t error_code = cudaMemcpy(dst[d],
+                                              mat,
+                                              n * n_elements * sizeof(Number),
+                                              cudaMemcpyHostToDevice);
+          AssertCuda(error_code);
+
+          delete[] mat;
         }
-      return dst;
     };
 
-    auto rt_mass_int    = interior(RT_mass, 2, 3);
-    auto rt_laplace_int = interior(RT_laplace, 3, 6);
-    auto mix_mass_int   = interior(Mix_mass, 2, 3);
-    auto mix_der_int    = interior(Mix_der, 2, 3);
+    auto interior =
+      [](auto matrix, unsigned int s, unsigned int e, unsigned int o) {
+        std::array<std::vector<Table<2, Number>>, dim> dst;
+
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            dst[d].resize(e - s);
+            if (d == 0)
+              for (unsigned int m = s; m < e; ++m)
+                {
+                  dst[d][m - s].reinit(matrix[d][m].n_rows() - 2,
+                                       matrix[d][m].n_cols() - o);
+
+                  for (unsigned int i = 0; i < matrix[d][m].n_rows() - 2; ++i)
+                    for (unsigned int j = 0; j < matrix[d][m].n_cols() - o; ++j)
+                      dst[d][m - s](i, j) = matrix[d][m](i + 1, j + o / 2);
+                }
+            else
+              for (unsigned int m = s; m < e; ++m)
+                {
+                  dst[d][m - s].reinit(matrix[d][m].n_rows(),
+                                       matrix[d][m].n_cols());
+
+                  for (unsigned int i = 0; i < matrix[d][m].n_rows(); ++i)
+                    for (unsigned int j = 0; j < matrix[d][m].n_cols(); ++j)
+                      dst[d][m - s](i, j) = matrix[d][m](i, j);
+                }
+          }
+        return dst;
+      };
+
+    auto rt_mass_int    = interior(RT_mass, 2, 3, 2);
+    auto rt_laplace_int = interior(RT_laplace, 3, 6, 2);
+    auto mix_mass_int   = interior(Mix_mass, 2, 3, 0);
+    auto mix_der_int    = interior(Mix_der, 2, 3, 0);
+
+    copy_to_device(rt_mass_int, smooth_mass_1d, 1);
+    copy_to_device(rt_laplace_int, smooth_stiff_1d, 3);
+    copy_to_device(mix_mass_int, smooth_mixmass_1d, 1);
+    copy_to_device(mix_der_int, smooth_mixder_1d, 1);
 
 
     auto print_matrices = [](auto matrix) {
@@ -839,19 +855,18 @@ namespace PSMF
       std::cout << std::endl;
     };
 
-    // print_matrices(mass_tensor_inv.back());
-    // print_matrices(laplace_tensor_inv.back());
-    // print_matrices(bilaplace_tensor_inv.back());
+    // print_matrices(mix_der_int[0]);
+    // print_matrices(mix_mass_int[1]);
 
     auto copy_vals = [](auto tensor, auto dst, auto shift) {
-      constexpr unsigned int n_dofs_1d = Util::pow(2 * fe_degree - 1, 1);
+      constexpr unsigned int n_dofs_1d = Util::pow(2 * fe_degree + 3, 1);
 
       auto mat = new Number[n_dofs_1d * dim];
       for (unsigned int i = 0; i < dim; ++i)
         std::transform(tensor[i].begin(),
                        tensor[i].end(),
                        &mat[n_dofs_1d * i],
-                       [](auto m) -> Number { return m[0]; });
+                       [](auto m) -> Number { return m; });
 
       cudaError_t error_code = cudaMemcpy(dst + shift * n_dofs_1d * dim,
                                           mat,
@@ -863,14 +878,14 @@ namespace PSMF
     };
 
     auto copy_vecs = [](auto tensor, auto dst, auto shift) {
-      constexpr unsigned int n_dofs_2d = Util::pow(2 * fe_degree - 1, 2);
+      constexpr unsigned int n_dofs_2d = Util::pow(2 * fe_degree + 3, 2);
 
       auto mat = new Number[n_dofs_2d * dim];
       for (unsigned int i = 0; i < dim; ++i)
         std::transform(tensor[i].begin(),
                        tensor[i].end(),
                        &mat[n_dofs_2d * i],
-                       [](auto m) -> Number { return m.value()[0]; });
+                       [](auto m) -> Number { return m; });
 
       cudaError_t error_code = cudaMemcpy(dst + shift * n_dofs_2d * dim,
                                           mat,
@@ -881,9 +896,44 @@ namespace PSMF
       delete[] mat;
     };
 
-    using matrix_type =
-      Tensors::TensorProductMatrix<dim, VectorizedArray<Number>>;
-    using matrix_state = typename matrix_type::State;
+    auto fast_diag = [&](auto indices, auto dir) {
+      std::array<Table<2, Number>, dim> patch_mass_inv;
+      std::array<Table<2, Number>, dim> patch_laplace_inv;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        {
+          patch_mass_inv[d]    = rt_mass_int[d][0];
+          patch_laplace_inv[d] = d == 0 ? rt_laplace_int[d][indices[0]] :
+                                 d == 1 ? rt_laplace_int[d][indices[1]] :
+                                          rt_laplace_int[d][indices[2]];
+        }
+
+      TensorProductData<dim, fe_degree, Number> tensor_product;
+      tensor_product.reinit(patch_mass_inv, patch_laplace_inv);
+
+      std::array<AlignedVector<Number>, dim> eigenvalue_tensor;
+      std::array<Table<2, Number>, dim>      eigenvector_tensor;
+      tensor_product.get_eigenvalues(eigenvalue_tensor);
+      tensor_product.get_eigenvectors(eigenvector_tensor);
+
+      auto shift = dir == 0 ? indices[0] + indices[1] * 3 + indices[2] * 9 :
+                              indices[1] + indices[0] * 3 + indices[2] * 9;
+
+      // if (indices[0] * indices[1] == 4)
+      //   {
+      //     std::cout << "TESTING EIGS " << dir << std::endl;
+      //     for (auto eigs : eigenvalue_tensor)
+      //       {
+      //         for (auto e : eigs)
+      //           std::cout << e << " ";
+      //         std::cout << std::endl;
+      //       }
+      //     print_matrices(eigenvector_tensor);
+      //   }
+
+      copy_vals(eigenvalue_tensor, eigvals[dir], shift);
+      copy_vecs(eigenvector_tensor, eigvecs[dir], shift);
+    };
 
     constexpr unsigned dim_z = dim == 2 ? 1 : 3;
 
@@ -891,19 +941,8 @@ namespace PSMF
       for (unsigned int j = 0; j < 3; ++j)
         for (unsigned int k = 0; k < 3; ++k)
           {
-            // std::array<Table<2, Number>, dim> patch_mass_inv;
-            // std::array<Table<2, Number>, dim> patch_laplace_inv;
-
             // Exact
             {
-              // block (0,0)
-              // for (unsigned int d = 0; d < dim; ++d)
-              //   {
-              //     patch_mass_inv[d]    = rt_mass_int[d][0];
-              //     patch_laplace_inv[d] = d == 0 ? rt_laplace_int[d][k] :
-              //                            d == 1 ? rt_laplace_int[d][j] :
-              //                                     rt_laplace_int[d][z];
-              //   }
               std::array<FullMatrix<double>, dim> A;
               if (dim == 2)
                 {
@@ -1151,7 +1190,8 @@ namespace PSMF
                 //     out.close();
                 //   }
 
-                auto *vals = new Number[AA_inv.m() * AA_inv.n()];
+                auto *vals  = new Number[AA_inv.m() * AA_inv.n()];
+                auto *schur = new Number[SchurMatrix.m() * SchurMatrix.n()];
 
                 for (unsigned int r = 0; r < A00inv.m(); ++r)
                   std::transform(A00inv.begin(r),
@@ -1160,11 +1200,18 @@ namespace PSMF
                                  [](auto m) -> Number { return m; });
 
                 for (unsigned int r = 0; r < SchurMatrix.m(); ++r)
-                  std::transform(
-                    SchurMatrix.begin(r),
-                    SchurMatrix.end(r),
-                    &vals[A00inv.n_elements() + r * SchurMatrix.n()],
-                    [](auto m) -> Number { return m; });
+                  {
+                    std::transform(
+                      SchurMatrix.begin(r),
+                      SchurMatrix.end(r),
+                      &vals[A00inv.n_elements() + r * SchurMatrix.n()],
+                      [](auto m) -> Number { return m; });
+
+                    std::transform(SchurMatrix.begin(r),
+                                   SchurMatrix.end(r),
+                                   &schur[r * SchurMatrix.n()],
+                                   [](auto m) -> Number { return m; });
+                  }
 
                 for (unsigned int r = 0; r < A01.m(); ++r)
                   std::transform(A01.begin(r),
@@ -1186,6 +1233,14 @@ namespace PSMF
                                (k + j * 3 + z * 9) * AA_inv.n_elements(),
                              vals,
                              AA_inv.n_elements() * sizeof(Number),
+                             cudaMemcpyHostToDevice);
+                AssertCuda(error_code);
+
+                error_code =
+                  cudaMemcpy(inverse_schur +
+                               (k + j * 3 + z * 9) * SchurMatrix.n_elements(),
+                             schur,
+                             SchurMatrix.n_elements() * sizeof(Number),
                              cudaMemcpyHostToDevice);
                 AssertCuda(error_code);
 
@@ -1273,6 +1328,15 @@ namespace PSMF
                 AssertCuda(error_code);
 
                 delete[] vals;
+              }
+
+              // Schur FD
+              {
+                std::vector<unsigned int> indices0{k, j, z};
+                fast_diag(indices0, 0);
+
+                std::vector<unsigned int> indices1{j, k, z};
+                fast_diag(indices1, 1);
               }
             }
           }

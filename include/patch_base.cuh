@@ -287,19 +287,24 @@ namespace PSMF
       cuda::std::array<Number *, dim> mix_der_1d;
 
       /**
-       * Pointer to 1D mass matrix for smoothing operator.
+       * Pointer to 1D RT mass matrix for smoothing operator.
        */
-      Number *smooth_mass_1d;
+      cuda::std::array<Number *, dim> smooth_mass_1d;
 
       /**
-       * Pointer to 1D stiffness matrix for smoothing operator.
+       * Pointer to 1D RT stiffness matrix for smoothing operator.
        */
-      Number *smooth_stiff_1d;
+      cuda::std::array<Number *, dim> smooth_stiff_1d;
 
       /**
-       * Pointer to 1D bilaplace stiffness matrix for smoothing operator.
+       * Pointer to 1D mixed mass matrix for smoothing operator.
        */
-      Number *smooth_bilaplace_1d;
+      cuda::std::array<Number *, dim> smooth_mixmass_1d;
+
+      /**
+       * Pointer to 1D mixed derivative matrix for smoothing operator.
+       */
+      cuda::std::array<Number *, dim> smooth_mixder_1d;
 
       /**
        * Pointer to 1D eigenvalues for smoothing operator.
@@ -310,6 +315,22 @@ namespace PSMF
        * Pointer to 1D eigenvectors for smoothing operator.
        */
       Number *eigenvectors;
+
+
+      /**
+       * Pointer to 1D eigenvalues for smoothing operator RT.
+       */
+      cuda::std::array<Number *, dim> eigvals;
+
+      /**
+       * Pointer to 1D eigenvectors for smoothing operator RT.
+       */
+      cuda::std::array<Number *, dim> eigvecs;
+
+      /**
+       * Schur Inv
+       */
+      Number *inverse_schur;
     };
 
     /**
@@ -669,22 +690,22 @@ namespace PSMF
     /**
      * Pointer to 1D RT mass matrix for smoothing operator.
      */
-    std::array<Number *, dim> smooth_mass_1d;
+    cuda::std::array<Number *, dim> smooth_mass_1d;
 
     /**
      * Pointer to 1D RT stiffness matrix for smoothing operator.
      */
-    std::array<Number *, dim> smooth_stiff_1d;
+    cuda::std::array<Number *, dim> smooth_stiff_1d;
 
     /**
      * Pointer to 1D mixed mass matrix for smoothing operator.
      */
-    std::array<Number *, dim> smooth_mixmass_1d;
+    cuda::std::array<Number *, dim> smooth_mixmass_1d;
 
     /**
      * Pointer to 1D mixed derivative matrix for smoothing operator.
      */
-    std::array<Number *, dim> smooth_mixder_1d;
+    cuda::std::array<Number *, dim> smooth_mixder_1d;
 
     /**
      * Pointer to 1D eigenvalues for smoothing operator.
@@ -695,6 +716,21 @@ namespace PSMF
      * Pointer to 1D eigenvectors for smoothing operator.
      */
     std::array<Number *, 4> eigenvectors;
+
+    /**
+     * Pointer to 1D eigenvalues for smoothing operator RT.
+     */
+    cuda::std::array<Number *, dim> eigvals;
+
+    /**
+     * Pointer to 1D eigenvectors for smoothing operator RT.
+     */
+    cuda::std::array<Number *, dim> eigvecs;
+
+    /**
+     * Schur Inv
+     */
+    Number *inverse_schur;
   };
 
   template <typename Number>
@@ -881,6 +917,41 @@ namespace PSMF
       local_src = data;
       local_dst = local_src + n_buff * local_dim;
       tmp       = local_dst + n_buff * local_dim;
+    }
+  };
+
+  template <int dim, typename Number, SmootherVariant smoother>
+  struct SharedDataSmoother<dim,
+                            Number,
+                            smoother,
+                            LocalSolverVariant::SchurTensorProduct>
+    : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+    using SharedDataBase<Number>::local_mass;
+    using SharedDataBase<Number>::local_laplace;
+    using SharedDataBase<Number>::local_mix_mass;
+    using SharedDataBase<Number>::local_mix_der;
+    using SharedDataBase<Number>::tmp;
+
+    __device__
+    SharedDataSmoother(Number      *data,
+                       unsigned int n_buff,
+                       unsigned int n_dofs_1d,
+                       unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+
+      local_mass    = local_dst + n_buff * local_dim;
+      local_laplace = local_mass + n_buff * n_dofs_1d * dim * dim;
+      local_mix_mass =
+        local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_der =
+        local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * (dim - 1);
+
+      tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * 1;
     }
   };
 

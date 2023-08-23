@@ -528,6 +528,8 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   assign_vector_cuda(system_rhs_dp);
   assign_vector_cuda(solution_dp);
 
+  solution_dp = 0;
+
   smooth_dp.step(solution_dp, system_rhs_dp);
 
   std::cout << "TESTING SMOOTHER!!!\n";

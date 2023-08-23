@@ -40,7 +40,7 @@ namespace PSMF
                        lapalace,
                        SmootherVariant::GLOBAL>
   {
-    static constexpr unsigned int n_dofs_1d = 2 * fe_degree - 1;
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 3;
 
     LocalSmoother() = default;
 
@@ -100,7 +100,7 @@ namespace PSMF
           shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
           shared_mem += 3 * patch_per_block *
                         Util::pow(2 * fe_degree + 2, dim) * sizeof(Number);
-          shared_mem += 3;
+          shared_mem += 3 * sizeof(Number);
 
           AssertCuda(cudaFuncSetAttribute(
             loop_kernel_global<dim, fe_degree, Number, solver>,
@@ -108,6 +108,35 @@ namespace PSMF
             shared_mem));
 
           block_dim = 256;
+        }
+      else if (solver == LocalSolverVariant::SchurTensorProduct)
+        {
+          constexpr unsigned int n_patch_dofs_inv =
+            dim * Util::pow(2 * fe_degree + 2, dim - 1) *
+              (2 * (fe_degree + 2) - 3) +
+            Util::pow(2 * fe_degree + 2, dim);
+
+          // local_src, local_dst, tmp
+          shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
+
+          // local_eigenvectors, local_eigenvalues
+          shared_mem +=
+            dim * patch_per_block * n_dofs_1d * dim * sizeof(Number);
+
+          shared_mem += dim * patch_per_block * n_dofs_1d * n_dofs_1d * dim *
+                        sizeof(Number);
+
+          // M D
+          shared_mem += patch_per_block * Util::pow(2 * fe_degree + 3, 2) *
+                        dim * sizeof(Number);
+
+          AssertCuda(cudaFuncSetAttribute(
+            loop_kernel_global<dim, fe_degree, Number, solver>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            shared_mem));
+
+          block_dim =
+            dim3(2 * fe_degree + 3, patch_per_block * 2 * (2 * fe_degree + 3));
         }
       else
         {
@@ -154,65 +183,66 @@ namespace PSMF
   };
 
 
-  template <typename MatrixType,
-            int dim,
-            int fe_degree,
-            typename Number,
-            LocalSolverVariant solver,
-            LaplaceVariant     lapalace>
-  struct LocalSmoother<MatrixType,
-                       dim,
-                       fe_degree,
-                       Number,
-                       solver,
-                       lapalace,
-                       SmootherVariant::ConflictFree>
-  {
-  public:
-    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
+  // template <typename MatrixType,
+  //           int dim,
+  //           int fe_degree,
+  //           typename Number,
+  //           LocalSolverVariant solver,
+  //           LaplaceVariant     lapalace>
+  // struct LocalSmoother<MatrixType,
+  //                      dim,
+  //                      fe_degree,
+  //                      Number,
+  //                      solver,
+  //                      lapalace,
+  //                      SmootherVariant::ConflictFree>
+  // {
+  // public:
+  //   static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
 
-    mutable std::size_t shared_mem;
+  //   mutable std::size_t shared_mem;
 
-    LocalSmoother() = default;
+  //   LocalSmoother() = default;
 
-    LocalSmoother(const SmartPointer<const MatrixType>)
-    {}
+  //   LocalSmoother(const SmartPointer<const MatrixType>)
+  //   {}
 
-    void
-    setup_kernel(const unsigned int patch_per_block) const
-    {
-      shared_mem = 0;
+  //   void
+  //   setup_kernel(const unsigned int patch_per_block) const
+  //   {
+  //     shared_mem = 0;
 
-      const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
-      // local_src, local_dst
-      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
-      // local_eigenvectors, local_eigenvalues
-      shared_mem += (3 + dim - 2) * patch_per_block * n_dofs_1d * n_dofs_1d *
-                    sizeof(Number);
-      // tmp
-      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+  //     const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+  //     // local_src, local_dst
+  //     shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+  //     // local_eigenvectors, local_eigenvalues
+  //     shared_mem += (3 + dim - 2) * patch_per_block * n_dofs_1d * n_dofs_1d *
+  //                   sizeof(Number);
+  //     // tmp
+  //     shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
 
-      AssertCuda(cudaFuncSetAttribute(
-        loop_kernel_fused_cf<dim, fe_degree, Number, lapalace, solver>,
-        cudaFuncAttributeMaxDynamicSharedMemorySize,
-        shared_mem));
-    }
+  //     AssertCuda(cudaFuncSetAttribute(
+  //       loop_kernel_fused_cf<dim, fe_degree, Number, lapalace, solver>,
+  //       cudaFuncAttributeMaxDynamicSharedMemorySize,
+  //       shared_mem));
+  //   }
 
-    template <typename VectorType, typename DataType>
-    void
-    loop_kernel(const VectorType &src,
-                VectorType       &dst,
-                const DataType   &gpu_data,
-                const dim3       &grid_dim,
-                const dim3       &block_dim) const
-    {
-      loop_kernel_fused_cf<dim, fe_degree, Number, lapalace, solver>
-        <<<grid_dim, block_dim, shared_mem>>>(
-          src.get_values(),
-          dst.get_values(),
-          gpu_data[static_cast<int>(solver)]);
-    }
-  };
+  //   template <typename VectorType, typename DataType>
+  //   void
+  //   loop_kernel(const VectorType &src,
+  //               VectorType       &dst,
+  //               const DataType   &gpu_data,
+  //               const dim3       &grid_dim,
+  //               const dim3       &block_dim) const
+  //   {
+  //     loop_kernel_fused_cf<dim, fe_degree, Number, lapalace, solver>
+  //       <<<grid_dim, block_dim, shared_mem>>>(
+  //         src.get_values(),
+  //         dst.get_values(),
+  //         gpu_data[static_cast<int>(solver)]);
+  //   }
+  // }
+  // ;
 
 
 

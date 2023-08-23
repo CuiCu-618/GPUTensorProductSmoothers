@@ -46,7 +46,7 @@ test()
   for (auto d = 0U; d < dim; ++d)
     shape_data[d] = shape_info.get_shape_data(d, 0);
 
-  const Number h              = 4.0;
+  const Number h              = 2.0;
   const Number penalty_factor = 1 * h * (degree + 1) * (degree + 2);
 
   auto cell_mass = [&](unsigned int pos) {
@@ -216,7 +216,7 @@ test()
   auto mass_matrices0    = cell_mass(0);
   auto mass_matrices1    = cell_mass(1);
   auto laplace_matrices0 = cell_laplace(0, 0);
-  auto laplace_matrices1 = cell_laplace(1, 0);
+  auto laplace_matrices1 = cell_laplace(2, 0);
 
   auto mixed   = cell_mixed();
   auto penalty = cell_penalty();
