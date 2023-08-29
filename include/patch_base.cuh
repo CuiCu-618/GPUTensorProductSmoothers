@@ -924,6 +924,30 @@ namespace PSMF
   struct SharedDataSmoother<dim,
                             Number,
                             smoother,
+                            LocalSolverVariant::SchurIter>
+    : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+    using SharedDataBase<Number>::tmp;
+
+    __device__
+    SharedDataSmoother(Number      *data,
+                       unsigned int n_buff,
+                       unsigned int n_dofs_1d,
+                       unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+      tmp       = local_dst + n_buff * local_dim;
+    }
+  };
+
+
+  template <int dim, typename Number, SmootherVariant smoother>
+  struct SharedDataSmoother<dim,
+                            Number,
+                            smoother,
                             LocalSolverVariant::SchurTensorProduct>
     : SharedDataBase<Number>
   {
@@ -1005,8 +1029,8 @@ namespace PSMF
   __host__ __device__ constexpr unsigned int
   granularity_shmem()
   {
-    return dim == 2 ? (fe_degree == 1 ? 32 :
-                       fe_degree == 2 ? 16 :
+    return dim == 2 ? (fe_degree == 1 ? 8 :
+                       fe_degree == 2 ? 4 :
                        fe_degree == 3 ? 4 :
                        fe_degree == 4 ? 2 :
                                         1) :

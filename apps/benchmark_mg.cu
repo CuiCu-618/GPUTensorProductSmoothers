@@ -52,11 +52,24 @@
 #include "app_utilities.h"
 #include "ct_parameter.h"
 #include "cuda_mg_transfer.cuh"
+#include "equation_data.h"
 #include "laplace_operator.cuh"
 #include "patch_base.cuh"
 #include "patch_smoother.cuh"
 
 using namespace dealii;
+
+template <int dim>
+using Solution = Stokes::NoSlipExp::Solution<dim>;
+
+template <int dim>
+using SolutionVelocity = Stokes::NoSlipExp::SolutionVelocity<dim>;
+
+template <int dim>
+using SolutionPressure = Stokes::NoSlipExp::SolutionPressure<dim>;
+
+template <int dim>
+using RightHandSide = Stokes::ManufacturedLoad<dim>;
 
 template <int dim, int fe_degree>
 class LaplaceProblem
@@ -82,6 +95,8 @@ public:
 private:
   void
   setup_system();
+  void
+  assemble_rhs();
   void
   bench_Ax();
   void
@@ -112,6 +127,8 @@ private:
 
   VectorTypeDP solution_dp;
   VectorTypeDP system_rhs_dp;
+
+  VectorTypeDP system_rhs_dev;
 
   VectorTypeSP solution_sp;
   VectorTypeSP system_rhs_sp;
@@ -242,6 +259,173 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   *pcout << "Matrix-free setup time: " << time.wall_time() << "s" << std::endl;
 }
 template <int dim, int fe_degree>
+void
+LaplaceProblem<dim, fe_degree>::assemble_rhs()
+{
+  Timer time;
+
+  SolutionVelocity<dim> exact_solution;
+  RightHandSide<dim>    rhs_function(std::make_shared<Solution<dim>>());
+
+  const unsigned int n_dofs = dof_handler.n_dofs();
+
+  system_rhs_dev.reinit(n_dofs);
+
+  LinearAlgebra::distributed::Vector<double, MemorySpace::Host> system_rhs_host(
+    n_dofs);
+
+  LinearAlgebra::ReadWriteVector<double> rw_vector(n_dofs);
+
+  AffineConstraints<double> constraints;
+  constraints.clear();
+  VectorToolsFix::project_boundary_values_div_conforming(
+    dof_handler_velocity, 0, exact_solution, 0, constraints, MappingQ1<dim>());
+  constraints.close();
+
+  const QGauss<dim>      quadrature_formula(fe_degree + 2);
+  FEValues<dim>          fe_values(dof_handler_velocity.get_fe(),
+                          quadrature_formula,
+                          update_values | update_quadrature_points |
+                            update_JxW_values);
+  FEInterfaceValues<dim> fe_interface_values(dof_handler_velocity.get_fe(),
+                                             QGauss<dim - 1>(fe_degree + 2),
+                                             update_values | update_gradients |
+                                               update_quadrature_points |
+                                               update_hessians |
+                                               update_JxW_values |
+                                               update_normal_vectors);
+
+  const unsigned int dofs_per_cell =
+    dof_handler_velocity.get_fe().n_dofs_per_cell();
+
+  const unsigned int        n_q_points = quadrature_formula.size();
+  Vector<double>            cell_rhs(dofs_per_cell);
+  std::vector<unsigned int> local_dof_indices(dofs_per_cell);
+
+  auto begin = dof_handler_velocity.begin_mg(
+    dof_handler.get_triangulation().n_global_levels() - 1);
+  auto end = dof_handler_velocity.end_mg(
+    dof_handler.get_triangulation().n_global_levels() - 1);
+
+  const FEValuesExtractors::Vector velocities(0);
+
+  for (auto cell = begin; cell != end; ++cell)
+    if (cell->is_locally_owned_on_level())
+      {
+        cell_rhs = 0;
+        fe_values.reinit(cell);
+
+        std::vector<Tensor<1, dim>> load_values;
+        const auto &q_points = fe_values.get_quadrature_points();
+        std::transform(q_points.cbegin(),
+                       q_points.cend(),
+                       std::back_inserter(load_values),
+                       [&](const auto &x_q) {
+                         Tensor<1, dim> value;
+                         for (auto c = 0U; c < dim; ++c)
+                           value[c] = rhs_function.value(x_q, c);
+                         return value;
+                       });
+
+        for (unsigned int q_index = 0; q_index < n_q_points; ++q_index)
+          {
+            for (unsigned int i = 0; i < dofs_per_cell; ++i)
+              cell_rhs(i) += (fe_values[velocities].value(i, q_index) *
+                              load_values[q_index] * fe_values.JxW(q_index));
+          }
+
+        cell->get_mg_dof_indices(local_dof_indices);
+        constraints.distribute_local_to_global(cell_rhs,
+                                               local_dof_indices,
+                                               system_rhs_host);
+      }
+
+  for (auto cell = begin; cell != end; ++cell)
+    if (cell->is_locally_owned_on_level())
+      {
+        for (const unsigned int face_no : cell->face_indices())
+          if (cell->at_boundary(face_no))
+            {
+              fe_interface_values.reinit(cell, face_no);
+
+              const unsigned int n_interface_dofs =
+                fe_interface_values.n_current_interface_dofs();
+              Vector<double> cell_rhs_face(n_interface_dofs);
+              cell_rhs_face = 0;
+
+              const auto &q_points =
+                fe_interface_values.get_quadrature_points();
+              const std::vector<double> &JxW =
+                fe_interface_values.get_JxW_values();
+              const std::vector<Tensor<1, dim>> &normals =
+                fe_interface_values.get_normal_vectors();
+
+              std::vector<Tensor<1, dim>> tangential_solution_values;
+              std::vector<Tensor<1, dim>> solution_values;
+              std::transform(q_points.cbegin(),
+                             q_points.cend(),
+                             std::back_inserter(solution_values),
+                             [&](const auto &x_q) {
+                               Tensor<1, dim> value;
+                               for (auto c = 0U; c < dim; ++c)
+                                 value[c] = exact_solution.value(x_q, c);
+                               return value;
+                             });
+              std::transform(solution_values.cbegin(),
+                             solution_values.cend(),
+                             normals.cbegin(),
+                             std::back_inserter(tangential_solution_values),
+                             [](const auto &u_q, const auto &normal) {
+                               return u_q - ((u_q * normal) * normal);
+                             });
+
+              const unsigned int p = fe_degree;
+              const auto         h = cell->extent_in_direction(
+                GeometryInfo<dim>::unit_normal_direction[face_no]);
+              const auto   one_over_h   = (0.5 / h) + (0.5 / h);
+              const auto   gamma        = p == 0 ? 1 : p * (p + 1);
+              const double gamma_over_h = 2.0 * gamma * one_over_h;
+
+              for (unsigned int qpoint = 0; qpoint < q_points.size(); ++qpoint)
+                {
+                  const auto &n = normals[qpoint];
+
+                  for (unsigned int i = 0; i < n_interface_dofs; ++i)
+                    {
+                      const auto av_gradients_i_dot_n_dot_n =
+                        (fe_interface_values.average_of_shape_gradients(
+                           i, qpoint) *
+                         n * n);
+                      const auto jump_val_i_dot_n =
+                        (fe_interface_values.jump_in_shape_values(i, qpoint) *
+                         n);
+                      cell_rhs_face(i) +=
+                        (-av_gradients_i_dot_n_dot_n * // - {grad v n n }
+                           (tangential_solution_values[qpoint])   //   (u_exact
+                                                                  //   . n)
+                         +                                        // +
+                         gamma_over_h                             //  gamma/h
+                           * jump_val_i_dot_n                     // [v n]
+                           * (tangential_solution_values[qpoint]) // (u_exact
+                                                                  // . n)
+                         ) *
+                        JxW[qpoint];                              // dx
+                    }
+                }
+
+              auto dof_indices =
+                fe_interface_values.get_interface_dof_indices();
+              constraints.distribute_local_to_global(cell_rhs_face,
+                                                     dof_indices,
+                                                     system_rhs_host);
+            }
+      }
+
+  system_rhs_host.compress(VectorOperation::add);
+  rw_vector.import(system_rhs_host, VectorOperation::insert);
+  system_rhs_dev.import(rw_vector, VectorOperation::insert);
+}
+template <int dim, int fe_degree>
 template <PSMF::LaplaceVariant kernel>
 void
 LaplaceProblem<dim, fe_degree>::do_Ax()
@@ -263,18 +447,18 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   matrix_dp.vmult(solution_dp, system_rhs_dp);
   solution_dp.print(std::cout);
 
-  rw_vector     = 0;
-  system_rhs_dp = 0.;
-  for (unsigned int i = 0; i < rw_vector.size(); ++i)
-    {
-      rw_vector[i] = 1.;
-      system_rhs_dp.import(rw_vector, VectorOperation::insert);
-      matrix_dp.vmult(solution_dp, system_rhs_dp);
-      std::cout << i << std::endl;
-      solution_dp.print(std::cout);
-      // std::cout << i << " " << solution_dp.l2_norm() << std::endl;
-      rw_vector[i] = 0;
-    }
+  // rw_vector     = 0;
+  // system_rhs_dp = 0.;
+  // for (unsigned int i = 0; i < rw_vector.size(); ++i)
+  //   {
+  //     rw_vector[i] = 1.;
+  //     system_rhs_dp.import(rw_vector, VectorOperation::insert);
+  //     matrix_dp.vmult(solution_dp, system_rhs_dp);
+  //     std::cout << i << std::endl;
+  //     solution_dp.print(std::cout);
+  //     // std::cout << i << " " << solution_dp.l2_norm() << std::endl;
+  //     rw_vector[i] = 0;
+  //   }
 
   std::cout << "TESTING Ax!!!\n";
 
@@ -528,7 +712,10 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   assign_vector_cuda(system_rhs_dp);
   assign_vector_cuda(solution_dp);
 
-  solution_dp = 0;
+  solution_dp   = 0;
+  system_rhs_dp = system_rhs_dev;
+
+  system_rhs_dp.print(std::cout);
 
   smooth_dp.step(solution_dp, system_rhs_dp);
 
@@ -746,6 +933,7 @@ LaplaceProblem<dim, fe_degree>::run()
   triangulation.refine_global(n_refinement);
 
   setup_system();
+  assemble_rhs();
   bench_Ax();
   bench_transfer();
   bench_smooth();

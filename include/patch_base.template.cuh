@@ -1489,7 +1489,7 @@ namespace PSMF
                 PatchMatrix(i + ind_v_b.size() / dim, j + ind_v_b.size()) =
                   Bt_y(ind_p1[j], i);
 
-            for (auto i = 0; i < ind_v_b.size(); ++i)
+            for (auto i = 0U; i < ind_v_b.size(); ++i)
               for (auto j = 0U; j < ind_p1_b.size(); ++j)
                 {
                   AA(i, j + ind_v_b.size()) =

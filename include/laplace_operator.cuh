@@ -139,8 +139,11 @@ namespace PSMF
       static constexpr unsigned int n_patch_dofs =
         n_patch_dofs_rt + n_patch_dofs_dg;
 
-      // local_src, local_dst, tmp
-      shared_mem += 3 * patch_per_block * n_patch_dofs * sizeof(Number);
+      // local_src, local_dst
+      shared_mem += 2 * patch_per_block * n_patch_dofs * sizeof(Number);
+
+      // tmp
+      shared_mem += (dim - 1) * patch_per_block * n_patch_dofs * sizeof(Number);
 
       // L M
       shared_mem += dim * patch_per_block * dim * 2 *

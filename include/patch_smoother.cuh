@@ -98,9 +98,9 @@ namespace PSMF
 
           // local_src, local_dst
           shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
-          shared_mem += 3 * patch_per_block *
+          shared_mem += 4 * patch_per_block *
                         Util::pow(2 * fe_degree + 2, dim) * sizeof(Number);
-          shared_mem += 3 * sizeof(Number);
+          shared_mem += 6 * sizeof(Number);
 
           AssertCuda(cudaFuncSetAttribute(
             loop_kernel_global<dim, fe_degree, Number, solver>,
@@ -117,6 +117,9 @@ namespace PSMF
             Util::pow(2 * fe_degree + 2, dim);
 
           // local_src, local_dst, tmp
+          shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
+
+          // CG
           shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
 
           // local_eigenvectors, local_eigenvalues

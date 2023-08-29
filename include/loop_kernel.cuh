@@ -581,12 +581,12 @@ namespace PSMF
 
         {
           // D
-          const int shift1 = local_patch * n_dofs_2d * dim;
+          const int shift1 = local_patch * n_dofs_2d * 1;
           if (tid < (n_dofs_1d - 2) * (n_dofs_1d - 1))
             shared_data.local_mix_der[shift1 + tid] =
               -gpu_data.smooth_mixder_1d[0][tid];
           // M
-          const int shift2 = local_patch * n_dofs_2d * dim * (dim - 1);
+          const int shift2 = local_patch * n_dofs_2d * (dim - 1);
           if (tid < (n_dofs_1d - 1) * (n_dofs_1d - 1))
             shared_data.local_mix_mass[shift2 + tid] =
               gpu_data.smooth_mixmass_1d[1][tid];
@@ -598,9 +598,6 @@ namespace PSMF
                   gpu_data.mix_mass_1d[2][tid];
             }
         }
-
-        // if (threadIdx.y == 0 || tid < 30)
-        //   printf("[%e, %d] ", shared_data.local_mix_mass[tid], tid);
 
         for (unsigned int i = 0; i < n_patch_dofs_rt / block_size + 1; ++i)
           if (tid + i * block_size < n_patch_dofs_rt)
@@ -626,18 +623,14 @@ namespace PSMF
                   .patch_dof_smooth[patch * n_patch_dofs_all +
                                     n_patch_dofs_rt_all + tid + i * block_size];
 
-              shared_data.local_src[local_patch * n_patch_dofs +
-                                    n_patch_dofs_rt + tid + i * block_size] =
-                src[global_dof_index];
+              shared_data
+                .local_src[local_patch * n_patch_dofs + n_patch_dofs_rt +
+                           ltoh_dgn[tid + i * block_size]] =
+                -src[global_dof_index];
               shared_data.local_dst[local_patch * n_patch_dofs +
-                                    n_patch_dofs_rt + tid + i * block_size] =
-                dst[global_dof_index];
+                                    n_patch_dofs_rt + tid + i * block_size] = 0;
             }
         __syncthreads();
-
-        constexpr unsigned int matrix_size   = Util::pow(n_patch_dofs, 2);
-        constexpr unsigned int matrix_size_U = Util::pow(n_patch_dofs_rt, 2);
-        constexpr unsigned int matrix_size_P = Util::pow(n_patch_dofs_dg, 2);
 
         /// B^T M^-1 B P = B^T M^-1 F - G
         // B^T M^-1 F - G
@@ -645,47 +638,48 @@ namespace PSMF
           local_patch, &shared_data);
         __syncthreads();
 
-        // B^T M^-1 B P = B^T M^-1 F - G
-        for (unsigned int row = 0; row < n_patch_dofs_dg; ++row)
-          {
-            for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1; ++i)
-              if (tid + i * block_size < n_patch_dofs_dg)
-                {
-                  auto val =
-                    -gpu_data.inverse_schur[patch_type * matrix_size_P +
-                                            row * n_patch_dofs_dg + tid +
-                                            i * block_size] *
-                    shared_data
-                      .local_src[local_patch * n_patch_dofs + n_patch_dofs_rt +
-                                 tid + i * block_size];
-
-                  atomicAdd(&shared_data.tmp[local_patch * n_patch_dofs +
-                                             n_patch_dofs_rt + row],
-                            val);
-                }
-          }
+        evaluate_smooth_cg<dim, fe_degree, Number, decltype(shared_data)>(
+          local_patch, &shared_data);
         __syncthreads();
+
+        // for (unsigned int row = 0; row < n_patch_dofs_dg; ++row)
+        //   {
+        //     for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1;
+        //     ++i)
+        //       if (tid + i * block_size < n_patch_dofs_dg)
+        //         {
+        //           auto val =
+        //             -gpu_data.inverse_schur[patch_type * matrix_size_P +
+        //                                     row * n_patch_dofs_dg + tid +
+        //                                     i * block_size] *
+        //             shared_data
+        //               .local_src[local_patch * n_patch_dofs + n_patch_dofs_rt
+        //               +
+        //                          tid + i * block_size];
+
+        //           atomicAdd(&shared_data.tmp[local_patch * n_patch_dofs +
+        //                                      n_patch_dofs_rt + row],
+        //                     val);
+        //         }
+        //   }
+        // __syncthreads();
+
         for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1; ++i)
           if (tid + i * block_size < n_patch_dofs_dg)
             {
               shared_data.local_dst[local_patch * n_patch_dofs +
-                                    n_patch_dofs_rt + tid + i * block_size] +=
-                shared_data.tmp[local_patch * n_patch_dofs + n_patch_dofs_rt +
-                                tid + i * block_size];
+                                    n_patch_dofs_rt + tid + i * block_size] =
+                shared_data.local_src[local_patch * n_patch_dofs +
+                                      ltoh_dgn[tid + i * block_size]];
 
-              shared_data
-                .local_src[local_patch * n_patch_dofs +
-                           0 * n_patch_dofs_rt / dim + tid + i * block_size] =
-                shared_data.tmp[local_patch * n_patch_dofs + n_patch_dofs_rt +
-                                htol_dgn[tid + i * block_size]];
               shared_data
                 .local_src[local_patch * n_patch_dofs +
                            2 * n_patch_dofs_rt / dim + tid + i * block_size] =
-                shared_data.tmp[local_patch * n_patch_dofs + n_patch_dofs_rt +
-                                htol_dgt[tid + i * block_size]];
+                shared_data.local_src[local_patch * n_patch_dofs +
+                                      ltoh_dgn[htol_dgt[tid + i * block_size]]];
             }
 
-        // /// M U = F - B P
+        /// M U = F - B P
         evaluate_smooth_u<dim, fe_degree, Number, decltype(shared_data)>(
           local_patch, &shared_data);
         __syncthreads();
@@ -713,7 +707,7 @@ namespace PSMF
                   .patch_dof_smooth[patch * n_patch_dofs_all +
                                     n_patch_dofs_rt_all + tid + i * block_size];
 
-              dst[global_dof_index] =
+              dst[global_dof_index] +=
                 shared_data.local_dst[local_patch * n_patch_dofs +
                                       n_patch_dofs_rt + tid + i * block_size] *
                 gpu_data.relaxation;
@@ -745,6 +739,7 @@ namespace PSMF
 
     if (tid == 0)
       result[0] = 0;
+    __syncthreads();
 
     for (unsigned int i = 0; i < matrix_dim / blockDim.x + 1; ++i)
       if (tid + i * blockDim.x < matrix_dim)
@@ -774,33 +769,139 @@ namespace PSMF
   __device__ void
   solver_CG(const Number *A, Number *x, Number *p, Number *r, Number *tmp)
   {
-    const unsigned int     tid    = threadIdx.x;
-    constexpr unsigned int MAX_IT = 20;
+    const unsigned int tid    = threadIdx.x;
+    constexpr int      MAX_IT = 20;
+    // constexpr int      n_cells = 1 << 2;
+
+    Number *rsold    = &tmp[2 * matrix_dim + 0];
+    Number *norm_min = &tmp[2 * matrix_dim + 1];
+    Number *norm_act = &tmp[2 * matrix_dim + 2];
+
+    Number *alpha = &tmp[2 * matrix_dim + 3];
+    Number *beta  = &tmp[2 * matrix_dim + 4];
+
+    Number *rsnew = &tmp[2 * matrix_dim + 5];
+
+    VecDot<matrix_dim, Number>(r, r, rsold);
+
+    *norm_min = sqrt(*rsold);
+    *norm_act = sqrt(*rsold);
+
+    if (tid == 0)
+      {
+        // printf("%.3e %.3e %.3e", *rsold, *norm_min, *norm_act);
+        // printf("\nDEVICE scaler \n");
+
+        // for (unsigned int i = 0; i < matrix_dim; ++i)
+        //   printf("%.3e ", p[i]);
+        // printf("\nDEVICE p \n");
+
+        // for (unsigned int i = 0; i < matrix_dim; ++i)
+        //   printf("%.3e ", r[i]);
+        // printf("\nDEVICE r \n");
+      }
+
     for (unsigned int it = 0; it < MAX_IT; ++it)
       {
-        VecDot<matrix_dim, Number>(r, r, &tmp[matrix_dim + 1]);
         MatVecMul<matrix_dim, Number>(A, p, tmp);
         __syncthreads();
-        VecDot<matrix_dim, Number>(p, tmp, &tmp[matrix_dim + 3]);
+
+        // if (tid == 0 && it >= 0)
+        //   {
+        //     for (unsigned int i = 0; i < matrix_dim; ++i)
+        //       printf("%.3e ", tmp[i]);
+        //     printf("\nDEVICE A*p \n");
+        //   }
+
+
+        VecDot<matrix_dim, Number>(p, tmp, alpha);
         __syncthreads();
 
-        auto alpha = tmp[matrix_dim + 1] / tmp[matrix_dim + 3];
-        VecOp<matrix_dim, Number, false>(x, p, alpha);
-        VecOp<matrix_dim, Number, false>(r, tmp, -alpha);
+        // if (tid == 0)
+        //   {
+        //     printf("%.3e ", *alpha);
+        //     printf("\nDEVICE ALPHA \n");
+        //   }
+
+        // if (*alpha < 0)
+        //   {
+        //     if (tid == 0 && blockIdx.x == 0)
+        //       printf("ALPHA # it: %d, residual: %e\n", it, *norm_min);
+
+        //     for (unsigned int c = 0; c < n_cells; ++c)
+        //       tmp[matrix_dim + c * matrix_dim / n_cells] = 0;
+
+        //     return;
+        //   }
+
+        if (tid == 0)
+          *alpha = *rsold / *alpha;
         __syncthreads();
 
-        VecDot<matrix_dim, Number>(r, r, &tmp[matrix_dim + 2]);
+        // if (tid == 0)
+        //   {
+        //     printf("%.3e ", *alpha);
+        //     printf("\nDEVICE ALPHA \n");
+        //   }
+
+        VecOp<matrix_dim, Number, false>(x, p, *alpha);
+        VecOp<matrix_dim, Number, false>(r, tmp, -*alpha);
         __syncthreads();
-        if (sqrt(tmp[matrix_dim + 2]) < 1e-14)
+
+        VecDot<matrix_dim, Number>(r, r, rsnew);
+        __syncthreads();
+
+        if (tid == 0)
+          *norm_act = sqrt(*rsnew);
+        __syncthreads();
+
+        // if (tid == 0)
+        //   {
+        //     printf("%.3e %.3e", *norm_act, *norm_min);
+        //     printf("\nDEVICE NORM \n");
+        //   }
+        __syncthreads();
+        if (*norm_act < *norm_min)
           {
-            if (tid == 0)
-              printf("# it: %d, residual: %e\n", it, sqrt(tmp[matrix_dim + 2]));
+            *norm_min = *norm_act;
+            VecOp<matrix_dim, Number, true>(&tmp[matrix_dim], x, 0);
+
+            // if (tid == 0)
+            //   {
+            //     for (unsigned int i = 0; i < matrix_dim; ++i)
+            //       printf("%.3e ", tmp[matrix_dim + i]);
+            //     printf("\nDEVICE minx \n");
+            //   }
+          }
+
+        if (*norm_min < 1e-10)
+          {
+            if (tid == 0 && blockIdx.x == 0)
+              printf("# it: %d, residual: %e\n", it, *norm_min);
+
+            // if (tid == 0)
+            //   {
+            //     for (unsigned int i = 0; i < matrix_dim; ++i)
+            //       printf("%.3e ", tmp[matrix_dim + i]);
+            //     printf("\nDEVICE minx \n");
+            //   }
 
             return;
           }
-        auto beta = tmp[matrix_dim + 2] / tmp[matrix_dim + 1];
-        VecOp<matrix_dim, Number, true>(p, r, beta);
+
+        if (tid == 0)
+          *beta = *rsnew / *rsold;
         __syncthreads();
+
+        // if (tid == 0)
+        //   {
+        //     printf("%.3e ", *beta);
+        //     printf("\nDEVICE BETA \n");
+        //   }
+
+        VecOp<matrix_dim, Number, true>(p, r, *beta);
+        __syncthreads();
+        *rsold = *rsnew;
       }
   }
 
@@ -896,29 +997,43 @@ namespace PSMF
         for (unsigned int i = 0; i < n_patch_dofs_dg / blockDim.x + 1; ++i)
           if (tid + i * blockDim.x < n_patch_dofs_dg)
             {
-              shared_data.tmp[n_patch_dofs_all + tid + i * blockDim.x] =
+              shared_data.tmp[n_patch_dofs + tid + i * blockDim.x] =
                 -shared_data.local_src[n_patch_dofs_rt + tid + i * blockDim.x];
-              shared_data.tmp[n_patch_dofs_all + n_patch_dofs_dg + tid +
-                              i * blockDim.x] =
+              shared_data
+                .tmp[n_patch_dofs + n_patch_dofs_dg + tid + i * blockDim.x] =
                 -shared_data.local_src[n_patch_dofs_rt + tid + i * blockDim.x];
-              shared_data.tmp[n_patch_dofs_all + 2 * n_patch_dofs_dg + tid +
-                              i * blockDim.x] = 0;
             }
         __syncthreads();
+
+        // if (tid == 0)
+        //   {
+        //     for (unsigned int i = 0; i < n_patch_dofs_dg; ++i)
+        //       printf("%.3e ", shared_data.local_src[n_patch_dofs_rt + i]);
+        //     printf("\nDEVICE BMF-G \n");
+        //   }
 
         // B^T M^-1 B P = B^T M^-1 F - G
         solver_CG<n_patch_dofs_dg, Number>(
           &gpu_data.eigenvalues[patch_type * matrix_size + matrix_size_U],
           &shared_data.tmp[n_patch_dofs_rt],
-          &shared_data.tmp[n_patch_dofs_all],
-          &shared_data.tmp[n_patch_dofs_all + n_patch_dofs_dg],
-          &shared_data.tmp[n_patch_dofs_all + n_patch_dofs_dg * 2]);
+          &shared_data.tmp[n_patch_dofs],
+          &shared_data.tmp[n_patch_dofs + n_patch_dofs_dg],
+          &shared_data.tmp[n_patch_dofs + n_patch_dofs_dg * 2]);
         __syncthreads();
+
+        if (tid == 0)
+          {
+            for (unsigned int i = 0; i < n_patch_dofs_dg; ++i)
+              printf("%.3e ",
+                     shared_data.tmp[n_patch_dofs + 3 * n_patch_dofs_dg + i]);
+            printf("\nDEVICE P \n");
+          }
 
         for (unsigned int i = 0; i < n_patch_dofs_dg / blockDim.x + 1; ++i)
           if (tid + i * blockDim.x < n_patch_dofs_dg)
             shared_data.local_dst[n_patch_dofs_rt + tid + i * blockDim.x] +=
-              shared_data.tmp[n_patch_dofs_rt + tid + i * blockDim.x];
+              shared_data
+                .tmp[n_patch_dofs + 3 * n_patch_dofs_dg + tid + i * blockDim.x];
 
         /// M U = F - B P
         // F - B P
@@ -932,7 +1047,8 @@ namespace PSMF
                        .eigenvalues[patch_type * matrix_size + matrix_size_U +
                                     matrix_size_P + row * n_patch_dofs_dg +
                                     tid + i * blockDim.x] *
-                    shared_data.tmp[n_patch_dofs_rt + tid + i * blockDim.x];
+                    shared_data.tmp[n_patch_dofs + 3 * n_patch_dofs_dg + tid +
+                                    i * blockDim.x];
 
                   atomicAdd(&shared_data.local_src[row], val);
                 }

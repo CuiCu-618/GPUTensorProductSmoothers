@@ -444,6 +444,8 @@ namespace Step64
     rw_vector.import(system_rhs_host, VectorOperation::insert);
     system_rhs_dev.import(rw_vector, VectorOperation::insert);
 
+    // system_rhs_dev.print(std::cout);
+
     *pcout << "RHS setup time:         " << time.wall_time() << "s"
            << std::endl;
   }
