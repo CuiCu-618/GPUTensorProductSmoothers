@@ -702,7 +702,7 @@ namespace PSMF
         comp_data.push_back(data);
       };
 
-      for (unsigned int s = 0; s < 2; ++s)
+      for (unsigned int s = 0; s < 1; ++s)
         {
           switch (s)
             {

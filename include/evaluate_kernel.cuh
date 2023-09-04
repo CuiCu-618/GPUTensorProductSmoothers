@@ -1349,9 +1349,9 @@ namespace PSMF
     Number *Ap =
       &shared_data->tmp[local_patch * n_patch_dofs * 4 + n_patch_dofs];
     Number *p =
-      &shared_data->tmp[local_patch * n_patch_dofs * 4 + n_patch_dofs_rt];
-    Number *tmp =
       &shared_data->tmp[local_patch * n_patch_dofs * 4 + 2 * n_patch_dofs];
+    Number *tmp =
+      &shared_data->tmp[local_patch * n_patch_dofs * 4 + 3 * n_patch_dofs];
     __syncthreads();
 
     for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1; ++i)
@@ -1359,7 +1359,6 @@ namespace PSMF
         {
           p[tid + i * block_size] = r[tid + i * block_size];
         }
-    __syncthreads();
 
     constexpr int MAX_IT = 100;
 
@@ -1375,6 +1374,7 @@ namespace PSMF
     Number *it_min = &tmp[1 * n_patch_dofs + 6];
 
     innerProd<n_patch_dofs_dg, Number>(tid, block_size, r, r, rsold);
+    __syncthreads();
 
     if (tid == 0)
       {
@@ -1429,7 +1429,7 @@ namespace PSMF
 
             local_norm_min = local_norm_act;
           }
-        else
+        else if (local_norm_act >= local_norm_min || fabs(*alpha) < 1e-10)
           {
             VecSadd<n_patch_dofs_dg, Number, true>(
               tid,
@@ -1444,7 +1444,7 @@ namespace PSMF
         VecSadd<n_patch_dofs_dg, Number, false>(tid, block_size, x, p, *alpha);
         __syncthreads();
 
-        if (*norm_min < 1e-14)
+        if (*norm_min < 1e-15)
           {
             // if (tid == 0 && blockIdx.x == 0)
             //   printf("# it: %d, #it min: %f, residual: %e\n", it, *it_min,

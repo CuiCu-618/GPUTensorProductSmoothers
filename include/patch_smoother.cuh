@@ -121,6 +121,7 @@ namespace PSMF
 
           // CG
           shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
+          shared_mem += 7 * sizeof(Number);
 
           // local_eigenvectors, local_eigenvalues
           shared_mem +=
