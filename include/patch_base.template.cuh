@@ -1145,7 +1145,7 @@ namespace PSMF
               LAPACKFullMatrix<double> exact_inverse(AA_inv.m(), AA_inv.n());
               exact_inverse = AA_inv;
               // Timer time;
-              // exact_inverse.compute_inverse_svd_with_kernel(1);
+              exact_inverse.compute_inverse_svd_with_kernel(1);
               // std::cout << k + j * 3 + z * 9 << " " << time.wall_time() <<
               // std::endl;
               Vector<double> tmp(AA_inv.m());
