@@ -121,7 +121,7 @@ namespace PSMF
 
           // CG
           shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
-          shared_mem += 7 * sizeof(Number);
+          shared_mem += 7 * patch_per_block * sizeof(Number);
 
           // local_eigenvectors, local_eigenvalues
           shared_mem +=
@@ -139,8 +139,8 @@ namespace PSMF
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             shared_mem));
 
-          block_dim =
-            dim3(2 * fe_degree + 3, patch_per_block * 2 * (2 * fe_degree + 3));
+          block_dim = dim3(2 * fe_degree + 3,
+                           patch_per_block * dim * (2 * fe_degree + 3));
         }
       else
         {

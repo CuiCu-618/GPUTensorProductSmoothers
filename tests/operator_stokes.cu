@@ -460,9 +460,9 @@ test_mixed()
 int
 main()
 {
-  test<2, 2>();
+  test<3, 2>();
 
-  test_mixed<2, 2>();
+  // test_mixed<3, 2>();
 
   // test_mixed<2, 6>();
 

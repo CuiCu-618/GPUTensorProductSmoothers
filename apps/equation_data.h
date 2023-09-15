@@ -203,6 +203,10 @@ namespace Stokes
   const std::vector<double> SolutionBase<2>::polynomial_coefficients = {
     {0., 0., 1., -2., 1.}};
 
+  template <>
+  const std::vector<double> SolutionBase<3>::polynomial_coefficients = {
+    {0., 0., 1., -2., 1.}};
+
 
   namespace NoSlip
   {
@@ -602,7 +606,7 @@ namespace Stokes
       template <int dim>
       class Solution : public Function<dim>, protected SolutionBase<dim>
       {
-        static_assert(dim == 2, "Implemented for two dimensions.");
+        // static_assert(dim == 2, "Implemented for two dimensions.");
 
       public:
         Solution()
@@ -621,7 +625,15 @@ namespace Stokes
           const double s_x = univariate_value(x);
           const double s_y = univariate_value(y);
 
-          return s_x * s_y;
+          if (dim == 2)
+            return s_x * s_y;
+          else if (dim == 3)
+            {
+              const auto   z   = p[2];
+              const double s_z = univariate_value(z);
+
+              return s_x * s_y * s_z;
+            }
         }
 
         virtual Tensor<1, dim>
@@ -637,10 +649,26 @@ namespace Stokes
           const double Ds_y = univariate_first_derivative(y);
 
           Tensor<1, dim> grad;
-          grad[0] = Ds_x * s_y;
-          grad[1] = s_x * Ds_y;
 
-          return grad;
+          if (dim == 2)
+            {
+              grad[0] = Ds_x * s_y;
+              grad[1] = s_x * Ds_y;
+
+              return grad;
+            }
+          else if (dim == 3)
+            {
+              const auto   z    = p[2];
+              const double s_z  = univariate_value(z);
+              const double Ds_z = univariate_first_derivative(z);
+
+              grad[0] = Ds_x * s_y * s_z;
+              grad[1] = s_x * Ds_y * s_z;
+              grad[2] = s_x * s_y * Ds_z;
+
+              return grad;
+            }
         }
 
         virtual SymmetricTensor<2, dim>
@@ -658,11 +686,33 @@ namespace Stokes
           const double D2s_y = univariate_second_derivative(y);
 
           SymmetricTensor<2, dim> hess;
-          hess[0][0] = D2s_x * s_y;
-          hess[0][1] = Ds_x * Ds_y;
-          hess[1][1] = s_x * D2s_y;
 
-          return hess;
+          if (dim == 2)
+            {
+              hess[0][0] = D2s_x * s_y;
+              hess[0][1] = Ds_x * Ds_y;
+              hess[1][1] = s_x * D2s_y;
+
+              return hess;
+            }
+          else if (dim == 3)
+            {
+              const auto   z     = p[2];
+              const double s_z   = univariate_value(z);
+              const double Ds_z  = univariate_first_derivative(z);
+              const double D2s_z = univariate_second_derivative(z);
+
+              hess[0][0] = D2s_x * s_y * s_z;
+              hess[0][1] = Ds_x * Ds_y * s_z;
+              hess[0][2] = Ds_x * s_y * Ds_z;
+
+              hess[1][1] = s_x * D2s_y * s_z;
+              hess[1][2] = s_x * Ds_y * Ds_z;
+
+              hess[2][2] = s_x * s_y * D2s_z;
+
+              return hess;
+            }
         }
 
         double
@@ -756,7 +806,7 @@ namespace Stokes
     template <int dim>
     class SolutionVelocity : public Function<dim>
     {
-      static_assert(dim == 2, "Implemented for two dimensions.");
+      // static_assert(dim == 2, "Implemented for two dimensions.");
 
     public:
       SolutionVelocity()
@@ -777,13 +827,32 @@ namespace Stokes
         const auto s_y  = phi.univariate_value(y);
         const auto Ds_y = phi.univariate_first_derivative(y);
 
-        double val = 0.;
-        if (component == 0U)
-          val = s_x * Ds_y;
-        else if (component == 1U)
-          val = -Ds_x * s_y;
+        if (dim == 2)
+          {
+            double val = 0.;
+            if (component == 0U)
+              val = s_x * Ds_y;
+            else if (component == 1U)
+              val = -Ds_x * s_y;
 
-        return val;
+            return val;
+          }
+        else if (dim == 3)
+          {
+            const auto z    = p[2];
+            const auto s_z  = phi.univariate_value(z);
+            const auto Ds_z = phi.univariate_first_derivative(z);
+
+            double val = 0.;
+            if (component == 0U)
+              val = s_x * Ds_y * s_z + s_x * s_y * Ds_z;
+            else if (component == 1U)
+              val = -Ds_x * s_y * s_z - s_x * s_y * Ds_z;
+            else if (component == 2U)
+              val = -Ds_x * s_y * s_z + s_x * Ds_y * s_z;
+
+            return val;
+          }
       }
 
       virtual Tensor<1, dim>
@@ -803,18 +872,49 @@ namespace Stokes
         const auto D2s_y = phi.univariate_second_derivative(y);
 
         Tensor<1, dim> grad;
-        if (component == 0U)
+        if (dim == 2)
           {
-            grad[0] = Ds_x * Ds_y;
-            grad[1] = s_x * D2s_y;
-          }
-        else if (component == 1U)
-          {
-            grad[0] = -D2s_x * s_y;
-            grad[1] = -Ds_x * Ds_y;
-          }
+            if (component == 0U)
+              {
+                grad[0] = Ds_x * Ds_y;
+                grad[1] = s_x * D2s_y;
+              }
+            else if (component == 1U)
+              {
+                grad[0] = -D2s_x * s_y;
+                grad[1] = -Ds_x * Ds_y;
+              }
 
-        return grad;
+            return grad;
+          }
+        else if (dim == 3)
+          {
+            const auto z     = p[2];
+            const auto s_z   = phi.univariate_value(z);
+            const auto Ds_z  = phi.univariate_first_derivative(z);
+            const auto D2s_z = phi.univariate_second_derivative(z);
+
+            if (component == 0U)
+              {
+                grad[0] = Ds_x * Ds_y * s_z + Ds_x * s_y * Ds_z;
+                grad[1] = s_x * D2s_y * s_z + s_x * Ds_y * Ds_z;
+                grad[2] = s_x * Ds_y * Ds_z + s_x * s_y * D2s_z;
+              }
+            else if (component == 1U)
+              {
+                grad[0] = -D2s_x * s_y * s_z - Ds_x * s_y * Ds_z;
+                grad[1] = -Ds_x * Ds_y * s_z - s_x * Ds_y * Ds_z;
+                grad[2] = -Ds_x * s_y * Ds_z - s_x * s_y * D2s_z;
+              }
+            else if (component == 2U)
+              {
+                grad[0] = -D2s_x * s_y * s_z + Ds_x * Ds_y * s_z;
+                grad[1] = -Ds_x * Ds_y * s_z + s_x * D2s_y * s_z;
+                grad[2] = -Ds_x * s_y * Ds_z + s_x * Ds_y * Ds_z;
+              }
+
+            return grad;
+          }
       }
 
       virtual SymmetricTensor<2, dim>
@@ -836,20 +936,68 @@ namespace Stokes
         const auto D3s_y = phi.univariate_third_derivative(y);
 
         SymmetricTensor<2, dim> hess;
-        if (component == 0U)
-          {
-            hess[0][0] = D2s_x * Ds_y;
-            hess[0][1] = Ds_x * D2s_y;
-            hess[1][1] = s_x * D3s_y;
-          }
-        else if (component == 1U)
-          {
-            hess[0][0] = -D3s_x * s_y;
-            hess[0][1] = -D2s_x * Ds_y;
-            hess[1][1] = -Ds_x * D2s_y;
-          }
 
-        return hess;
+        if (dim == 2)
+          {
+            if (component == 0U)
+              {
+                hess[0][0] = D2s_x * Ds_y;
+                hess[0][1] = Ds_x * D2s_y;
+                hess[1][1] = s_x * D3s_y;
+              }
+            else if (component == 1U)
+              {
+                hess[0][0] = -D3s_x * s_y;
+                hess[0][1] = -D2s_x * Ds_y;
+                hess[1][1] = -Ds_x * D2s_y;
+              }
+
+            return hess;
+          }
+        else if (dim == 3)
+          {
+            const auto z     = p[2];
+            const auto s_z   = phi.univariate_value(z);
+            const auto Ds_z  = phi.univariate_first_derivative(z);
+            const auto D2s_z = phi.univariate_second_derivative(z);
+            const auto D3s_z = phi.univariate_third_derivative(z);
+
+            if (component == 0U)
+              {
+                hess[0][0] = D2s_x * Ds_y * s_z + D2s_x * s_y * Ds_z;
+                hess[0][1] = Ds_x * D2s_y * s_z + Ds_x * Ds_y * Ds_z;
+                hess[0][2] = Ds_x * Ds_y * Ds_z + Ds_x * s_y * D2s_z;
+
+                hess[1][1] = s_x * D3s_y * s_z + s_x * D2s_y * Ds_z;
+                hess[1][2] = s_x * D2s_y * Ds_z + s_x * Ds_y * D2s_z;
+
+                hess[2][2] = s_x * Ds_y * D2s_z + s_x * s_y * D3s_z;
+              }
+            else if (component == 1U)
+              {
+                hess[0][0] = -D3s_x * s_y * s_z - D2s_x * s_y * Ds_z;
+                hess[0][1] = -D2s_x * Ds_y * s_z - Ds_x * Ds_y * Ds_z;
+                hess[0][2] = -D2s_x * s_y * Ds_z - Ds_x * s_y * D2s_z;
+
+                hess[1][1] = -Ds_x * D2s_y * s_z - s_x * D2s_y * Ds_z;
+                hess[1][2] = -Ds_x * Ds_y * Ds_z - s_x * Ds_y * D2s_z;
+
+                hess[2][2] = -Ds_x * s_y * D2s_z - s_x * s_y * D3s_z;
+              }
+            else if (component == 2U)
+              {
+                hess[0][0] = -D3s_x * s_y * s_z + D2s_x * Ds_y * s_z;
+                hess[0][1] = -D2s_x * Ds_y * s_z + Ds_x * D2s_y * s_z;
+                hess[0][2] = -D2s_x * s_y * Ds_z + Ds_x * Ds_y * Ds_z;
+
+                hess[1][1] = -Ds_x * D2s_y * s_z + s_x * D3s_y * s_z;
+                hess[1][2] = -Ds_x * Ds_y * Ds_z + s_x * D2s_y * Ds_z;
+
+                hess[2][2] = -Ds_x * s_y * D2s_z + s_x * Ds_y * D2s_z;
+              }
+
+            return hess;
+          }
       }
 
     private:
@@ -859,12 +1007,13 @@ namespace Stokes
 
 
     /**
-     *    p(x,y) = cos(2*PI*x) * cos(2*PI*y)
+     *    p(x,y) = cos(2*PI*x) * cos(2*PI*y) in 2d, and
+     *    p(x,y) = cos(2*PI*x) * cos(2*PI*y) * cos(2*PI*z) in 3d.
      */
     template <int dim>
     class SolutionPressure : public Function<dim>
     {
-      static_assert(dim == 2, "Implemented for two dimensions.");
+      // static_assert(dim == 2, "Implemented for two dimensions.");
 
     public:
       SolutionPressure()
@@ -920,7 +1069,47 @@ namespace Stokes
       return SymmetricTensor<2, 2>{};
     }
 
+    template <>
+    double
+    SolutionPressure<3>::value(const Point<3> &p, const unsigned int) const
+    {
+      using numbers::PI;
+      const double x = p(0);
+      const double y = p(1);
+      const double z = p(2);
 
+      return cos(2. * PI * x) * cos(2. * PI * y) * cos(2. * PI * z);
+    }
+
+    template <>
+    Tensor<1, 3>
+    SolutionPressure<3>::gradient(const Point<3> &p, const unsigned int) const
+    {
+      using numbers::PI;
+      const double x = p(0);
+      const double y = p(1);
+      const double z = p(2);
+
+      Tensor<1, 3> grad;
+      {
+        grad[0] =
+          -2. * PI * sin(2. * PI * x) * cos(2. * PI * y) * cos(2. * PI * z);
+        grad[1] =
+          -2. * PI * cos(2. * PI * x) * sin(2. * PI * y) * cos(2. * PI * z);
+        grad[2] =
+          -2. * PI * cos(2. * PI * x) * cos(2. * PI * y) * sin(2. * PI * z);
+      }
+
+      return grad;
+    }
+
+    template <>
+    SymmetricTensor<2, 3>
+    SolutionPressure<3>::hessian(const Point<3> &, const unsigned int) const
+    {
+      AssertThrow(false, ExcMessage("No need for this functionality..."));
+      return SymmetricTensor<2, 3>{};
+    }
 
     template <int dim>
     using Solution =

@@ -17,6 +17,8 @@
 
 #include <deal.II/matrix_free/shape_info.h>
 
+#include <omp.h>
+
 #include <fstream>
 
 #include "TPSS/tensors.h"
@@ -566,8 +568,11 @@ namespace PSMF
 
     auto htol_dgn_host = dm.get_h_to_l_dg_normal();
     auto htol_dgt_host = dm.get_h_to_l_dg_tangent();
+    auto htol_dgz_host = dm.get_h_to_l_dg_z();
+
     auto ltoh_dgn_host = dm.get_l_to_h_dg_normal();
     auto ltoh_dgt_host = dm.get_l_to_h_dg_tangent();
+    auto ltoh_dgz_host = dm.get_l_to_h_dg_z();
 
 
     std::sort(h_interior_host_rt.begin(), h_interior_host_rt.end());
@@ -596,14 +601,17 @@ namespace PSMF
     copy_mappings(h_interior, h_interior_host_rt);
 
     copy_mappings(htol_rt, htol_rt_host);
-    copy_mappings(ltoh_rt, ltoh_rt_host);
+    // copy_mappings(ltoh_rt, ltoh_rt_host);
 
     copy_mappings(htol_rt_interior, htol_rt_interior_host);
 
     copy_mappings(htol_dgn, htol_dgn_host);
-    copy_mappings(htol_dgt, htol_dgt_host);
+    // copy_mappings(htol_dgt, htol_dgt_host);
+    // copy_mappings(htol_dgz, htol_dgz_host);
+
     copy_mappings(ltoh_dgn, ltoh_dgn_host);
     copy_mappings(ltoh_dgt, ltoh_dgt_host);
+    copy_mappings(ltoh_dgz, ltoh_dgz_host);
 
 
     auto copy_to_device = [](auto &device, const auto &host) {
@@ -665,7 +673,9 @@ namespace PSMF
       }
 
     reinit_tensor_product_laplace();
+    // Timer time;
     reinit_tensor_product_smoother();
+    // std::cout << time.wall_time() << std::endl;
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -917,7 +927,8 @@ namespace PSMF
       tensor_product.get_eigenvectors(eigenvector_tensor);
 
       auto shift = dir == 0 ? indices[0] + indices[1] * 3 + indices[2] * 9 :
-                              indices[1] + indices[0] * 3 + indices[2] * 9;
+                   dir == 1 ? indices[1] + indices[0] * 3 + indices[2] * 9 :
+                              indices[1] + indices[2] * 3 + indices[0] * 9;
 
       // if (indices[0] * indices[1] == 4)
       //   {
@@ -937,6 +948,7 @@ namespace PSMF
 
     constexpr unsigned dim_z = dim == 2 ? 1 : 3;
 
+#pragma omp parallel for collapse(3) num_threads(dim_z * 3 * 3) schedule(static)
     for (unsigned int z = 0; z < dim_z; ++z)
       for (unsigned int j = 0; j < 3; ++j)
         for (unsigned int k = 0; k < 3; ++k)
@@ -944,7 +956,7 @@ namespace PSMF
             // Exact
             {
               std::array<FullMatrix<double>, dim> A;
-              if (dim == 2)
+              if constexpr (dim == 2)
                 {
                   {
                     FullMatrix<double> t0 =
@@ -968,22 +980,61 @@ namespace PSMF
                     A[1].copy_from(t0);
                   }
                 }
-              else
+              else if constexpr (dim == 3)
                 {
-                  // FullMatrix<double> t0 =
-                  //   Tensors::kronecker_product_(patch_mass_inv[2],
-                  //                               patch_mass_inv[1],
-                  //                               patch_laplace_inv[0]);
-                  // FullMatrix<double> t1 =
-                  //   Tensors::kronecker_product_(patch_mass_inv[2],
-                  //                               patch_laplace_inv[1],
-                  //                               patch_mass_inv[0]);
-                  // FullMatrix<double> t2 =
-                  //   Tensors::kronecker_product_(patch_laplace_inv[2],
-                  //                               patch_mass_inv[1],
-                  //                               patch_mass_inv[0]);
-                  // t0.add(1., t1, 1., t2);
-                  // A[0].copy_from(t0);
+                  {
+                    FullMatrix<double> t0 =
+                      Tensors::kronecker_product_(RT_mass[2][2],
+                                                  RT_mass[1][2],
+                                                  RT_laplace[0][3 + k]);
+                    FullMatrix<double> t1 =
+                      Tensors::kronecker_product_(RT_mass[2][2],
+                                                  RT_laplace[1][3 + j],
+                                                  RT_mass[0][2]);
+                    FullMatrix<double> t2 =
+                      Tensors::kronecker_product_(RT_laplace[2][3 + z],
+                                                  RT_mass[1][2],
+                                                  RT_mass[0][2]);
+                    t0.add(1., t1);
+                    t2.add(1., t0);
+                    A[0].copy_from(t2);
+                  }
+
+                  {
+                    FullMatrix<double> t0 =
+                      Tensors::kronecker_product_(RT_mass[2][2],
+                                                  RT_mass[1][2],
+                                                  RT_laplace[0][3 + j]);
+                    FullMatrix<double> t1 =
+                      Tensors::kronecker_product_(RT_mass[2][2],
+                                                  RT_laplace[1][3 + k],
+                                                  RT_mass[0][2]);
+                    FullMatrix<double> t2 =
+                      Tensors::kronecker_product_(RT_laplace[2][3 + z],
+                                                  RT_mass[1][2],
+                                                  RT_mass[0][2]);
+                    t0.add(1., t1);
+                    t2.add(1., t0);
+                    A[1].copy_from(t2);
+                  }
+
+                  {
+                    FullMatrix<double> t0 =
+                      Tensors::kronecker_product_(RT_mass[2][2],
+                                                  RT_mass[1][2],
+                                                  RT_laplace[0][3 + z]);
+                    FullMatrix<double> t1 =
+                      Tensors::kronecker_product_(RT_mass[2][2],
+                                                  RT_laplace[1][3 + k],
+                                                  RT_mass[0][2]);
+                    FullMatrix<double> t2 =
+                      Tensors::kronecker_product_(RT_laplace[2][3 + j],
+                                                  RT_mass[1][2],
+                                                  RT_mass[0][2]);
+                    t0.add(1., t1);
+                    t2.add(1., t0);
+                    A[2].copy_from(t2);
+                  }
                 }
 
               FullMatrix<double> B =
@@ -1006,12 +1057,20 @@ namespace PSMF
               AssertDimension(A[0].n() * dim + B.n(), n_patch_dofs);
 
               FullMatrix<double> PatchMatrix(n_patch_dofs, n_patch_dofs);
-              PatchMatrix.fill(A[0], 0, 0, 0, 0);
-              PatchMatrix.fill(A[1], A[0].m(), A[0].n(), 0, 0);
-              PatchMatrix.fill(B, 0, dim * A[0].n(), 0, 0);
-              PatchMatrix.fill(B, A[0].m(), dim * A[0].n(), 0, 0);
-              PatchMatrix.fill(Bt, dim * A[0].m(), 0, 0, 0);
-              PatchMatrix.fill(Bt, dim * A[0].m(), A[0].n(), 0, 0);
+
+              for (unsigned int d = 0; d < dim; ++d)
+                {
+                  PatchMatrix.fill(A[d], d * A[0].m(), d * A[0].n(), 0, 0);
+                  PatchMatrix.fill(B, d * A[0].m(), dim * A[0].n(), 0, 0);
+                  PatchMatrix.fill(Bt, dim * A[0].m(), d * A[0].n(), 0, 0);
+                }
+
+              // PatchMatrix.fill(A[0], 0, 0, 0, 0);
+              // PatchMatrix.fill(A[1], A[0].m(), A[0].n(), 0, 0);
+              // PatchMatrix.fill(B, 0, dim * A[0].n(), 0, 0);
+              // PatchMatrix.fill(B, A[0].m(), dim * A[0].n(), 0, 0);
+              // PatchMatrix.fill(Bt, dim * A[0].m(), 0, 0, 0);
+              // PatchMatrix.fill(Bt, dim * A[0].m(), A[0].n(), 0, 0);
 
               DoFMapping<dim, fe_degree> dm;
 
@@ -1019,6 +1078,7 @@ namespace PSMF
               auto ind_p1   = dm.get_h_to_l_dg_normal();
               auto ind_p1_b = dm.get_l_to_h_dg_normal();
               auto ind_p2_b = dm.get_l_to_h_dg_tangent();
+              auto ind_p3_b = dm.get_l_to_h_dg_z();
 
               FullMatrix<double> AA(PatchMatrix.m(), PatchMatrix.n());
 
@@ -1034,6 +1094,18 @@ namespace PSMF
                 for (auto j = 0U; j < ind_p1.size(); ++j)
                   PatchMatrix(i + ind_v_b.size() / dim, j + ind_v_b.size()) =
                     Bt(ind_p1[j], i);
+
+              if constexpr (dim == 3)
+                {
+                  for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+                    for (auto j = 0U; j < ind_p3_b.size(); ++j)
+                      Bt(j, i) = B(i, ind_p3_b[j]);
+
+                  for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+                    for (auto j = 0U; j < ind_p1.size(); ++j)
+                      PatchMatrix(i + 2 * ind_v_b.size() / dim,
+                                  j + ind_v_b.size()) = Bt(ind_p1[j], i);
+                }
 
               for (auto i = 0U; i < ind_v_b.size(); ++i)
                 for (auto j = 0U; j < ind_p1_b.size(); ++j)
@@ -1072,8 +1144,10 @@ namespace PSMF
 
               LAPACKFullMatrix<double> exact_inverse(AA_inv.m(), AA_inv.n());
               exact_inverse = AA_inv;
-              exact_inverse.compute_inverse_svd_with_kernel(1);
-
+              // Timer time;
+              // exact_inverse.compute_inverse_svd_with_kernel(1);
+              // std::cout << k + j * 3 + z * 9 << " " << time.wall_time() <<
+              // std::endl;
               Vector<double> tmp(AA_inv.m());
               Vector<double> dst(AA_inv.m());
               for (unsigned int col = 0; col < exact_inverse.n(); ++col)
@@ -1106,6 +1180,7 @@ namespace PSMF
                 delete[] vals;
               }
 
+              /*
               // Schur direct
               {
                 auto h_interior_rt = dm.get_h_to_l_rt_interior();
@@ -1329,7 +1404,7 @@ namespace PSMF
 
                 delete[] vals;
               }
-
+              */
               // Schur FD
               {
                 std::vector<unsigned int> indices0{k, j, z};
@@ -1337,6 +1412,12 @@ namespace PSMF
 
                 std::vector<unsigned int> indices1{j, k, z};
                 fast_diag(indices1, 1);
+
+                if constexpr (dim == 3)
+                  {
+                    std::vector<unsigned int> indices2{z, k, j};
+                    fast_diag(indices2, 2);
+                  }
               }
             }
           }
@@ -1388,7 +1469,7 @@ namespace PSMF
           {
             std::array<FullMatrix<double>, dim> A;
 
-            if (dim == 2)
+            if constexpr (dim == 2)
               {
                 {
                   FullMatrix<double> t0 =
@@ -1412,23 +1493,61 @@ namespace PSMF
                   A[1].copy_from(t0);
                 }
               }
-            else
+            else if constexpr (dim == 3)
               {
-                // TODO: x y z
-                FullMatrix<double> t0 =
-                  Tensors::kronecker_product_(RT_mass[2][z],
-                                              RT_mass[1][j],
-                                              RT_laplace[0][k]);
-                FullMatrix<double> t1 =
-                  Tensors::kronecker_product_(RT_mass[2][z],
-                                              RT_laplace[1][j],
-                                              RT_mass[0][k]);
-                FullMatrix<double> t2 =
-                  Tensors::kronecker_product_(RT_laplace[2][z],
-                                              RT_mass[1][j],
-                                              RT_mass[0][k]);
-                t0.add(1., t1, 1., t2);
-                A[0].copy_from(t0);
+                {
+                  FullMatrix<double> t0 =
+                    Tensors::kronecker_product_(RT_mass[2][z],
+                                                RT_mass[1][j],
+                                                RT_laplace[0][k]);
+                  FullMatrix<double> t1 =
+                    Tensors::kronecker_product_(RT_mass[2][z],
+                                                RT_laplace[1][j],
+                                                RT_mass[0][k]);
+                  FullMatrix<double> t2 =
+                    Tensors::kronecker_product_(RT_laplace[2][z],
+                                                RT_mass[1][j],
+                                                RT_mass[0][k]);
+                  t0.add(1., t1);
+                  t2.add(1., t0);
+                  A[0].copy_from(t2);
+                }
+
+                {
+                  FullMatrix<double> t0 =
+                    Tensors::kronecker_product_(RT_mass[2][z],
+                                                RT_mass[1][k],
+                                                RT_laplace[0][j]);
+                  FullMatrix<double> t1 =
+                    Tensors::kronecker_product_(RT_mass[2][z],
+                                                RT_laplace[1][k],
+                                                RT_mass[0][j]);
+                  FullMatrix<double> t2 =
+                    Tensors::kronecker_product_(RT_laplace[2][z],
+                                                RT_mass[1][k],
+                                                RT_mass[0][j]);
+                  t0.add(1., t1);
+                  t2.add(1., t0);
+                  A[1].copy_from(t2);
+                }
+
+                {
+                  FullMatrix<double> t0 =
+                    Tensors::kronecker_product_(RT_mass[2][j],
+                                                RT_mass[1][k],
+                                                RT_laplace[0][z]);
+                  FullMatrix<double> t1 =
+                    Tensors::kronecker_product_(RT_mass[2][j],
+                                                RT_laplace[1][k],
+                                                RT_mass[0][z]);
+                  FullMatrix<double> t2 =
+                    Tensors::kronecker_product_(RT_laplace[2][j],
+                                                RT_mass[1][k],
+                                                RT_mass[0][z]);
+                  t0.add(1., t1);
+                  t2.add(1., t0);
+                  A[2].copy_from(t2);
+                }
               }
 
             // TODO:
@@ -1442,15 +1561,25 @@ namespace PSMF
               dim == 2 ?
                 Tensors::kronecker_product_(Mix_mass[1][k], Mix_der[0][j]) :
                 Tensors::kronecker_product_(Mix_mass[2][z],
-                                            Mix_mass[1][j],
-                                            Mix_der[0][k]);
+                                            Mix_mass[1][k],
+                                            Mix_der[0][j]);
+            FullMatrix<double> B_z =
+              dim == 2 ?
+                Tensors::kronecker_product_(Mix_mass[1][k], Mix_der[0][j]) :
+                Tensors::kronecker_product_(Mix_mass[2][j],
+                                            Mix_mass[1][k],
+                                            Mix_der[0][z]);
+
             B_x /= -1;
             B_y /= -1;
+            B_z /= -1;
 
             FullMatrix<double> Bt_x;
             FullMatrix<double> Bt_y;
+            FullMatrix<double> Bt_z;
             Bt_x.copy_transposed(B_x);
             Bt_y.copy_transposed(B_y);
+            Bt_z.copy_transposed(B_z);
 
             FullMatrix<double> PatchMatrix(A[0].n() * dim + B_x.n(),
                                            A[0].n() * dim + B_x.n());
@@ -1460,6 +1589,13 @@ namespace PSMF
             PatchMatrix.fill(B_y, A[0].m(), dim * A[0].n(), 0, 0);
             PatchMatrix.fill(Bt_x, dim * A[0].m(), 0, 0, 0);
             PatchMatrix.fill(Bt_y, dim * A[0].m(), A[0].n(), 0, 0);
+
+            if constexpr (dim == 3)
+              {
+                PatchMatrix.fill(A[2], 2 * A[0].m(), 2 * A[0].n(), 0, 0);
+                PatchMatrix.fill(B_z, 2 * A[0].m(), dim * A[0].n(), 0, 0);
+                PatchMatrix.fill(Bt_z, dim * A[0].m(), 2 * A[0].n(), 0, 0);
+              }
 
             // std::ofstream out;
             // out.open("patch_mat_L" + std::to_string(level));
@@ -1473,6 +1609,7 @@ namespace PSMF
             auto ind_p1   = dm.get_h_to_l_dg_normal();
             auto ind_p1_b = dm.get_l_to_h_dg_normal();
             auto ind_p2_b = dm.get_l_to_h_dg_tangent();
+            auto ind_p3_b = dm.get_l_to_h_dg_z();
 
             FullMatrix<double> AA(PatchMatrix.m(), PatchMatrix.n());
 
@@ -1488,6 +1625,18 @@ namespace PSMF
               for (auto j = 0U; j < ind_p1.size(); ++j)
                 PatchMatrix(i + ind_v_b.size() / dim, j + ind_v_b.size()) =
                   Bt_y(ind_p1[j], i);
+
+            if constexpr (dim == 3)
+              {
+                for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+                  for (auto j = 0U; j < ind_p3_b.size(); ++j)
+                    Bt_z(j, i) = B_z(i, ind_p3_b[j]);
+
+                for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+                  for (auto j = 0U; j < ind_p1.size(); ++j)
+                    PatchMatrix(i + 2 * ind_v_b.size() / dim,
+                                j + ind_v_b.size()) = Bt_z(ind_p1[j], i);
+              }
 
             for (auto i = 0U; i < ind_v_b.size(); ++i)
               for (auto j = 0U; j < ind_p1_b.size(); ++j)
@@ -1614,6 +1763,7 @@ namespace PSMF
   {
     const double h              = Util::pow(2, level);
     const double penalty_factor = h * (fe_degree + 1) * (fe_degree + 2);
+    const double scaling_factor = dim == 2 ? 1 : h;
 
     FE_RaviartThomas_new<dim> fe(fe_degree);
     QGauss<1>                 quadrature(fe_degree + 2);
@@ -1769,14 +1919,15 @@ namespace PSMF
         for (unsigned int j = 0; j < n_cell_dofs_1d[d]; ++j)
           {
             unsigned int shift = d == 0;
-            laplace_matrices(i, j) += left(i, j);
+            laplace_matrices(i, j) += left(i, j) * scaling_factor;
             laplace_matrices(i + n_cell_dofs_1d[d] - shift,
-                             j + n_cell_dofs_1d[d] - shift) += right(i, j);
+                             j + n_cell_dofs_1d[d] - shift) +=
+              right(i, j) * scaling_factor;
 
             laplace_matrices(i, j + n_cell_dofs_1d[d] - shift) +=
-              mixed[d](i, j);
+              mixed[d](i, j) * scaling_factor;
             laplace_matrices(i, j + n_cell_dofs_1d[d] - shift) +=
-              penalty[d](i, j);
+              penalty[d](i, j) * scaling_factor;
 
             if (d != 0)
               {

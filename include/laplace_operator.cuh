@@ -158,7 +158,7 @@ namespace PSMF
                              shared_mem));
 
       block_dim =
-        dim3(2 * fe_degree + 3, patch_per_block * 2 * (2 * fe_degree + 3));
+        dim3(2 * fe_degree + 3, patch_per_block * dim * (2 * fe_degree + 3));
     }
 
     template <typename VectorType, typename DataType>

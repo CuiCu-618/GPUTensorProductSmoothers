@@ -37,12 +37,15 @@ namespace Util
   }
 
 
-  constexpr unsigned int padding = 0;
+  constexpr unsigned int padding   = 0;
+  constexpr unsigned int BLOCK_DIM = 256;
 
-  constexpr unsigned int DIM        = 2;
-  constexpr unsigned int MAX_DEGREE = 10;
+  constexpr unsigned int DIM        = 3;
+  constexpr unsigned int MAX_DEGREE = 3;
   constexpr unsigned int MAX_PATCH_DOFS_RT =
     DIM * pow(2 * MAX_DEGREE + 2, DIM - 1) * (2 * MAX_DEGREE + 3);
+  constexpr unsigned int MAX_PATCH_DOFS_RT_INT =
+    DIM * pow(2 * MAX_DEGREE + 2, DIM - 1) * (2 * MAX_DEGREE + 1);
   constexpr unsigned int MAX_PATCH_DOFS_DG = pow(2 * MAX_DEGREE + 2, DIM);
 
   /**

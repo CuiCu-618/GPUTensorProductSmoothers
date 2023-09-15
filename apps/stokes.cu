@@ -711,6 +711,15 @@ namespace Step64
   std::tuple<double, double, double>
   LaplaceProblem<dim, fe_degree>::compute_error()
   {
+    const double mean_pressure =
+      VectorTools::compute_mean_value(dof_handler_pressure,
+                                      QGauss<dim>(fe_degree + 2),
+                                      solution_pressure_host,
+                                      0);
+    solution_pressure_host.add(-mean_pressure);
+    *pcout << "\nNote: The mean value was adjusted by " << -mean_pressure
+           << std::endl;
+
     Vector<double> cellwise_norm(triangulation.n_active_cells());
     VectorTools::integrate_difference(dof_handler_velocity,
                                       solution_velocity_host,
@@ -763,7 +772,7 @@ namespace Step64
         unsigned int n_levels = triangulation.n_global_levels();
 
         long long unsigned int n_dofs =
-          3 * std::pow(std::pow(2, n_levels) * (fe_degree + 1), dim);
+          (dim + 1) * std::pow(std::pow(2, n_levels) * (fe_degree + 1), dim);
 
         if (n_dofs > CT::MAX_SIZES_)
           {

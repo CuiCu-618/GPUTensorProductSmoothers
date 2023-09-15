@@ -788,16 +788,20 @@ namespace PSMF
   };
 
 
-  __constant__ unsigned int h_interior[Util::MAX_PATCH_DOFS_RT];
-  __constant__ unsigned int htol_rt_interior[Util::MAX_PATCH_DOFS_RT];
+  __constant__ unsigned int
+    h_interior[Util::MAX_PATCH_DOFS_RT_INT + Util::MAX_PATCH_DOFS_DG];
+  __constant__ unsigned int htol_rt_interior[Util::MAX_PATCH_DOFS_RT_INT];
 
   __constant__ unsigned int htol_rt[Util::MAX_PATCH_DOFS_RT];
-  __constant__ unsigned int ltoh_rt[Util::MAX_PATCH_DOFS_RT];
+  // __constant__ unsigned int ltoh_rt[Util::MAX_PATCH_DOFS_RT];
 
   __constant__ unsigned int htol_dgn[Util::MAX_PATCH_DOFS_DG];
-  __constant__ unsigned int htol_dgt[Util::MAX_PATCH_DOFS_DG];
+  // __constant__ unsigned int htol_dgt[Util::MAX_PATCH_DOFS_DG];
+  // __constant__ unsigned int htol_dgz[Util::MAX_PATCH_DOFS_DG];
+
   __constant__ unsigned int ltoh_dgn[Util::MAX_PATCH_DOFS_DG];
   __constant__ unsigned int ltoh_dgt[Util::MAX_PATCH_DOFS_DG];
+  __constant__ unsigned int ltoh_dgz[Util::MAX_PATCH_DOFS_DG];
 
   /**
    * Structure to pass the shared memory into a general user function.
@@ -976,7 +980,11 @@ namespace PSMF
         local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * (dim - 1);
 
       tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * 1;
+
+      local_vars = tmp + n_buff * 4 * local_dim;
     }
+
+    Number *local_vars;
   };
 
   /**

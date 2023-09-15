@@ -133,12 +133,13 @@ namespace PSMF
       dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * fe_degree + 3);
     constexpr int n_patch_dofs_dg = Util::pow(2 * fe_degree + 2, dim);
     constexpr int n_patch_dofs    = n_patch_dofs_rt + n_patch_dofs_dg;
+    constexpr int block_size      = n_dofs_2d * dim;
 
-    const unsigned int patch_per_block = gpu_data.patch_per_block;
-    const unsigned int local_patch     = threadIdx.y / (n_dofs_1d * 2);
-    const unsigned int patch = local_patch + patch_per_block * blockIdx.x;
+    const int patch_per_block = gpu_data.patch_per_block;
+    const int local_patch     = threadIdx.y / (n_dofs_1d * dim);
+    const int patch           = local_patch + patch_per_block * blockIdx.x;
 
-    const int tid_y = threadIdx.y % (n_dofs_1d * 2);
+    const int tid_y = threadIdx.y % (n_dofs_1d * dim);
     const int tid_x = threadIdx.x;
     const int tid   = tid_y * n_dofs_1d + tid_x;
 
@@ -208,37 +209,28 @@ namespace PSMF
           }
 
 
-        for (unsigned int i = 0; i < n_patch_dofs_rt / (n_dofs_2d * 2) + 1; ++i)
-          if (tid + i * (n_dofs_2d * 2) < n_patch_dofs_rt)
+        for (unsigned int i = 0; i < n_patch_dofs_rt / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_rt)
             {
               unsigned int global_dof_index =
                 gpu_data.patch_dof_laplace[patch * n_patch_dofs +
-                                           htol_rt[tid + i * (n_dofs_2d * 2)]];
+                                           htol_rt[tid + i * block_size]];
 
-              shared_data.local_src[local_patch * n_patch_dofs + tid +
-                                    i * (n_dofs_2d * 2)] =
+              shared_data
+                .local_src[local_patch * n_patch_dofs + tid + i * block_size] =
                 src[global_dof_index];
-              shared_data.local_dst[local_patch * n_patch_dofs + tid +
-                                    i * (n_dofs_2d * 2)] = 0;
             }
-        for (unsigned int i = 0; i < n_patch_dofs_dg / (n_dofs_2d * 2) + 1; ++i)
-          if (tid + i * (n_dofs_2d * 2) < n_patch_dofs_dg)
+        for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_dg)
             {
               unsigned int global_dof_index_n =
                 gpu_data
                   .patch_dof_laplace[patch * n_patch_dofs + n_patch_dofs_rt +
-                                     htol_dgn[tid + i * (n_dofs_2d * 2)]];
-              unsigned int global_dof_index_t =
-                gpu_data
-                  .patch_dof_laplace[patch * n_patch_dofs + n_patch_dofs_rt +
-                                     htol_dgt[tid + i * (n_dofs_2d * 2)]];
+                                     htol_dgn[tid + i * block_size]];
 
-              shared_data
-                .local_src[local_patch * n_patch_dofs + n_patch_dofs_rt + tid +
-                           i * (n_dofs_2d * 2)] = src[global_dof_index_n];
-              shared_data
-                .local_dst[local_patch * n_patch_dofs + n_patch_dofs_rt + tid +
-                           i * (n_dofs_2d * 2)] = src[global_dof_index_t];
+              shared_data.local_src[local_patch * n_patch_dofs +
+                                    n_patch_dofs_rt + tid + i * block_size] =
+                src[global_dof_index_n];
             }
 
 
@@ -246,31 +238,30 @@ namespace PSMF
           local_patch, &shared_data);
         __syncthreads();
 
-        for (unsigned int i = 0; i < n_patch_dofs_rt / (n_dofs_2d * 2) + 1; ++i)
-          if (tid + i * (n_dofs_2d * 2) < n_patch_dofs_rt)
+        for (unsigned int i = 0; i < n_patch_dofs_rt / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_rt)
             {
               unsigned int global_dof_index =
-                gpu_data.patch_dof_laplace[patch * n_patch_dofs + tid +
-                                           i * (n_dofs_2d * 2)];
+                gpu_data.patch_dof_laplace[patch * n_patch_dofs +
+                                           htol_rt[tid + i * block_size]];
 
-              atomicAdd(
-                &dst[global_dof_index],
-                shared_data.local_dst[local_patch * n_patch_dofs +
-                                      ltoh_rt[tid + i * (n_dofs_2d * 2)]]);
+              atomicAdd(&dst[global_dof_index],
+                        shared_data.local_dst[local_patch * n_patch_dofs + tid +
+                                              i * block_size]);
             }
         __syncthreads();
-        for (unsigned int i = 0; i < n_patch_dofs_dg / (n_dofs_2d * 2) + 1; ++i)
-          if (tid + i * (n_dofs_2d * 2) < n_patch_dofs_dg)
+        for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_dg)
             {
               unsigned int global_dof_index =
                 gpu_data
                   .patch_dof_laplace[patch * n_patch_dofs + n_patch_dofs_rt +
-                                     tid + i * (n_dofs_2d * 2)];
+                                     tid + i * block_size];
 
-              atomicAdd(&dst[global_dof_index],
-                        shared_data.local_dst[local_patch * n_patch_dofs +
-                                              n_patch_dofs_rt + tid +
-                                              i * (n_dofs_2d * 2)]);
+              atomicAdd(
+                &dst[global_dof_index],
+                shared_data.local_dst[local_patch * n_patch_dofs +
+                                      n_patch_dofs_rt + tid + i * block_size]);
             }
       }
   }
@@ -535,13 +526,13 @@ namespace PSMF
     constexpr int n_patch_dofs_all =
       dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 1) +
       Util::pow(2 * fe_degree + 2, dim);
+    constexpr int block_size = n_dofs_2d * dim;
 
-    const unsigned int block_size      = n_dofs_2d * 2;
-    const unsigned int patch_per_block = gpu_data.patch_per_block;
-    const unsigned int local_patch     = threadIdx.y / (n_dofs_1d * 2);
-    const unsigned int patch = local_patch + patch_per_block * blockIdx.x;
+    const int patch_per_block = gpu_data.patch_per_block;
+    const int local_patch     = threadIdx.y / (n_dofs_1d * dim);
+    const int patch           = local_patch + patch_per_block * blockIdx.x;
 
-    const int tid_y = threadIdx.y % (n_dofs_1d * 2);
+    const int tid_y = threadIdx.y % (n_dofs_1d * dim);
     const int tid_x = threadIdx.x;
     const int tid   = tid_y * n_dofs_1d + tid_x;
 
@@ -595,7 +586,7 @@ namespace PSMF
             {
               if (tid < (n_dofs_1d - 1) * (n_dofs_1d - 1))
                 shared_data.local_mix_mass[shift2 + n_dofs_2d + tid] =
-                  gpu_data.mix_mass_1d[2][tid];
+                  gpu_data.smooth_mixmass_1d[2][tid];
             }
         }
 
@@ -619,13 +610,12 @@ namespace PSMF
           if (tid + i * block_size < n_patch_dofs_dg)
             {
               unsigned int global_dof_index =
-                gpu_data
-                  .patch_dof_smooth[patch * n_patch_dofs_all +
-                                    n_patch_dofs_rt_all + tid + i * block_size];
+                gpu_data.patch_dof_smooth[patch * n_patch_dofs_all +
+                                          n_patch_dofs_rt_all +
+                                          htol_dgn[tid + i * block_size]];
 
-              shared_data
-                .local_src[local_patch * n_patch_dofs + n_patch_dofs_rt +
-                           ltoh_dgn[tid + i * block_size]] =
+              shared_data.local_src[local_patch * n_patch_dofs +
+                                    n_patch_dofs_rt + tid + i * block_size] =
                 -src[global_dof_index];
               shared_data.local_dst[local_patch * n_patch_dofs +
                                     n_patch_dofs_rt + tid + i * block_size] = 0;
@@ -673,10 +663,17 @@ namespace PSMF
                                       ltoh_dgn[tid + i * block_size]];
 
               shared_data
-                .local_src[local_patch * n_patch_dofs +
-                           2 * n_patch_dofs_rt / dim + tid + i * block_size] =
+                .local_src[local_patch * n_patch_dofs + n_patch_dofs_dg +
+                           ltoh_dgt[tid + i * block_size]] =
                 shared_data.local_src[local_patch * n_patch_dofs +
-                                      ltoh_dgn[htol_dgt[tid + i * block_size]]];
+                                      ltoh_dgn[tid + i * block_size]];
+
+              if constexpr (dim == 3)
+                shared_data
+                  .local_src[local_patch * n_patch_dofs + 2 * n_patch_dofs_dg +
+                             ltoh_dgz[tid + i * block_size]] =
+                  shared_data.local_src[local_patch * n_patch_dofs +
+                                        ltoh_dgn[tid + i * block_size]];
             }
 
         /// M U = F - B P

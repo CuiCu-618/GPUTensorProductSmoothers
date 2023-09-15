@@ -105,6 +105,9 @@ namespace PSMF
         h_to_l_dg_tangent =
           form_patch_dg_lexicographic_numbering_tangent(cell_dofs);
 
+        if (dim == 3)
+          h_to_l_dg_z = form_patch_dg_lexicographic_numbering_z(cell_dofs);
+
         h_to_l_dg_normal_interior =
           get_patch_dg_lexicographic_numbering_interior(h_to_l_dg_normal);
         h_to_l_dg_tangent_interior =
@@ -112,6 +115,10 @@ namespace PSMF
 
         l_to_h_dg_normal  = reverse_numbering(h_to_l_dg_normal);
         l_to_h_dg_tangent = reverse_numbering(h_to_l_dg_tangent);
+
+        if (dim == 3)
+          l_to_h_dg_z = reverse_numbering(h_to_l_dg_z);
+
         l_to_h_dg_normal_interior =
           reverse_numbering(h_to_l_dg_normal_interior);
         l_to_h_dg_tangent_interior =
@@ -150,6 +157,11 @@ namespace PSMF
       return h_to_l_dg_tangent;
     }
     std::vector<value_type>
+    get_h_to_l_dg_z()
+    {
+      return h_to_l_dg_z;
+    }
+    std::vector<value_type>
     get_h_to_l_dg_normal_interior()
     {
       return h_to_l_dg_normal_interior;
@@ -178,6 +190,11 @@ namespace PSMF
     get_l_to_h_dg_tangent()
     {
       return l_to_h_dg_tangent;
+    }
+    std::vector<value_type>
+    get_l_to_h_dg_z()
+    {
+      return l_to_h_dg_z;
     }
     std::vector<value_type>
     get_l_to_h_dg_normal_interior()
@@ -238,13 +255,13 @@ namespace PSMF
       // component 3
       if (dim == 3)
         {
-          for (unsigned int k = 0; k < layers; ++k)
-            for (unsigned int j = 0; j < tangential_degree + 1; ++j)
+          for (unsigned int j = 0; j < tangential_degree + 1; ++j)
+            for (unsigned int k = 0; k < layers; ++k)
               {
-                unsigned int k_add = k * (tangential_degree + 1);
+                unsigned int j_add = j * (tangential_degree + 1);
 
-                unsigned int s = j + 4 * n_dofs_face;
-                lexicographic_numbering.push_back(s + k_add);
+                unsigned int s = k + 4 * n_dofs_face;
+                lexicographic_numbering.push_back(s + j_add);
 
                 if (normal_degree > 1)
                   {
@@ -252,14 +269,13 @@ namespace PSMF
                                           n_dofs_face * 2 * (normal_degree - 1);
                          i < 6 * n_dofs_face +
                                n_dofs_face * 2 * (normal_degree - 1) +
-                               (normal_degree - 1) * (tangential_degree + 1);
-                         i += tangential_degree + 1)
-                      lexicographic_numbering.push_back(
-                        i + j + k_add * tangential_degree);
+                               (normal_degree - 1) * n_dofs_face;
+                         i += n_dofs_face)
+                      lexicographic_numbering.push_back(i + k + j_add);
                   }
 
-                unsigned int e = j + 5 * n_dofs_face;
-                lexicographic_numbering.push_back(e + k_add);
+                unsigned int e = k + 5 * n_dofs_face;
+                lexicographic_numbering.push_back(e + j_add);
               }
         }
 
@@ -475,11 +491,36 @@ namespace PSMF
               for (auto col = 0U; col < 2; ++col)
                 for (auto k = 0U; k < fe_degree + 1; ++k)
                   {
-                    const unsigned int cell = z * 4 + row + col * 2;
+                    const unsigned int cell = z * 4 + col * 2 + row;
 
                     local_dof_indices.push_back(
                       cell_dofs[cell][l * (fe_degree + 1) * (fe_degree + 1) +
-                                      i + k * (fe_degree + 1)]);
+                                      k * (fe_degree + 1) + i]);
+                  }
+
+      return local_dof_indices;
+    }
+
+    std::vector<value_type>
+    form_patch_dg_lexicographic_numbering_z(
+      std::array<std::vector<value_type>, 1 << dim> &cell_dofs)
+    {
+      std::vector<value_type> local_dof_indices;
+
+      const unsigned int layer = dim == 2 ? 1 : fe_degree + 1;
+
+      for (auto z = 0U; z < dim - 1; ++z)
+        for (auto l = 0U; l < layer; ++l)
+          for (auto row = 0U; row < 2; ++row)
+            for (auto i = 0U; i < fe_degree + 1; ++i)
+              for (auto col = 0U; col < 2; ++col)
+                for (auto k = 0U; k < fe_degree + 1; ++k)
+                  {
+                    const unsigned int cell = col * 4 + z * 2 + row;
+
+                    local_dof_indices.push_back(
+                      cell_dofs[cell][k * (fe_degree + 1) * (fe_degree + 1) +
+                                      l * (fe_degree + 1) + i]);
                   }
 
       return local_dof_indices;
@@ -607,6 +648,7 @@ namespace PSMF
 
     std::vector<value_type> h_to_l_dg_normal;
     std::vector<value_type> h_to_l_dg_tangent;
+    std::vector<value_type> h_to_l_dg_z;
 
     std::vector<value_type> h_to_l_dg_normal_interior;
     std::vector<value_type> h_to_l_dg_tangent_interior;
@@ -616,6 +658,7 @@ namespace PSMF
 
     std::vector<value_type> l_to_h_dg_normal;
     std::vector<value_type> l_to_h_dg_tangent;
+    std::vector<value_type> l_to_h_dg_z;
 
     std::vector<value_type> l_to_h_dg_normal_interior;
     std::vector<value_type> l_to_h_dg_tangent_interior;

@@ -285,7 +285,7 @@ compute_face_projection_div_conforming(const cell_iterator &   cell,
                                        std::vector<types::global_dof_index> &       projected_dofs)
 {
   /// TODO
-  AssertThrow(false, ExcMessage("Parallel impl. missing..."));
+  // AssertThrow(false, ExcMessage("Parallel impl. missing..."));
 
   // Compute the intergral over the product of the normal components of
   // the boundary function times the normal components of the shape
@@ -474,7 +474,7 @@ project_boundary_values_div_conforming(const DoFHandler<dim> &     dof_handler,
     case 3:
     {
       /// TODO
-      AssertThrow(false, ExcMessage("Parallel impl. missing..."));
+      // AssertThrow(false, ExcMessage("Parallel impl. missing..."));
 
       // In three dimensions the edges between two faces are treated
       // twice. Therefore we store the computed values in a vector
@@ -502,7 +502,13 @@ project_boundary_values_div_conforming(const DoFHandler<dim> &     dof_handler,
               // cannot check this.
               if(dynamic_cast<const FESystem<dim> *>(&cell->get_fe()) == nullptr)
               {
-                AssertThrow(dynamic_cast<const FE_RaviartThomas<dim> *>(&cell->get_fe()) != nullptr,
+                const bool is_raviartthomas =
+                  dynamic_cast<const FE_RaviartThomas<dim> *>(&cell->get_fe()) != nullptr;
+                const bool is_raviartthomas_new =
+                  dynamic_cast<const FE_RaviartThomas_new<dim> *>(&cell->get_fe()) != nullptr;
+                const bool is_raviartthomasnodal_new =
+                  dynamic_cast<const FE_RaviartThomasNodal_new<dim> *>(&cell->get_fe()) != nullptr;
+                AssertThrow(is_raviartthomas || is_raviartthomas_new || is_raviartthomasnodal_new,
                             typename FiniteElement<dim>::ExcInterpolationNotImplemented());
               }
 

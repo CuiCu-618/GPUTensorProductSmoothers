@@ -187,13 +187,27 @@ namespace Util
     oss << std::endl;
     oss << "Granularity Scheme:             "
         << GranularityToString(CT::GRANULARITY_) << std::endl
+        << "Patches per thread block:       ";
+    if (CT::GRANULARITY_ == PSMF::GranularityScheme::none)
+      oss << 1;
+    else if (CT::GRANULARITY_ == PSMF::GranularityScheme::user_define)
+      oss << CT::PATCH_PER_BLOCK_;
+    else if (CT::GRANULARITY_ == PSMF::GranularityScheme::multiple)
+      oss << PSMF::granularity_shmem<CT::DIMENSION_, CT::FE_DEGREE_>();
+    oss << std::endl
         << "Maximum size:                   " << CT::MAX_SIZES_ << std::endl
         << "Number of MG cycles in V-cycle: " << 1 << std::endl
         << "Number of smoothing steps:      " << CT::N_SMOOTH_STEPS_
         << std::endl
+        << "Build type:                     "
+        <<
+#ifdef DEBUG
+      "Debug"
+#else
+      "Release"
+#endif
+        << std::endl
         << std::endl;
-
-
     return oss.str();
   }
 

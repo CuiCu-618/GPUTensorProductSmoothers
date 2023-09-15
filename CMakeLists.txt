@@ -108,6 +108,8 @@ IF(DEAL_II_WITH_CUDA)
         INCLUDE_DIRECTORIES(/export/home/cucui/SimServ06/cuda-samples/Common/)
 ENDIF()
 
+find_package (OpenMP REQUIRED)
+
 # Set the source files to be compiled
 SET( TARGET_SRC
         source/cuda_mg_transfer.cu

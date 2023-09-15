@@ -73,7 +73,10 @@ namespace PSMF
     __device__ void
     weigh_values()
     {
-      values[threadIdx.x] *= weights[threadIdx.x];
+      for (int i = 0; i < n_fine / Util::BLOCK_DIM + 1; ++i)
+        if (threadIdx.x + i * Util::BLOCK_DIM < n_fine)
+          values[threadIdx.x + i * Util::BLOCK_DIM] *=
+            weights[threadIdx.x + i * Util::BLOCK_DIM];
     }
   };
 
@@ -129,26 +132,39 @@ namespace PSMF
     __device__ void
     read_coarse(const Number *vec)
     {
-      if (threadIdx.x < n_coarse)
-        values[threadIdx.x] = vec[dof_indices_coarse[threadIdx.x]];
+      for (int i = 0; i < n_coarse / Util::BLOCK_DIM + 1; ++i)
+        if (threadIdx.x + i * Util::BLOCK_DIM < n_coarse)
+          values[threadIdx.x + i * Util::BLOCK_DIM] =
+            vec[dof_indices_coarse[threadIdx.x + i * Util::BLOCK_DIM]];
     }
 
     __device__ void
     reduce_csr()
     {
-      Number sum = 0;
+      Number sum[n_fine / Util::BLOCK_DIM + 1];
 
-      for (auto i = row_ptr[threadIdx.x]; i < row_ptr[threadIdx.x + 1]; ++i)
-        sum += shape_values[i] * values[col_idx[i]];
-
+      for (int i = 0; i < n_fine / Util::BLOCK_DIM + 1; ++i)
+        {
+          sum[i] = 0;
+          if (threadIdx.x + i * Util::BLOCK_DIM < n_fine)
+            for (auto j = row_ptr[threadIdx.x + i * Util::BLOCK_DIM];
+                 j < row_ptr[threadIdx.x + i * Util::BLOCK_DIM + 1];
+                 ++j)
+              sum[i] += shape_values[j] * values[col_idx[j]];
+        }
       __syncthreads();
-      values[threadIdx.x] = sum;
+      for (int i = 0; i < n_fine / Util::BLOCK_DIM + 1; ++i)
+        if (threadIdx.x + i * Util::BLOCK_DIM < n_fine)
+          values[threadIdx.x + i * Util::BLOCK_DIM] = sum[i];
     }
 
     __device__ void
     write_fine(Number *vec) const
     {
-      atomicAdd(&vec[dof_indices_fine[threadIdx.x]], values[threadIdx.x]);
+      for (int i = 0; i < n_fine / Util::BLOCK_DIM + 1; ++i)
+        if (threadIdx.x + i * Util::BLOCK_DIM < n_fine)
+          atomicAdd(&vec[dof_indices_fine[threadIdx.x + i * Util::BLOCK_DIM]],
+                    values[threadIdx.x + i * Util::BLOCK_DIM]);
     }
   };
 
@@ -204,32 +220,40 @@ namespace PSMF
     __device__ void
     read_fine(const Number *vec)
     {
-      values[threadIdx.x] = vec[dof_indices_fine[threadIdx.x]];
+      for (int i = 0; i < n_fine / Util::BLOCK_DIM + 1; ++i)
+        if (threadIdx.x + i * Util::BLOCK_DIM < n_fine)
+          values[threadIdx.x + i * Util::BLOCK_DIM] =
+            vec[dof_indices_fine[threadIdx.x + i * Util::BLOCK_DIM]];
     }
 
     __device__ void
     reduce_csr()
     {
-      Number sum = 0;
+      Number sum[n_coarse / Util::BLOCK_DIM + 1];
 
-      if (threadIdx.x < n_coarse)
+      for (int i = 0; i < n_coarse / Util::BLOCK_DIM + 1; ++i)
         {
-          for (auto i = row_ptr[threadIdx.x]; i < row_ptr[threadIdx.x + 1]; ++i)
-            sum += shape_values[i] * values[col_idx[i]];
+          sum[i] = 0;
+          if (threadIdx.x + i * Util::BLOCK_DIM < n_coarse)
+            for (auto j = row_ptr[threadIdx.x + i * Util::BLOCK_DIM];
+                 j < row_ptr[threadIdx.x + i * Util::BLOCK_DIM + 1];
+                 ++j)
+              sum[i] += shape_values[j] * values[col_idx[j]];
         }
 
       __syncthreads();
-      if (threadIdx.x < n_coarse)
-        {
-          values[threadIdx.x] = sum;
-        }
+      for (int i = 0; i < n_coarse / Util::BLOCK_DIM + 1; ++i)
+        if (threadIdx.x + i * Util::BLOCK_DIM < n_coarse)
+          values[threadIdx.x + i * Util::BLOCK_DIM] = sum[i];
     }
 
     __device__ void
     write_coarse(Number *vec) const
     {
-      if (threadIdx.x < n_coarse)
-        atomicAdd(&vec[dof_indices_coarse[threadIdx.x]], values[threadIdx.x]);
+      for (int i = 0; i < n_coarse / Util::BLOCK_DIM + 1; ++i)
+        if (threadIdx.x + i * Util::BLOCK_DIM < n_coarse)
+          atomicAdd(&vec[dof_indices_coarse[threadIdx.x + i * Util::BLOCK_DIM]],
+                    values[threadIdx.x + i * Util::BLOCK_DIM]);
     }
   };
 
@@ -313,7 +337,7 @@ namespace PSMF
     const unsigned int n_coarse_cells = n_owned_level_cells[fine_level - 1];
 
     // kernel parameters
-    dim3 bk_dim(n_fine_dofs, 1, 1);
+    dim3 bk_dim(Util::BLOCK_DIM, 1, 1);
     dim3 gd_dim(n_coarse_cells);
 
     AssertCuda(cudaFuncSetAttribute(

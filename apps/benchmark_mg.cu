@@ -445,7 +445,7 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
     rw_vector[i] = i;
   system_rhs_dp.import(rw_vector, VectorOperation::insert);
   matrix_dp.vmult(solution_dp, system_rhs_dp);
-  solution_dp.print(std::cout);
+  solution_dp.print(std::cout, 4, false);
 
   // rw_vector     = 0;
   // system_rhs_dp = 0.;
@@ -513,24 +513,26 @@ LaplaceProblem<dim, fe_degree>::bench_Ax()
 {
   *pcout << "Benchmarking Mat-vec...\n";
 
-  for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
-    switch (CT::LAPLACE_TYPE_[k])
-      {
-        case PSMF::LaplaceVariant::Basic:
-          do_Ax<PSMF::LaplaceVariant::Basic>();
-          break;
-        case PSMF::LaplaceVariant::BasicCell:
-          do_Ax<PSMF::LaplaceVariant::BasicCell>();
-          break;
-        case PSMF::LaplaceVariant::MatrixStruct:
-          do_Ax<PSMF::LaplaceVariant::MatrixStruct>();
-          break;
-        case PSMF::LaplaceVariant::ConflictFree:
-          do_Ax<PSMF::LaplaceVariant::ConflictFree>();
-          break;
-        default:
-          AssertThrow(false, ExcMessage("Invalid Laplace Variant."));
-      }
+  do_Ax<CT::LAPLACE_TYPE_[0]>();
+
+  // for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
+  //   switch (CT::LAPLACE_TYPE_[k])
+  //     {
+  //       case PSMF::LaplaceVariant::Basic:
+  //         do_Ax<PSMF::LaplaceVariant::Basic>();
+  //         break;
+  //       case PSMF::LaplaceVariant::BasicCell:
+  //         do_Ax<PSMF::LaplaceVariant::BasicCell>();
+  //         break;
+  //       case PSMF::LaplaceVariant::MatrixStruct:
+  //         do_Ax<PSMF::LaplaceVariant::MatrixStruct>();
+  //         break;
+  //       case PSMF::LaplaceVariant::ConflictFree:
+  //         do_Ax<PSMF::LaplaceVariant::ConflictFree>();
+  //         break;
+  //       default:
+  //         AssertThrow(false, ExcMessage("Invalid Laplace Variant."));
+  //     }
 }
 
 template <int dim, typename VectorType, int spacedim>
@@ -930,7 +932,7 @@ LaplaceProblem<dim, fe_degree>::run()
 
   auto n_refinement =
     static_cast<unsigned int>(std::log2((n_dofs_1d - 1) / fe_degree));
-  triangulation.refine_global(n_refinement);
+  triangulation.refine_global(2);
 
   setup_system();
   assemble_rhs();
