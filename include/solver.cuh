@@ -207,11 +207,7 @@ namespace PSMF
         // evaluate the right hand side in the equation, including the
         // residual from the inhomogeneous boundary conditions
         // set_inhomogeneous_bc<false>(maxlevel);
-        rhs[maxlevel] = 0.;
-        if (CT::SETS_ == "error_analysis")
-          rhs[maxlevel] = right_hand_side;
-        else
-          rhs[maxlevel] = 1.;
+        rhs[maxlevel] = right_hand_side;
       }
 
 
@@ -600,19 +596,20 @@ namespace PSMF
     using VectorType =
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>;
     using MatrixType = LaplaceOperator<dim, fe_degree, Number, lapalace_kernel>;
-    using SmootherType       = PatchSmoother<MatrixType,
+    using SmootherType = PatchSmoother<MatrixType,
                                        dim,
                                        fe_degree,
                                        local_solver,
                                        smooth_vmult,
                                        smooth_inverse>;
-    using SmootherTypeCoarse = PatchSmoother<MatrixType,
-                                             dim,
-                                             fe_degree,
-                                             LocalSolverVariant::Direct,
-                                             smooth_vmult,
-                                             smooth_inverse>;
-    using MatrixFreeType     = LevelVertexPatch<dim, fe_degree, Number>;
+    using SmootherTypeCoarse =
+      PatchSmoother<MatrixType,
+                    dim,
+                    fe_degree,
+                    local_solver, // LocalSolverVariant::Direct,
+                    smooth_vmult,
+                    smooth_inverse>;
+    using MatrixFreeType = LevelVertexPatch<dim, fe_degree, Number>;
 
     MultigridSolver(
       const DoFHandler<dim>                                &dof_handler,
@@ -644,10 +641,7 @@ namespace PSMF
 
       matrix[maxlevel].initialize_dof_vector(solution);
 
-      if (CT::SETS_ == "error_analysis")
-        rhs = right_hand_side;
-      else
-        rhs = 1.;
+      rhs = right_hand_side;
 
 
       {
@@ -702,7 +696,7 @@ namespace PSMF
         comp_data.push_back(data);
       };
 
-      for (unsigned int s = 0; s < 1; ++s)
+      for (unsigned int s = 0; s < 2; ++s)
         {
           switch (s)
             {
@@ -853,19 +847,35 @@ namespace PSMF
 
           const auto create_mg_timer_function = [&](const unsigned int i,
                                                     const std::string &label) {
-            return [i, label, this](const bool flag, const unsigned int level) {
+            cudaEvent_t start, stop;
+            cudaEventCreate(&start);
+            cudaEventCreate(&stop);
+
+            return [i, label, start, stop, this](const bool         flag,
+                                                 const unsigned int level) {
               if (false && flag)
                 std::cout << label << " " << level << std::endl;
               if (flag)
-                all_mg_timers[level - minlevel][i].second =
-                  std::chrono::system_clock::now();
+                {
+                  cudaEventRecord(start);
+                  // all_mg_timers[level - minlevel][i].second =
+                  // std::chrono::system_clock::now();
+                }
               else
-                all_mg_timers[level - minlevel][i].first +=
-                  std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::system_clock::now() -
-                    all_mg_timers[level - minlevel][i].second)
-                    .count() /
-                  1e9;
+                {
+                  cudaEventRecord(stop);
+                  cudaEventSynchronize(stop);
+                  float milliseconds = 0;
+                  cudaEventElapsedTime(&milliseconds, start, stop);
+                  all_mg_timers[level - minlevel][i].first += milliseconds / 1e3;
+
+                  // all_mg_timers[level - minlevel][i].first +=
+                  //   std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  //     std::chrono::system_clock::now() -
+                  //     all_mg_timers[level - minlevel][i].second)
+                  //     .count() /
+                  //   1e9;
+                }
             };
           };
 
@@ -889,17 +899,30 @@ namespace PSMF
 
           const auto create_mg_precon_timer_function =
             [&](const unsigned int i) {
-              return [i, this](const bool flag) {
+              cudaEvent_t start, stop;
+              cudaEventCreate(&start);
+              cudaEventCreate(&stop);
+
+              return [i, start, stop, this](const bool flag) {
                 if (flag)
-                  all_mg_precon_timers[i].second =
-                    std::chrono::system_clock::now();
+                cudaEventRecord(start);
+                  // all_mg_precon_timers[i].second =
+                  //   std::chrono::system_clock::now();
                 else
-                  all_mg_precon_timers[i].first +=
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                      std::chrono::system_clock::now() -
-                      all_mg_precon_timers[i].second)
-                      .count() /
-                    1e9;
+                {
+                  cudaEventRecord(stop);
+                  cudaEventSynchronize(stop);
+                  float milliseconds = 0;
+                  cudaEventElapsedTime(&milliseconds, start, stop);
+                  all_mg_precon_timers[i].first += milliseconds / 1e3;
+
+                  // all_mg_precon_timers[i].first +=
+                  //   std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  //     std::chrono::system_clock::now() -
+                  //     all_mg_precon_timers[i].second)
+                  //     .count() /
+                  //   1e9;
+                }
               };
             };
 

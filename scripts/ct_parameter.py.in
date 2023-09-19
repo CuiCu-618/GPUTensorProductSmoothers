@@ -98,7 +98,7 @@ def parse_args():
     parser.add_argument('-SMI','--smooth_inv',
                         default='G',
                         nargs='+',
-                        choices=['GLOBAL','ConflictFree'],
+                        choices=['GLOBAL','FUSED_L','ConflictFree'],
                         help="variant of the Schwarz smoother inverse operator"
     )
     parser.add_argument('-SOL','--local_solver',
@@ -199,6 +199,9 @@ class Parameter:
         for kernel in variant:
             if kernel.startswith('G'):
                 kernel_str += r'PSMF::SmootherVariant::GLOBAL, '
+                count += 1 
+            if kernel.startswith('FUSED_L'):
+                kernel_str += r'PSMF::SmootherVariant::FUSED_L, '
                 count += 1 
             elif kernel.endswith('Free'):
                 kernel_str += r'PSMF::SmootherVariant::ConflictFree, '

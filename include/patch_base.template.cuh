@@ -42,18 +42,6 @@ namespace PSMF
   void
   LevelVertexPatch<dim, fe_degree, Number>::free()
   {
-    for (auto &first_dof_color_ptr : first_dof_laplace)
-      Utilities::CUDA::free(first_dof_color_ptr);
-    first_dof_laplace.clear();
-
-    for (auto &first_dof_color_ptr : first_dof_smooth)
-      Utilities::CUDA::free(first_dof_color_ptr);
-    first_dof_smooth.clear();
-
-    for (auto &patch_id_color_ptr : patch_id)
-      Utilities::CUDA::free(patch_id_color_ptr);
-    patch_id.clear();
-
     for (auto &patch_type_color_ptr : patch_type)
       Utilities::CUDA::free(patch_type_color_ptr);
     patch_type.clear();
@@ -81,12 +69,8 @@ namespace PSMF
         Utilities::CUDA::free(mix_der_1d[d]);
       }
 
-    Utilities::CUDA::free(inverse_schur);
-    Utilities::CUDA::free(vertex_patch_matrices);
-
-    Utilities::CUDA::free(eigenvalues[0]);
-    Utilities::CUDA::free(eigenvalues[1]);
-    Utilities::CUDA::free(eigenvalues[2]);
+    Utilities::CUDA::free(hl_rt);
+    Utilities::CUDA::free(hl_rt_interior);
 
     ordering_to_type.clear();
     patch_id_host.clear();
@@ -98,19 +82,7 @@ namespace PSMF
   std::size_t
   LevelVertexPatch<dim, fe_degree, Number>::memory_consumption() const
   {
-    const unsigned int n_dofs_1d = 2 * fe_degree + 1;
-
-    std::size_t result = 0;
-
-    // For each color, add first_dof, patch_id, {mass,derivative}_matrix,
-    // and eigen{values,vectors}.
-    for (unsigned int i = 0; i < n_colors; ++i)
-      {
-        result += 2 * n_patches_laplace[i] * sizeof(unsigned int) +
-                  2 * n_dofs_1d * n_dofs_1d * (1 << level) * sizeof(Number) +
-                  2 * n_dofs_1d * dim * sizeof(Number);
-      }
-    return result;
+    return 0;
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -240,18 +212,8 @@ namespace PSMF
           patch_dofs_host[patch_id * n_patch_dofs + n_patch_dofs_rt +
                           cell * n_cell_dg + i] =
             dof_handler_velocity->n_dofs(level) + local_dof_indices[i];
-
-
-        // for (auto ind : local_dof_indices)
-        //   std::cout << ind << " ";
-        // std::cout << std::endl;
       }
     AssertDimension(it, n_patch_dofs_rt);
-
-    // std::cout << patch_id << std::endl;
-    // for (unsigned int i = n_patch_dofs_rt; i < n_patch_dofs; ++i)
-    //   std::cout << patch_dofs_host[patch_id * n_patch_dofs + i] << " ";
-    // std::cout << std::endl;
 
     // patch_type. TODO: Fix: only works on [0,1]^d
     // TODO: level == 1, one patch only.
@@ -268,30 +230,6 @@ namespace PSMF
           patch_type_host[patch_id * dim + d] =
             (pos > 0) + (pos == (Util::pow(2, level) - 2));
         }
-
-
-    // patch_id
-    // std::sort(numbering.begin(),
-    //           numbering.end(),
-    //           [&](unsigned lhs, unsigned rhs) {
-    //             return first_dof_host[patch_id * 1 + lhs] <
-    //                    first_dof_host[patch_id * 1 + rhs];
-    //           });
-
-    // auto encode = [&](unsigned int sum, int val) { return sum * 10 + val; };
-    // unsigned int label =
-    //   std::accumulate(numbering.begin(), numbering.end(), 0, encode);
-
-    // const auto element = ordering_to_type.find(label);
-    // if (element != ordering_to_type.end()) // Fouond
-    //   {
-    //     patch_id_host[patch_id] = element->second;
-    //   }
-    // else // Not found
-    //   {
-    //     ordering_to_type.insert({label, ordering_types++});
-    //     patch_id_host[patch_id] = ordering_to_type[label];
-    //   }
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -445,12 +383,7 @@ namespace PSMF
         n_patches_smooth[i] = n_patches;
 
         patch_type_host.clear();
-        patch_id_host.clear();
-        first_dof_host.clear();
-        patch_id_host.resize(n_patches);
         patch_type_host.resize(n_patches * dim);
-        first_dof_host.resize(n_patches * 1);
-
         patch_dofs_host.resize(n_patches * n_patch_dofs);
 
         auto patch_v   = graph_ptr_colored_velocity[i].begin(),
@@ -461,21 +394,14 @@ namespace PSMF
              ++patch_v, ++patch_p, ++p_id)
           get_patch_data(*patch_v, *patch_p, p_id);
 
-        alloc_arrays(&first_dof_smooth[i], n_patches * 1);
         alloc_arrays(&patch_type_smooth[i], n_patches * dim);
         alloc_arrays(&patch_dof_smooth[i], n_patches * n_patch_dofs);
 
         cudaError_t error_code =
-          cudaMemcpy(first_dof_smooth[i],
-                     first_dof_host.data(),
-                     1 * n_patches * sizeof(unsigned int),
+          cudaMemcpy(patch_type_smooth[i],
+                     patch_type_host.data(),
+                     dim * n_patches * sizeof(unsigned int),
                      cudaMemcpyHostToDevice);
-        AssertCuda(error_code);
-
-        error_code = cudaMemcpy(patch_type_smooth[i],
-                                patch_type_host.data(),
-                                dim * n_patches * sizeof(unsigned int),
-                                cudaMemcpyHostToDevice);
         AssertCuda(error_code);
 
         error_code = cudaMemcpy(patch_dof_smooth[i],
@@ -501,12 +427,7 @@ namespace PSMF
         n_patches_laplace[i] = n_patches;
 
         patch_type_host.clear();
-        patch_id_host.clear();
-        first_dof_host.clear();
-        patch_id_host.resize(n_patches);
         patch_type_host.resize(n_patches * dim);
-        first_dof_host.resize(n_patches * 1);
-
         patch_dofs_host.resize(n_patches * n_patch_dofs);
 
         auto patch = tmp_ptr[i].begin(), end_patch = tmp_ptr[i].end();
@@ -515,35 +436,14 @@ namespace PSMF
              ++patch, ++patch_p, ++p_id)
           get_patch_data(*patch, *patch_p, p_id);
 
-        // alloc_and_copy_arrays(i);
-        alloc_arrays(&first_dof_laplace[i], n_patches * 1);
-        alloc_arrays(&patch_id[i], n_patches);
         alloc_arrays(&patch_type[i], n_patches * dim);
         alloc_arrays(&patch_dof_laplace[i], n_patches * n_patch_dofs);
 
-        cudaError_t error_code = cudaMemcpy(patch_id[i],
-                                            patch_id_host.data(),
-                                            n_patches * sizeof(unsigned int),
-                                            cudaMemcpyHostToDevice);
-        AssertCuda(error_code);
-
-        error_code = cudaMemcpy(first_dof_laplace[i],
-                                first_dof_host.data(),
-                                1 * n_patches * sizeof(unsigned int),
-                                cudaMemcpyHostToDevice);
-        AssertCuda(error_code);
-
-        // for (unsigned int j = 0; j < patch_type_host.size(); ++j)
-        //   {
-        //     std::cout << patch_type_host[j] << " ";
-        //     if ((j + 1) % dim == 0)
-        //       std::cout << std::endl;
-        //   }
-
-        error_code = cudaMemcpy(patch_type[i],
-                                patch_type_host.data(),
-                                dim * n_patches * sizeof(unsigned int),
-                                cudaMemcpyHostToDevice);
+        cudaError_t error_code =
+          cudaMemcpy(patch_type[i],
+                     patch_type_host.data(),
+                     dim * n_patches * sizeof(unsigned int),
+                     cudaMemcpyHostToDevice);
         AssertCuda(error_code);
 
         error_code = cudaMemcpy(patch_dof_laplace[i],
@@ -585,9 +485,6 @@ namespace PSMF
                               h_interior_host_dg.begin(),
                               h_interior_host_dg.end());
 
-    // for (auto i : h_interior_host_rt)
-    //   std::cout << i << " ";
-
     auto copy_mappings = [](auto &device, const auto &host) {
       cudaError_t cuda_error =
         cudaMemcpyToSymbol(device,
@@ -598,21 +495,41 @@ namespace PSMF
       AssertCuda(cuda_error);
     };
 
-    copy_mappings(h_interior, h_interior_host_rt);
-
-    copy_mappings(htol_rt, htol_rt_host);
-    // copy_mappings(ltoh_rt, ltoh_rt_host);
-
-    copy_mappings(htol_rt_interior, htol_rt_interior_host);
-
     copy_mappings(htol_dgn, htol_dgn_host);
-    // copy_mappings(htol_dgt, htol_dgt_host);
-    // copy_mappings(htol_dgz, htol_dgz_host);
 
     copy_mappings(ltoh_dgn, ltoh_dgn_host);
     copy_mappings(ltoh_dgt, ltoh_dgt_host);
     copy_mappings(ltoh_dgz, ltoh_dgz_host);
 
+    alloc_arrays(&hl_rt_interior, htol_rt_interior_host.size());
+    alloc_arrays(&h_interior, h_interior_host_rt.size());
+    alloc_arrays(&hl_rt, htol_rt_host.size());
+    alloc_arrays(&hl_dgn, htol_dgn_host.size());
+
+    cudaError_t error_code =
+      cudaMemcpy(hl_rt,
+                 htol_rt_host.data(),
+                 htol_rt_host.size() * sizeof(unsigned int),
+                 cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+
+    error_code = cudaMemcpy(hl_rt_interior,
+                            htol_rt_interior_host.data(),
+                            htol_rt_interior_host.size() * sizeof(unsigned int),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+
+    error_code = cudaMemcpy(h_interior,
+                            h_interior_host_rt.data(),
+                            h_interior_host_rt.size() * sizeof(unsigned int),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+
+    error_code = cudaMemcpy(hl_dgn,
+                            htol_dgn_host.data(),
+                            htol_dgn_host.size() * sizeof(unsigned int),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
 
     auto copy_to_device = [](auto &device, const auto &host) {
       LinearAlgebra::ReadWriteVector<unsigned int> rw_vector(host.size());
@@ -642,19 +559,8 @@ namespace PSMF
       dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 3) +
       Util::pow(2 * fe_degree + 2, dim);
 
-    alloc_arrays(&vertex_patch_matrices,
-                 Util::pow(n_patch_dofs, 2) * Util::pow(3, dim));
-
-    alloc_arrays(&inverse_schur,
-                 Util::pow(n_patch_dofs_dg, 2) * Util::pow(3, dim));
-
     alloc_arrays(&eigenvalues[0],
                  Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
-    alloc_arrays(&eigenvalues[1],
-                 Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
-    alloc_arrays(&eigenvalues[2],
-                 Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
-
 
     for (unsigned int d = 0; d < dim; ++d)
       {
@@ -673,9 +579,7 @@ namespace PSMF
       }
 
     reinit_tensor_product_laplace();
-    // Timer time;
     reinit_tensor_product_smoother();
-    // std::cout << time.wall_time() << std::endl;
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -685,19 +589,18 @@ namespace PSMF
   {
     Data data_copy;
 
-    data_copy.n_dofs_per_dim  = (1 << level) * fe_degree + 1;
     data_copy.n_patches       = n_patches_laplace[color];
     data_copy.patch_per_block = patch_per_block;
-    data_copy.first_dof       = first_dof_laplace[color];
-    data_copy.patch_id        = patch_id[color];
     data_copy.patch_type      = patch_type[color];
     data_copy.rt_mass_1d      = rt_mass_1d;
     data_copy.rt_laplace_1d   = rt_laplace_1d;
     data_copy.mix_mass_1d     = mix_mass_1d;
     data_copy.mix_der_1d      = mix_der_1d;
 
-    data_copy.patch_dof_laplace     = patch_dof_laplace[color];
-    data_copy.vertex_patch_matrices = vertex_patch_matrices;
+    data_copy.htol_rt  = hl_rt;
+    data_copy.htol_dgn = hl_dgn;
+
+    data_copy.patch_dof_laplace = patch_dof_laplace[color];
 
     return data_copy;
   }
@@ -714,18 +617,20 @@ namespace PSMF
         data_copy[i].n_patches         = n_patches_smooth[color];
         data_copy[i].patch_per_block   = patch_per_block;
         data_copy[i].relaxation        = relaxation;
-        data_copy[i].first_dof         = first_dof_smooth[color];
         data_copy[i].patch_type        = patch_type_smooth[color];
         data_copy[i].eigenvalues       = eigenvalues[i];
-        data_copy[i].eigenvectors      = eigenvectors[i];
         data_copy[i].smooth_mass_1d    = smooth_mass_1d;
         data_copy[i].smooth_stiff_1d   = smooth_stiff_1d;
         data_copy[i].smooth_mixmass_1d = smooth_mixmass_1d;
         data_copy[i].smooth_mixder_1d  = smooth_mixder_1d;
 
-        data_copy[i].eigvals       = eigvals;
-        data_copy[i].eigvecs       = eigvecs;
-        data_copy[i].inverse_schur = inverse_schur;
+        data_copy[i].eigvals = eigvals;
+        data_copy[i].eigvecs = eigvecs;
+
+        data_copy[i].htol_rt          = hl_rt;
+        data_copy[i].htol_rt_interior = hl_rt_interior;
+        data_copy[i].h_interior       = h_interior;
+        data_copy[i].htol_dgn         = hl_dgn;
 
         data_copy[i].patch_dof_smooth = patch_dof_smooth[color];
       }
@@ -787,27 +692,29 @@ namespace PSMF
     auto Mix_mass   = assemble_Mixmass_tensor();
     auto Mix_der    = assemble_Mixder_tensor();
 
-    auto copy_to_device = [](auto tensor, auto dst, unsigned int n) {
-      for (unsigned int d = 0; d < dim; ++d)
-        {
-          const unsigned int n_elements = Util::pow(2 * fe_degree + 3, 2);
+    auto copy_to_device =
+      [](auto tensor, auto dst, unsigned int s, unsigned int n) {
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            const unsigned int n_elements = Util::pow(2 * fe_degree + 3, 2);
 
-          auto mat = new Number[n_elements * n];
-          for (unsigned int i = 0; i < n; ++i)
-            std::transform(tensor[d][i].begin(),
-                           tensor[d][i].end(),
-                           &mat[n_elements * i],
-                           [](auto m) -> Number { return m; });
+            auto mat = new Number[n_elements * (n - s)];
+            for (unsigned int i = 0; i < (n - s); ++i)
+              std::transform(tensor[d][i + s].begin(),
+                             tensor[d][i + s].end(),
+                             &mat[n_elements * i],
+                             [](auto m) -> Number { return m; });
 
-          cudaError_t error_code = cudaMemcpy(dst[d],
-                                              mat,
-                                              n * n_elements * sizeof(Number),
-                                              cudaMemcpyHostToDevice);
-          AssertCuda(error_code);
+            cudaError_t error_code =
+              cudaMemcpy(dst[d],
+                         mat,
+                         (n - s) * n_elements * sizeof(Number),
+                         cudaMemcpyHostToDevice);
+            AssertCuda(error_code);
 
-          delete[] mat;
-        }
-    };
+            delete[] mat;
+          }
+      };
 
     auto interior =
       [](auto matrix, unsigned int s, unsigned int e, unsigned int o) {
@@ -845,28 +752,10 @@ namespace PSMF
     auto mix_mass_int   = interior(Mix_mass, 2, 3, 0);
     auto mix_der_int    = interior(Mix_der, 2, 3, 0);
 
-    copy_to_device(rt_mass_int, smooth_mass_1d, 1);
-    copy_to_device(rt_laplace_int, smooth_stiff_1d, 3);
-    copy_to_device(mix_mass_int, smooth_mixmass_1d, 1);
-    copy_to_device(mix_der_int, smooth_mixder_1d, 1);
-
-
-    auto print_matrices = [](auto matrix) {
-      for (auto i = 0U; i < matrix.size(); ++i)
-        {
-          for (auto m = 0U; m < matrix[i].size(0); ++m)
-            {
-              for (auto n = 0U; n < matrix[i].size(1); ++n)
-                std::cout << matrix[i](m, n) << " ";
-              std::cout << std::endl;
-            }
-          std::cout << std::endl;
-        }
-      std::cout << std::endl;
-    };
-
-    // print_matrices(mix_der_int[0]);
-    // print_matrices(mix_mass_int[1]);
+    copy_to_device(RT_mass, smooth_mass_1d, 2, 3);
+    copy_to_device(RT_laplace, smooth_stiff_1d, 3, 6);
+    copy_to_device(mix_der_int, smooth_mixmass_1d, 0, 1);
+    copy_to_device(Mix_der, smooth_mixder_1d, 2, 3);
 
     auto copy_vals = [](auto tensor, auto dst, auto shift) {
       constexpr unsigned int n_dofs_1d = Util::pow(2 * fe_degree + 3, 1);
@@ -930,18 +819,6 @@ namespace PSMF
                    dir == 1 ? indices[1] + indices[0] * 3 + indices[2] * 9 :
                               indices[1] + indices[2] * 3 + indices[0] * 9;
 
-      // if (indices[0] * indices[1] == 4)
-      //   {
-      //     std::cout << "TESTING EIGS " << dir << std::endl;
-      //     for (auto eigs : eigenvalue_tensor)
-      //       {
-      //         for (auto e : eigs)
-      //           std::cout << e << " ";
-      //         std::cout << std::endl;
-      //       }
-      //     print_matrices(eigenvector_tensor);
-      //   }
-
       copy_vals(eigenvalue_tensor, eigvals[dir], shift);
       copy_vecs(eigenvector_tensor, eigvecs[dir], shift);
     };
@@ -955,6 +832,7 @@ namespace PSMF
           {
             // Exact
             {
+              /*
               std::array<FullMatrix<double>, dim> A;
               if constexpr (dim == 2)
                 {
@@ -1145,7 +1023,7 @@ namespace PSMF
               LAPACKFullMatrix<double> exact_inverse(AA_inv.m(), AA_inv.n());
               exact_inverse = AA_inv;
               // Timer time;
-              exact_inverse.compute_inverse_svd_with_kernel(1);
+              // exact_inverse.compute_inverse_svd_with_kernel(1);
               // std::cout << k + j * 3 + z * 9 << " " << time.wall_time() <<
               // std::endl;
               Vector<double> tmp(AA_inv.m());
@@ -1180,7 +1058,7 @@ namespace PSMF
                 delete[] vals;
               }
 
-              /*
+              
               // Schur direct
               {
                 auto h_interior_rt = dm.get_h_to_l_rt_interior();
@@ -1461,6 +1339,7 @@ namespace PSMF
     copy_to_device(Mix_mass, mix_mass_1d);
     copy_to_device(Mix_der, mix_der_1d);
 
+    /*
     constexpr unsigned dim_z = dim == 2 ? 1 : 3;
 
     for (unsigned int z = 0; z < dim_z; ++z)
@@ -1670,6 +1549,7 @@ namespace PSMF
 
             delete[] vals;
           }
+    */
   }
 
   template <int dim, int fe_degree, typename Number>

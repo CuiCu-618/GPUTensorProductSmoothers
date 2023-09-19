@@ -932,7 +932,7 @@ LaplaceProblem<dim, fe_degree>::run()
 
   auto n_refinement =
     static_cast<unsigned int>(std::log2((n_dofs_1d - 1) / fe_degree));
-  triangulation.refine_global(2);
+  triangulation.refine_global(1);
 
   setup_system();
   assemble_rhs();

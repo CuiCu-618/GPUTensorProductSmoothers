@@ -69,52 +69,7 @@ namespace PSMF
 
   template <int dim, int fe_degree, typename Number>
   struct LocalLaplace<dim, fe_degree, Number, LaplaceVariant::MatrixStruct>
-  {
-    mutable std::size_t shared_mem;
-    mutable dim3        block_dim;
-
-    LocalLaplace()
-      : shared_mem(0){};
-
-    void
-    setup_kernel(const unsigned int patch_per_block) const
-    {
-      shared_mem = 0;
-
-      static constexpr unsigned int n_patch_dofs_rt =
-        dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * fe_degree + 3);
-
-      static constexpr unsigned int n_patch_dofs_dg =
-        Util::pow(2 * fe_degree + 2, dim);
-
-      static constexpr unsigned int n_patch_dofs =
-        n_patch_dofs_rt + n_patch_dofs_dg;
-
-      // local_src, local_dst
-      shared_mem += 2 * patch_per_block * n_patch_dofs * sizeof(Number);
-
-      AssertCuda(
-        cudaFuncSetAttribute(laplace_kernel_matrix<dim, fe_degree, Number>,
-                             cudaFuncAttributeMaxDynamicSharedMemorySize,
-                             shared_mem));
-
-      block_dim = 256;
-    }
-
-    template <typename VectorType, typename DataType>
-    void
-    loop_kernel(const VectorType &src,
-                VectorType       &dst,
-                const DataType   &gpu_data,
-                const dim3       &grid_dim,
-                const dim3 &) const
-    {
-      laplace_kernel_matrix<dim, fe_degree, Number>
-        <<<grid_dim, block_dim, shared_mem>>>(src.get_values(),
-                                              dst.get_values(),
-                                              gpu_data);
-    }
-  };
+  {};
 
   template <int dim, int fe_degree, typename Number>
   struct LocalLaplace<dim, fe_degree, Number, LaplaceVariant::Basic>

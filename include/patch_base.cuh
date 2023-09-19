@@ -211,11 +211,6 @@ namespace PSMF
     struct Data
     {
       /**
-       * Number of dofs per dim.
-       */
-      unsigned int n_dofs_per_dim;
-
-      /**
        * Number of patches for each color.
        */
       unsigned int n_patches;
@@ -230,26 +225,8 @@ namespace PSMF
        */
       Number relaxation;
 
-      /**
-       * Pointer to the the first degree of freedom in each patch.
-       * @note Need Lexicographic ordering degree of freedoms.
-       * @note For DG case, the first degree of freedom index of
-       *       four cells in a patch is stored consecutively.
-       */
-      unsigned int *first_dof;
-
       unsigned int *patch_dof_laplace;
       unsigned int *patch_dof_smooth;
-
-      /**
-       * Pointer to patch matrices for Stokes operator.
-       */
-      Number *vertex_patch_matrices;
-
-      /**
-       * Pointer to the patch cell ordering type.
-       */
-      unsigned int *patch_id;
 
       /**
        * Pointer to the patch type. left, middle, right
@@ -257,14 +234,24 @@ namespace PSMF
       unsigned int *patch_type;
 
       /**
-       * Pointer to mapping from l to h
+       * Pointer to mapping from h to l
        */
-      unsigned int *l_to_h;
+      unsigned int *htol_rt_interior;
 
       /**
-       * Pointer to mapping from l to h
+       * Pointer to mapping from h to l
        */
-      unsigned int *h_to_l;
+      unsigned int *h_interior;
+
+      /**
+       * Pointer to mapping from h to l
+       */
+      unsigned int *htol_rt;
+
+      /**
+       * Pointer to mapping from h to l
+       */
+      unsigned int *htol_dgn;
 
       /**
        * Pointer to 1D RT mass matrix for Stokes operator.
@@ -312,12 +299,6 @@ namespace PSMF
       Number *eigenvalues;
 
       /**
-       * Pointer to 1D eigenvectors for smoothing operator.
-       */
-      Number *eigenvectors;
-
-
-      /**
        * Pointer to 1D eigenvalues for smoothing operator RT.
        */
       cuda::std::array<Number *, dim> eigvals;
@@ -326,11 +307,6 @@ namespace PSMF
        * Pointer to 1D eigenvectors for smoothing operator RT.
        */
       cuda::std::array<Number *, dim> eigvecs;
-
-      /**
-       * Schur Inv
-       */
-      Number *inverse_schur;
     };
 
     /**
@@ -642,18 +618,24 @@ namespace PSMF
     std::unordered_map<unsigned int, std::array<unsigned int, 3>> lookup_table;
 
     /**
-     * Pointer to mapping from l to h
+     * Pointer to mapping from h to l
      */
-    unsigned int *l_to_h;
-
-    std::vector<unsigned int> l_to_h_host;
+    unsigned int *hl_rt_interior;
 
     /**
-     * Pointer to mapping from l to h
+     * Pointer to mapping from h to h_int
      */
-    unsigned int *h_to_l;
+    unsigned int *h_interior;
 
-    std::vector<unsigned int> h_to_l_host;
+    /**
+     * Pointer to mapping from h to l
+     */
+    unsigned int *hl_rt;
+
+    /**
+     * Pointer to mapping from h to l
+     */
+    unsigned int *hl_dgn;
 
     /**
      * A variable storing the local indices of Dirichlet boundary conditions
@@ -788,16 +770,7 @@ namespace PSMF
   };
 
 
-  __constant__ unsigned int
-    h_interior[Util::MAX_PATCH_DOFS_RT_INT + Util::MAX_PATCH_DOFS_DG];
-  __constant__ unsigned int htol_rt_interior[Util::MAX_PATCH_DOFS_RT_INT];
-
-  __constant__ unsigned int htol_rt[Util::MAX_PATCH_DOFS_RT];
-  // __constant__ unsigned int ltoh_rt[Util::MAX_PATCH_DOFS_RT];
-
   __constant__ unsigned int htol_dgn[Util::MAX_PATCH_DOFS_DG];
-  // __constant__ unsigned int htol_dgt[Util::MAX_PATCH_DOFS_DG];
-  // __constant__ unsigned int htol_dgz[Util::MAX_PATCH_DOFS_DG];
 
   __constant__ unsigned int ltoh_dgn[Util::MAX_PATCH_DOFS_DG];
   __constant__ unsigned int ltoh_dgt[Util::MAX_PATCH_DOFS_DG];
@@ -948,10 +921,10 @@ namespace PSMF
   };
 
 
-  template <int dim, typename Number, SmootherVariant smoother>
+  template <int dim, typename Number>
   struct SharedDataSmoother<dim,
                             Number,
-                            smoother,
+                            SmootherVariant::GLOBAL,
                             LocalSolverVariant::SchurTensorProduct>
     : SharedDataBase<Number>
   {
@@ -967,7 +940,8 @@ namespace PSMF
     SharedDataSmoother(Number      *data,
                        unsigned int n_buff,
                        unsigned int n_dofs_1d,
-                       unsigned int local_dim)
+                       unsigned int local_dim,
+                       unsigned int n_patch_dofs_dg)
     {
       local_src = data;
       local_dst = local_src + n_buff * local_dim;
@@ -981,52 +955,51 @@ namespace PSMF
 
       tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * 1;
 
-      local_vars = tmp + n_buff * 4 * local_dim;
+      local_vars = tmp + n_buff * (local_dim + 4 * n_patch_dofs_dg);
     }
 
     Number *local_vars;
   };
 
   /**
-   * Bila or KSVD12 local solver.
+   * Fused
    */
-  template <int dim,
-            typename Number,
-            SmootherVariant    smoother,
-            LocalSolverVariant local_solver>
-  struct SharedDataSmoother : SharedDataBase<Number>
+  template <int dim, typename Number>
+  struct SharedDataSmoother<dim,
+                            Number,
+                            SmootherVariant::FUSED_L,
+                            LocalSolverVariant::SchurTensorProduct>
+    : SharedDataBase<Number>
   {
     using SharedDataBase<Number>::local_src;
     using SharedDataBase<Number>::local_dst;
     using SharedDataBase<Number>::local_mass;
     using SharedDataBase<Number>::local_laplace;
     using SharedDataBase<Number>::local_mix_mass;
+    using SharedDataBase<Number>::local_mix_der;
     using SharedDataBase<Number>::tmp;
 
     __device__
     SharedDataSmoother(Number      *data,
                        unsigned int n_buff,
                        unsigned int n_dofs_1d,
-                       unsigned int local_dim)
+                       unsigned int local_dim,
+                       unsigned int n_patch_dofs_dg)
     {
       local_src = data;
       local_dst = local_src + n_buff * local_dim;
 
-      if constexpr (smoother == SmootherVariant::GLOBAL)
-        {
-          local_mass    = local_dst + n_buff * local_dim;
-          local_laplace = local_mass + n_buff * n_dofs_1d * dim;
-          tmp           = local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim;
-        }
-      else
-        {
-          local_mass     = local_dst + n_buff * local_dim;
-          local_laplace  = local_mass + n_buff * n_dofs_1d * n_dofs_1d;
-          local_mix_mass = local_laplace + n_buff * n_dofs_1d * n_dofs_1d;
-          // TODO: should be able to use less shared memory
-          tmp = local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * (dim - 1);
-        }
+      local_mass    = local_dst + n_buff * local_dim;
+      local_laplace = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim;
+      local_mix_mass =
+        local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_der = local_mix_mass;
+
+      tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * 1;
+
+      local_vars = tmp + n_buff * (local_dim + 4 * n_patch_dofs_dg);
     }
+    Number *local_vars;
   };
 
 

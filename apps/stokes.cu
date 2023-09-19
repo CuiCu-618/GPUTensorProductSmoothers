@@ -278,19 +278,27 @@ namespace Step64
   void
   LaplaceProblem<dim, fe_degree>::assemble_rhs()
   {
+    const unsigned int n_dofs = dof_handler.n_dofs();
+    system_rhs_dev.reinit(n_dofs);
+
+    LinearAlgebra::ReadWriteVector<double> rw_vector(n_dofs);
+    LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+      system_rhs_host(n_dofs);
+
+
+    if (CT::SETS_ == "none")
+      {
+        for (unsigned int i = 0; i < dof_handler_velocity.n_dofs(); ++i)
+          system_rhs_host[i] = 1.;
+        rw_vector.import(system_rhs_host, VectorOperation::insert);
+        system_rhs_dev.import(rw_vector, VectorOperation::insert);
+
+        return;
+      }
     Timer time;
 
     SolutionVelocity<dim> exact_solution;
     RightHandSide<dim>    rhs_function(std::make_shared<Solution<dim>>());
-
-    const unsigned int n_dofs = dof_handler.n_dofs();
-
-    system_rhs_dev.reinit(n_dofs);
-
-    LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
-      system_rhs_host(n_dofs);
-
-    LinearAlgebra::ReadWriteVector<double> rw_vector(n_dofs);
 
     AffineConstraints<double> constraints;
     constraints.clear();
