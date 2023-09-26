@@ -238,8 +238,8 @@ namespace PSMF
       shared_mem += dim * patch_per_block * (dim + 1) *
                     Util::pow(2 * fe_degree + 3, 2) * sizeof(Number);
       // M D
-      shared_mem += patch_per_block * Util::pow(2 * fe_degree + 3, 2) * 1 *
-                    sizeof(Number);
+      shared_mem +=
+        patch_per_block * Util::pow(2 * fe_degree + 3, 2) * 1 * sizeof(Number);
 
       AssertCuda(cudaFuncSetAttribute(
         loop_kernel_fused_l<dim, fe_degree, Number, lapalace, solver>,

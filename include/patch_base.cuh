@@ -228,6 +228,15 @@ namespace PSMF
       unsigned int *patch_dof_laplace;
       unsigned int *patch_dof_smooth;
 
+      unsigned int *first_dof_rt;
+      unsigned int *first_dof_dg;
+
+      unsigned int *base_dof_rt;
+      unsigned int *dof_offset_rt;
+
+      unsigned int *base_dof_dg;
+      unsigned int *dof_offset_dg;
+
       /**
        * Pointer to the patch type. left, middle, right
        */
@@ -564,11 +573,20 @@ namespace PSMF
      * @note For DG case, the first degree of freedom index of
      *       four cells in a patch is stored consecutively.
      */
-    std::vector<unsigned int *> first_dof_laplace;
-    std::vector<unsigned int *> first_dof_smooth;
+    std::vector<unsigned int *> first_dof_rt_laplace;
+    std::vector<unsigned int *> first_dof_rt_smooth;
+
+    std::vector<unsigned int *> first_dof_dg_laplace;
+    std::vector<unsigned int *> first_dof_dg_smooth;
 
     std::vector<unsigned int *> patch_dof_laplace;
     std::vector<unsigned int *> patch_dof_smooth;
+
+    unsigned int *base_dof_rt;
+    unsigned int *dof_offset_rt;
+
+    unsigned int *base_dof_dg;
+    unsigned int *dof_offset_dg;
 
     /**
      * Vector of the the first degree of freedom
@@ -576,6 +594,9 @@ namespace PSMF
      * Initialize on host and copy to device later.
      */
     std::vector<unsigned int> first_dof_host;
+    std::vector<unsigned int> first_dof_host_dg;
+
+    std::vector<unsigned int> h_to_first;
 
     std::vector<unsigned int> patch_dofs_host;
 
@@ -1019,6 +1040,13 @@ namespace PSMF
                        fe_degree == 2 ? 2 :
                                         1) :
                       1;
+  }
+
+  template <int dim>
+  __host__ __device__ constexpr unsigned int
+  n_first_dofs_rt()
+  {
+    return dim == 2 ? 4 + 3 + 3 + 2 + 4 : 6 + 5 + 5 + 4 + 5 + 4 + 4 + 3 + 8;
   }
 
 } // namespace PSMF

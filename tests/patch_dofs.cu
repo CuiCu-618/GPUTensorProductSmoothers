@@ -566,6 +566,111 @@ print_dofs()
   std::cout << dof_handler.get_fe().get_sub_fe(0, dim).n_dofs_per_cell() << " "
             << dof_handler.get_fe().get_sub_fe(dim, 1).n_dofs_per_cell()
             << "\n";
+
+  auto print_vec = [](auto &vec) {
+    for (auto i : vec)
+      std::cout << i << " ";
+    std::cout << "\n";
+  };
+
+  PSMF::DoFMapping<dim, degree> dm;
+
+  auto first_dof  = dm.get_first_dofs_rt();
+  auto base_dof   = dm.get_base_dof_rt();
+  auto dof_offset = dm.get_dof_offset_rt();
+
+  auto base_dofdg   = dm.get_base_dof_dg();
+  auto dof_offsetdg = dm.get_dof_offset_dg();
+
+
+  print_vec(first_dof);
+  print_vec(base_dof);
+  print_vec(dof_offset);
+  print_vec(base_dofdg);
+  print_vec(dof_offsetdg);
+}
+
+template <int dim, int degree>
+void
+compute_ind()
+{
+  constexpr int face_dofs = Util::pow(degree + 1, dim - 1);
+  constexpr int quad_dofs = dim * Util::pow(degree + 1, dim - 1) * degree;
+
+
+  constexpr std::array<int, 4> cell_faces     = {{4, 3, 3, 2}};
+  constexpr std::array<int, 4> cell_face_dofs = {{cell_faces[0] * face_dofs,
+                                                  cell_faces[1] * face_dofs,
+                                                  cell_faces[2] * face_dofs,
+                                                  cell_faces[3] * face_dofs}};
+  constexpr std::array<int, 4> cell_dofs      = {{cell_face_dofs[0] + quad_dofs,
+                                                  cell_face_dofs[1] + quad_dofs,
+                                                  cell_face_dofs[2] + quad_dofs,
+                                                  cell_face_dofs[3] + quad_dofs}};
+
+  std::cout << face_dofs << " " << quad_dofs << std::endl;
+
+  std::vector<int> input_dofs;
+
+  int start = 0;
+  for (int c = 0; c < 4; ++c)
+    {
+      for (int f = 0; f < cell_faces[c]; ++f)
+        {
+          input_dofs.push_back(start);
+          start += face_dofs;
+        }
+      input_dofs.push_back(start);
+      start += quad_dofs;
+    }
+
+  for (auto i : input_dofs)
+    std::cout << i << " ";
+  std::cout << std::endl;
+
+  int base   = -1;
+  int offset = -1;
+
+  for (int tid = 0; tid < 84; ++tid)
+    {
+      for (int c = 0; c < 4; ++c)
+        {
+          int patch_dof = 0;
+          for (int subc = 0; subc < c + 1; ++subc)
+            patch_dof += cell_dofs[subc];
+
+          if (tid < patch_dof) // cell
+            {
+              int local_tid = tid - patch_dof + cell_dofs[c];
+
+              if (local_tid >= cell_face_dofs[c]) // quad dof
+                {
+                  int shift = -1;
+                  for (int subc = 0; subc <= c; ++subc)
+                    shift += (1 + cell_faces[subc]);
+                  base   = input_dofs[shift];
+                  offset = local_tid - cell_face_dofs[c];
+
+                  goto exitLoop;
+                }
+
+              for (int f = 0; f < cell_faces[c]; ++f)
+                if (local_tid < (f + 1) * face_dofs) // face dof
+                  {
+                    int shift = 0;
+                    for (int subc = 0; subc < c; ++subc)
+                      shift += (1 + cell_faces[subc]);
+
+                    base   = input_dofs[shift + f];
+                    offset = local_tid - f * face_dofs;
+                    goto exitLoop;
+                  }
+            }
+        }
+    exitLoop:
+      std::cout << tid << ": " << base << " " << offset << " : "
+                << base + offset << std::endl;
+    }
 }
 
 int
@@ -578,7 +683,9 @@ main()
   // test<2, 5>();
 
   // run<2, 2>();
-  run<3, 2>();
+  // run<3, 2>();
 
   print_dofs<3, 2>();
+
+  // compute_ind<2, 2>();
 }

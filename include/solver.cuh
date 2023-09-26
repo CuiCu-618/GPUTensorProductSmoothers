@@ -867,7 +867,8 @@ namespace PSMF
                   cudaEventSynchronize(stop);
                   float milliseconds = 0;
                   cudaEventElapsedTime(&milliseconds, start, stop);
-                  all_mg_timers[level - minlevel][i].first += milliseconds / 1e3;
+                  all_mg_timers[level - minlevel][i].first +=
+                    milliseconds / 1e3;
 
                   // all_mg_timers[level - minlevel][i].first +=
                   //   std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -905,24 +906,24 @@ namespace PSMF
 
               return [i, start, stop, this](const bool flag) {
                 if (flag)
-                cudaEventRecord(start);
-                  // all_mg_precon_timers[i].second =
-                  //   std::chrono::system_clock::now();
+                  cudaEventRecord(start);
+                // all_mg_precon_timers[i].second =
+                //   std::chrono::system_clock::now();
                 else
-                {
-                  cudaEventRecord(stop);
-                  cudaEventSynchronize(stop);
-                  float milliseconds = 0;
-                  cudaEventElapsedTime(&milliseconds, start, stop);
-                  all_mg_precon_timers[i].first += milliseconds / 1e3;
+                  {
+                    cudaEventRecord(stop);
+                    cudaEventSynchronize(stop);
+                    float milliseconds = 0;
+                    cudaEventElapsedTime(&milliseconds, start, stop);
+                    all_mg_precon_timers[i].first += milliseconds / 1e3;
 
-                  // all_mg_precon_timers[i].first +=
-                  //   std::chrono::duration_cast<std::chrono::nanoseconds>(
-                  //     std::chrono::system_clock::now() -
-                  //     all_mg_precon_timers[i].second)
-                  //     .count() /
-                  //   1e9;
-                }
+                    // all_mg_precon_timers[i].first +=
+                    //   std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    //     std::chrono::system_clock::now() -
+                    //     all_mg_precon_timers[i].second)
+                    //     .count() /
+                    //   1e9;
+                  }
               };
             };
 

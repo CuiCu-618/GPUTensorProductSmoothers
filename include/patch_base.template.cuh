@@ -208,12 +208,20 @@ namespace PSMF
 
         auto cell_ptr_p = (*patch_p)[cell];
         cell_ptr_p->get_mg_dof_indices(local_dof_indices);
+
+        first_dof_host_dg[patch_id * regular_vpatch_size + cell] =
+          dof_handler_velocity->n_dofs(level) + local_dof_indices[0];
+
         for (unsigned int i = 0; i < n_cell_dg; ++i)
           patch_dofs_host[patch_id * n_patch_dofs + n_patch_dofs_rt +
                           cell * n_cell_dg + i] =
             dof_handler_velocity->n_dofs(level) + local_dof_indices[i];
       }
     AssertDimension(it, n_patch_dofs_rt);
+
+    for (unsigned int ind = 0; ind < n_first_dofs_rt<dim>(); ++ind)
+      first_dof_host[patch_id * n_first_dofs_rt<dim>() + ind] =
+        patch_dofs_host[patch_id * n_patch_dofs + h_to_first[ind]];
 
     // patch_type. TODO: Fix: only works on [0,1]^d
     // TODO: level == 1, one patch only.
@@ -377,14 +385,22 @@ namespace PSMF
 
     setup_color_arrays(n_colors);
 
+    DoFMapping<dim, fe_degree> dm;
+
+    h_to_first = dm.get_first_dofs_rt();
+
     for (unsigned int i = 0; i < graph_ptr_colored_velocity.size(); ++i)
       {
         auto n_patches      = graph_ptr_colored_velocity[i].size();
         n_patches_smooth[i] = n_patches;
 
+        first_dof_host.clear();
+        first_dof_host_dg.clear();
         patch_type_host.clear();
         patch_type_host.resize(n_patches * dim);
         patch_dofs_host.resize(n_patches * n_patch_dofs);
+        first_dof_host.resize(n_patches * n_first_dofs_rt<dim>());
+        first_dof_host_dg.resize(n_patches * regular_vpatch_size);
 
         auto patch_v   = graph_ptr_colored_velocity[i].begin(),
              end_patch = graph_ptr_colored_velocity[i].end();
@@ -395,7 +411,10 @@ namespace PSMF
           get_patch_data(*patch_v, *patch_p, p_id);
 
         alloc_arrays(&patch_type_smooth[i], n_patches * dim);
-        alloc_arrays(&patch_dof_smooth[i], n_patches * n_patch_dofs);
+        // alloc_arrays(&patch_dof_smooth[i], n_patches * n_patch_dofs);
+        alloc_arrays(&first_dof_rt_smooth[i],
+                     n_patches * n_first_dofs_rt<dim>());
+        alloc_arrays(&first_dof_dg_smooth[i], n_patches * regular_vpatch_size);
 
         cudaError_t error_code =
           cudaMemcpy(patch_type_smooth[i],
@@ -404,10 +423,24 @@ namespace PSMF
                      cudaMemcpyHostToDevice);
         AssertCuda(error_code);
 
-        error_code = cudaMemcpy(patch_dof_smooth[i],
-                                patch_dofs_host.data(),
-                                n_patch_dofs * n_patches * sizeof(unsigned int),
-                                cudaMemcpyHostToDevice);
+        // error_code = cudaMemcpy(patch_dof_smooth[i],
+        //                         patch_dofs_host.data(),
+        //                         n_patch_dofs * n_patches * sizeof(unsigned
+        //                         int), cudaMemcpyHostToDevice);
+        // AssertCuda(error_code);
+
+        error_code =
+          cudaMemcpy(first_dof_rt_smooth[i],
+                     first_dof_host.data(),
+                     n_first_dofs_rt<dim>() * n_patches * sizeof(unsigned int),
+                     cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+
+        error_code =
+          cudaMemcpy(first_dof_dg_smooth[i],
+                     first_dof_host_dg.data(),
+                     regular_vpatch_size * n_patches * sizeof(unsigned int),
+                     cudaMemcpyHostToDevice);
         AssertCuda(error_code);
       }
 
@@ -426,9 +459,13 @@ namespace PSMF
         auto n_patches       = tmp_ptr[i].size();
         n_patches_laplace[i] = n_patches;
 
+        first_dof_host.clear();
+        first_dof_host_dg.clear();
         patch_type_host.clear();
         patch_type_host.resize(n_patches * dim);
         patch_dofs_host.resize(n_patches * n_patch_dofs);
+        first_dof_host.resize(n_patches * n_first_dofs_rt<dim>());
+        first_dof_host_dg.resize(n_patches * regular_vpatch_size);
 
         auto patch = tmp_ptr[i].begin(), end_patch = tmp_ptr[i].end();
         auto patch_p = tmp_ptr_p[i].begin();
@@ -437,7 +474,10 @@ namespace PSMF
           get_patch_data(*patch, *patch_p, p_id);
 
         alloc_arrays(&patch_type[i], n_patches * dim);
-        alloc_arrays(&patch_dof_laplace[i], n_patches * n_patch_dofs);
+        // alloc_arrays(&patch_dof_laplace[i], n_patches * n_patch_dofs);
+        alloc_arrays(&first_dof_rt_laplace[i],
+                     n_patches * n_first_dofs_rt<dim>());
+        alloc_arrays(&first_dof_dg_laplace[i], n_patches * regular_vpatch_size);
 
         cudaError_t error_code =
           cudaMemcpy(patch_type[i],
@@ -446,18 +486,30 @@ namespace PSMF
                      cudaMemcpyHostToDevice);
         AssertCuda(error_code);
 
-        error_code = cudaMemcpy(patch_dof_laplace[i],
-                                patch_dofs_host.data(),
-                                n_patch_dofs * n_patches * sizeof(unsigned int),
-                                cudaMemcpyHostToDevice);
+        // error_code = cudaMemcpy(patch_dof_laplace[i],
+        //                         patch_dofs_host.data(),
+        //                         n_patch_dofs * n_patches * sizeof(unsigned
+        //                         int), cudaMemcpyHostToDevice);
+        // AssertCuda(error_code);
+
+        error_code =
+          cudaMemcpy(first_dof_rt_laplace[i],
+                     first_dof_host.data(),
+                     n_first_dofs_rt<dim>() * n_patches * sizeof(unsigned int),
+                     cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+
+        error_code =
+          cudaMemcpy(first_dof_dg_laplace[i],
+                     first_dof_host_dg.data(),
+                     regular_vpatch_size * n_patches * sizeof(unsigned int),
+                     cudaMemcpyHostToDevice);
         AssertCuda(error_code);
       }
 
     setup_configuration(n_colors);
 
     // Mapping
-    DoFMapping<dim, fe_degree> dm;
-
     auto h_interior_host_rt = dm.get_h_to_l_rt_interior();
     auto h_interior_host_dg = dm.get_h_to_l_dg_normal();
 
@@ -474,6 +526,12 @@ namespace PSMF
     auto ltoh_dgt_host = dm.get_l_to_h_dg_tangent();
     auto ltoh_dgz_host = dm.get_l_to_h_dg_z();
 
+    auto base_dof_rt_host = dm.get_base_dof_rt();
+    auto base_dof_dg_host = dm.get_base_dof_dg();
+
+    auto dof_offset_rt_host = dm.get_dof_offset_rt();
+    auto dof_offset_dg_host = dm.get_dof_offset_dg();
+
 
     std::sort(h_interior_host_rt.begin(), h_interior_host_rt.end());
     std::sort(h_interior_host_dg.begin(), h_interior_host_dg.end());
@@ -485,7 +543,7 @@ namespace PSMF
                               h_interior_host_dg.begin(),
                               h_interior_host_dg.end());
 
-    auto copy_mappings = [](auto &device, const auto &host) {
+    auto copy_mappings_const = [](auto &device, const auto &host) {
       cudaError_t cuda_error =
         cudaMemcpyToSymbol(device,
                            host.data(),
@@ -495,41 +553,30 @@ namespace PSMF
       AssertCuda(cuda_error);
     };
 
-    copy_mappings(htol_dgn, htol_dgn_host);
+    copy_mappings_const(htol_dgn, htol_dgn_host);
 
-    copy_mappings(ltoh_dgn, ltoh_dgn_host);
-    copy_mappings(ltoh_dgt, ltoh_dgt_host);
-    copy_mappings(ltoh_dgz, ltoh_dgz_host);
+    copy_mappings_const(ltoh_dgn, ltoh_dgn_host);
+    copy_mappings_const(ltoh_dgt, ltoh_dgt_host);
+    copy_mappings_const(ltoh_dgz, ltoh_dgz_host);
 
-    alloc_arrays(&hl_rt_interior, htol_rt_interior_host.size());
-    alloc_arrays(&h_interior, h_interior_host_rt.size());
-    alloc_arrays(&hl_rt, htol_rt_host.size());
-    alloc_arrays(&hl_dgn, htol_dgn_host.size());
+    auto copy_mappings_shared = [this](auto &device, const auto &host) {
+      alloc_arrays(&device, host.size());
+      cudaError_t cuda_error = cudaMemcpy(device,
+                                          host.data(),
+                                          host.size() * sizeof(unsigned int),
+                                          cudaMemcpyHostToDevice);
+      AssertCuda(cuda_error);
+    };
 
-    cudaError_t error_code =
-      cudaMemcpy(hl_rt,
-                 htol_rt_host.data(),
-                 htol_rt_host.size() * sizeof(unsigned int),
-                 cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
+    copy_mappings_shared(hl_rt_interior, htol_rt_interior_host);
+    copy_mappings_shared(h_interior, h_interior_host_rt);
+    copy_mappings_shared(hl_rt, htol_rt_host);
+    copy_mappings_shared(hl_dgn, htol_dgn_host);
 
-    error_code = cudaMemcpy(hl_rt_interior,
-                            htol_rt_interior_host.data(),
-                            htol_rt_interior_host.size() * sizeof(unsigned int),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
-    error_code = cudaMemcpy(h_interior,
-                            h_interior_host_rt.data(),
-                            h_interior_host_rt.size() * sizeof(unsigned int),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
-    error_code = cudaMemcpy(hl_dgn,
-                            htol_dgn_host.data(),
-                            htol_dgn_host.size() * sizeof(unsigned int),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
+    copy_mappings_shared(base_dof_rt, base_dof_rt_host);
+    copy_mappings_shared(base_dof_dg, base_dof_dg_host);
+    copy_mappings_shared(dof_offset_rt, dof_offset_rt_host);
+    copy_mappings_shared(dof_offset_dg, dof_offset_dg_host);
 
     auto copy_to_device = [](auto &device, const auto &host) {
       LinearAlgebra::ReadWriteVector<unsigned int> rw_vector(host.size());
@@ -559,8 +606,8 @@ namespace PSMF
       dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 3) +
       Util::pow(2 * fe_degree + 2, dim);
 
-    alloc_arrays(&eigenvalues[0],
-                 Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
+    // alloc_arrays(&eigenvalues[0],
+    //              Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
 
     for (unsigned int d = 0; d < dim; ++d)
       {
@@ -600,7 +647,14 @@ namespace PSMF
     data_copy.htol_rt  = hl_rt;
     data_copy.htol_dgn = hl_dgn;
 
+    data_copy.base_dof_rt   = base_dof_rt;
+    data_copy.base_dof_dg   = base_dof_dg;
+    data_copy.dof_offset_rt = dof_offset_rt;
+    data_copy.dof_offset_dg = dof_offset_dg;
+
     data_copy.patch_dof_laplace = patch_dof_laplace[color];
+    data_copy.first_dof_rt      = first_dof_rt_laplace[color];
+    data_copy.first_dof_dg      = first_dof_dg_laplace[color];
 
     return data_copy;
   }
@@ -632,7 +686,14 @@ namespace PSMF
         data_copy[i].h_interior       = h_interior;
         data_copy[i].htol_dgn         = hl_dgn;
 
+        data_copy[i].base_dof_rt   = base_dof_rt;
+        data_copy[i].base_dof_dg   = base_dof_dg;
+        data_copy[i].dof_offset_rt = dof_offset_rt;
+        data_copy[i].dof_offset_dg = dof_offset_dg;
+
         data_copy[i].patch_dof_smooth = patch_dof_smooth[color];
+        data_copy[i].first_dof_rt     = first_dof_rt_smooth[color];
+        data_copy[i].first_dof_dg     = first_dof_dg_smooth[color];
       }
 
     return data_copy;
@@ -1058,7 +1119,7 @@ namespace PSMF
                 delete[] vals;
               }
 
-              
+
               // Schur direct
               {
                 auto h_interior_rt = dm.get_h_to_l_rt_interior();
@@ -2056,7 +2117,8 @@ namespace PSMF
     this->n_patches_laplace.resize(n_colors);
     this->grid_dim_lapalce.resize(n_colors);
     this->block_dim_laplace.resize(n_colors);
-    this->first_dof_laplace.resize(n_colors);
+    this->first_dof_rt_laplace.resize(n_colors);
+    this->first_dof_dg_laplace.resize(n_colors);
     this->patch_id.resize(n_colors);
     this->patch_type.resize(n_colors);
     this->patch_dof_laplace.resize(n_colors);
@@ -2064,7 +2126,8 @@ namespace PSMF
     this->n_patches_smooth.resize(graph_ptr_colored_velocity.size());
     this->grid_dim_smooth.resize(graph_ptr_colored_velocity.size());
     this->block_dim_smooth.resize(graph_ptr_colored_velocity.size());
-    this->first_dof_smooth.resize(graph_ptr_colored_velocity.size());
+    this->first_dof_rt_smooth.resize(graph_ptr_colored_velocity.size());
+    this->first_dof_dg_smooth.resize(graph_ptr_colored_velocity.size());
     this->patch_type_smooth.resize(graph_ptr_colored_velocity.size());
     this->patch_dof_smooth.resize(graph_ptr_colored_velocity.size());
   }

@@ -124,6 +124,98 @@ namespace PSMF
         l_to_h_dg_tangent_interior =
           reverse_numbering(h_to_l_dg_tangent_interior);
       }
+
+      // first dof rt
+      {
+        constexpr int n_cells   = 1 << dim;
+        constexpr int face_dofs = Util::pow(fe_degree + 1, dim - 1);
+        constexpr int quad_dofs =
+          dim * Util::pow(fe_degree + 1, dim - 1) * fe_degree;
+
+        std::vector<int> cell_faces;
+        if (dim == 2)
+          cell_faces = {{4, 3, 3, 2}};
+        else
+          cell_faces = {{6, 5, 5, 4, 5, 4, 4, 3}};
+
+        std::vector<value_type> cell_face_dofs;
+        std::vector<value_type> cell_dofs;
+
+        for (auto c = 0; c < n_cells; ++c)
+          {
+            cell_face_dofs.push_back(cell_faces[c] * face_dofs);
+            cell_dofs.push_back(cell_face_dofs[c] + quad_dofs);
+          }
+
+        int start = 0;
+        for (int c = 0; c < n_cells; ++c)
+          {
+            for (int f = 0; f < cell_faces[c]; ++f)
+              {
+                first_dofs_rt.push_back(start);
+                start += face_dofs;
+              }
+            first_dofs_rt.push_back(start);
+            start += quad_dofs;
+          }
+
+        int base   = -1;
+        int offset = -1;
+
+        for (int tid = 0; tid < h_to_l_rt.size(); ++tid)
+          {
+            for (int c = 0; c < n_cells; ++c)
+              {
+                int patch_dof = 0;
+                for (int subc = 0; subc < c + 1; ++subc)
+                  patch_dof += cell_dofs[subc];
+
+                if (tid < patch_dof) // cell
+                  {
+                    int local_tid = tid - patch_dof + cell_dofs[c];
+
+                    if (local_tid >= cell_face_dofs[c]) // quad dof
+                      {
+                        int shift = -1;
+                        for (int subc = 0; subc <= c; ++subc)
+                          shift += (1 + cell_faces[subc]);
+                        base   = shift;
+                        offset = local_tid - cell_face_dofs[c];
+
+                        goto exitLoop;
+                      }
+
+                    for (int f = 0; f < cell_faces[c]; ++f)
+                      if (local_tid < (f + 1) * face_dofs) // face dof
+                        {
+                          int shift = 0;
+                          for (int subc = 0; subc < c; ++subc)
+                            shift += (1 + cell_faces[subc]);
+
+                          base   = shift + f;
+                          offset = local_tid - f * face_dofs;
+                          goto exitLoop;
+                        }
+                  }
+              }
+          exitLoop:
+            base_dof_rt.push_back(base);
+            dof_offset_rt.push_back(offset);
+          }
+      }
+
+      // first dof dg
+      {
+        constexpr int n_cells   = 1 << dim;
+        constexpr int quad_dofs = Util::pow(fe_degree + 1, dim);
+
+        for (int c = 0; c < n_cells; ++c)
+          for (int ind = 0; ind < quad_dofs; ++ind)
+            {
+              base_dof_dg.push_back(c);
+              dof_offset_dg.push_back(ind);
+            }
+      }
     }
 
     std::vector<value_type>
@@ -205,6 +297,31 @@ namespace PSMF
     get_l_to_h_dg_tangent_interior()
     {
       return l_to_h_dg_tangent_interior;
+    }
+    std::vector<value_type>
+    get_first_dofs_rt()
+    {
+      return first_dofs_rt;
+    }
+    std::vector<value_type>
+    get_base_dof_rt()
+    {
+      return base_dof_rt;
+    }
+    std::vector<value_type>
+    get_dof_offset_rt()
+    {
+      return dof_offset_rt;
+    }
+    std::vector<value_type>
+    get_base_dof_dg()
+    {
+      return base_dof_dg;
+    }
+    std::vector<value_type>
+    get_dof_offset_dg()
+    {
+      return dof_offset_dg;
     }
 
   private:
@@ -662,6 +779,13 @@ namespace PSMF
 
     std::vector<value_type> l_to_h_dg_normal_interior;
     std::vector<value_type> l_to_h_dg_tangent_interior;
+
+    std::vector<value_type> first_dofs_rt;
+    std::vector<value_type> base_dof_rt;
+    std::vector<value_type> dof_offset_rt;
+
+    std::vector<value_type> base_dof_dg;
+    std::vector<value_type> dof_offset_dg;
   };
 
 } // namespace PSMF

@@ -112,6 +112,8 @@ private:
             PSMF::SmootherVariant    smooth_inv>
   void
   do_smooth();
+  size_t
+  disp_gpu_usage();
 
   Triangulation<dim>                  triangulation;
   std::shared_ptr<FiniteElement<dim>> fe;
@@ -257,6 +259,7 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   }
 
   *pcout << "Matrix-free setup time: " << time.wall_time() << "s" << std::endl;
+  *pcout << "Matrix-free Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 template <int dim, int fe_degree>
 void
@@ -424,6 +427,8 @@ LaplaceProblem<dim, fe_degree>::assemble_rhs()
   system_rhs_host.compress(VectorOperation::add);
   rw_vector.import(system_rhs_host, VectorOperation::insert);
   system_rhs_dev.import(rw_vector, VectorOperation::insert);
+
+  *pcout << "RHS Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 template <int dim, int fe_degree>
 template <PSMF::LaplaceVariant kernel>
@@ -506,6 +511,8 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   info_table[1].add_value("Name", std::string(LaplaceToString(kernel)) + " SP");
   info_table[1].add_value("Time[s]", best_time);
   info_table[1].add_value("Perf[Dof/s]", n_dofs / best_time);
+
+  *pcout << "Ax Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 template <int dim, int fe_degree>
 void
@@ -672,6 +679,8 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
   info_table[2].add_value("Name", "Transfer SP");
   info_table[2].add_value("Time[s]", best_time2);
   info_table[2].add_value("Perf[Dof/s]", n_dofs / best_time2);
+
+  *pcout << "Transfer Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 
 template <int dim, int fe_degree>
@@ -779,6 +788,8 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
                             std::string(SmootherToString(smooth_inv)) + " SP");
   info_table[4].add_value("Time[s]", best_time);
   info_table[4].add_value("Perf[Dof/s]", n_dofs / best_time);
+
+  *pcout << "Smoother Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 template <int dim, int fe_degree>
 void
@@ -915,7 +926,18 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
   //         AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
   //     }
 }
+template <int dim, int fe_degree>
+size_t
+LaplaceProblem<dim, fe_degree>::disp_gpu_usage()
+{
+  size_t free_mem, total_mem;
+  AssertCuda(cudaMemGetInfo(&free_mem, &total_mem));
 
+  unsigned int scale    = 1024 * 1024;
+  size_t       used_mem = (total_mem - free_mem) / scale;
+
+  return used_mem;
+}
 template <int dim, int fe_degree>
 void
 LaplaceProblem<dim, fe_degree>::run()
