@@ -16,6 +16,7 @@
 
 #include "cuda_mg_transfer.cuh"
 #include "cuda_vector.cuh"
+#include "renumber.h"
 #include "transfer_internal.h"
 
 namespace PSMF
@@ -46,6 +47,10 @@ namespace PSMF
     const unsigned int *col_idx;
     const unsigned int *dof_indices_coarse;
     const unsigned int *dof_indices_fine;
+    const unsigned int *base_dof;
+    const unsigned int *dof_offset;
+    const unsigned int *base_dof_coarse;
+    const unsigned int *dof_offset_coarse;
 
     __device__
     MGTransferHelper(Number             *buf,
@@ -54,7 +59,11 @@ namespace PSMF
                      const unsigned int *row_ptr_,
                      const unsigned int *col_idx_,
                      const unsigned int *idx_coarse,
-                     const unsigned int *idx_fine)
+                     const unsigned int *idx_fine,
+                     const unsigned int *base_dof_,
+                     const unsigned int *dof_offset_,
+                     const unsigned int *base_dof_coarse_,
+                     const unsigned int *dof_offset_coarse_)
       : values(buf)
       , weights(w)
       , shape_values(shvals)
@@ -62,6 +71,10 @@ namespace PSMF
       , col_idx(col_idx_)
       , dof_indices_coarse(idx_coarse)
       , dof_indices_fine(idx_fine)
+      , base_dof(base_dof_)
+      , dof_offset(dof_offset_)
+      , base_dof_coarse(base_dof_coarse_)
+      , dof_offset_coarse(dof_offset_coarse_)
     {}
 
     template <int kernel>
@@ -93,6 +106,12 @@ namespace PSMF
     using MGTransferHelper<dim, fe_degree, Number>::col_idx;
     using MGTransferHelper<dim, fe_degree, Number>::weights;
 
+    using MGTransferHelper<dim, fe_degree, Number>::base_dof;
+    using MGTransferHelper<dim, fe_degree, Number>::dof_offset;
+    using MGTransferHelper<dim, fe_degree, Number>::base_dof_coarse;
+    using MGTransferHelper<dim, fe_degree, Number>::dof_offset_coarse;
+
+
   public:
     static constexpr TransferVariant transfer_variant = PROLONGATION;
 
@@ -103,14 +122,22 @@ namespace PSMF
                        const unsigned int *row_ptr,
                        const unsigned int *col_idx,
                        const unsigned int *idx_coarse,
-                       const unsigned int *idx_fine)
+                       const unsigned int *idx_fine,
+                       const unsigned int *base_dof_,
+                       const unsigned int *dof_offset_,
+                       const unsigned int *base_dof_coarse_,
+                       const unsigned int *dof_offset_coarse_)
       : MGTransferHelper<dim, fe_degree, Number>(buf,
                                                  w,
                                                  shvals,
                                                  row_ptr,
                                                  col_idx,
                                                  idx_coarse,
-                                                 idx_fine)
+                                                 idx_fine,
+                                                 base_dof_,
+                                                 dof_offset_,
+                                                 base_dof_coarse_,
+                                                 dof_offset_coarse_)
     {}
 
     __device__ void
@@ -135,7 +162,9 @@ namespace PSMF
       for (int i = 0; i < n_coarse / Util::BLOCK_DIM + 1; ++i)
         if (threadIdx.x + i * Util::BLOCK_DIM < n_coarse)
           values[threadIdx.x + i * Util::BLOCK_DIM] =
-            vec[dof_indices_coarse[threadIdx.x + i * Util::BLOCK_DIM]];
+            vec[dof_indices_coarse[base_dof_coarse[threadIdx.x +
+                                                   i * Util::BLOCK_DIM]] +
+                dof_offset_coarse[threadIdx.x + i * Util::BLOCK_DIM]];
     }
 
     __device__ void
@@ -163,8 +192,10 @@ namespace PSMF
     {
       for (int i = 0; i < n_fine / Util::BLOCK_DIM + 1; ++i)
         if (threadIdx.x + i * Util::BLOCK_DIM < n_fine)
-          atomicAdd(&vec[dof_indices_fine[threadIdx.x + i * Util::BLOCK_DIM]],
-                    values[threadIdx.x + i * Util::BLOCK_DIM]);
+          atomicAdd(
+            &vec[dof_indices_fine[base_dof[threadIdx.x + i * Util::BLOCK_DIM]] +
+                 dof_offset[threadIdx.x + i * Util::BLOCK_DIM]],
+            values[threadIdx.x + i * Util::BLOCK_DIM]);
     }
   };
 
@@ -181,6 +212,11 @@ namespace PSMF
     using MGTransferHelper<dim, fe_degree, Number>::col_idx;
     using MGTransferHelper<dim, fe_degree, Number>::weights;
 
+    using MGTransferHelper<dim, fe_degree, Number>::base_dof;
+    using MGTransferHelper<dim, fe_degree, Number>::dof_offset;
+    using MGTransferHelper<dim, fe_degree, Number>::base_dof_coarse;
+    using MGTransferHelper<dim, fe_degree, Number>::dof_offset_coarse;
+
   public:
     static constexpr TransferVariant transfer_variant = RESTRICTION;
 
@@ -191,14 +227,22 @@ namespace PSMF
                      const unsigned int *row_ptr,
                      const unsigned int *col_idx,
                      const unsigned int *idx_coarse,
-                     const unsigned int *idx_fine)
+                     const unsigned int *idx_fine,
+                     const unsigned int *base_dof_,
+                     const unsigned int *dof_offset_,
+                     const unsigned int *base_dof_coarse_,
+                     const unsigned int *dof_offset_coarse_)
       : MGTransferHelper<dim, fe_degree, Number>(buf,
                                                  w,
                                                  shvals,
                                                  row_ptr,
                                                  col_idx,
                                                  idx_coarse,
-                                                 idx_fine)
+                                                 idx_fine,
+                                                 base_dof_,
+                                                 dof_offset_,
+                                                 base_dof_coarse_,
+                                                 dof_offset_coarse_)
     {}
 
     __device__ void
@@ -223,7 +267,8 @@ namespace PSMF
       for (int i = 0; i < n_fine / Util::BLOCK_DIM + 1; ++i)
         if (threadIdx.x + i * Util::BLOCK_DIM < n_fine)
           values[threadIdx.x + i * Util::BLOCK_DIM] =
-            vec[dof_indices_fine[threadIdx.x + i * Util::BLOCK_DIM]];
+            vec[dof_indices_fine[base_dof[threadIdx.x + i * Util::BLOCK_DIM]] +
+                dof_offset[threadIdx.x + i * Util::BLOCK_DIM]];
     }
 
     __device__ void
@@ -252,8 +297,11 @@ namespace PSMF
     {
       for (int i = 0; i < n_coarse / Util::BLOCK_DIM + 1; ++i)
         if (threadIdx.x + i * Util::BLOCK_DIM < n_coarse)
-          atomicAdd(&vec[dof_indices_coarse[threadIdx.x + i * Util::BLOCK_DIM]],
-                    values[threadIdx.x + i * Util::BLOCK_DIM]);
+          atomicAdd(
+            &vec[dof_indices_coarse[base_dof_coarse[threadIdx.x +
+                                                    i * Util::BLOCK_DIM]] +
+                 dof_offset_coarse[threadIdx.x + i * Util::BLOCK_DIM]],
+            values[threadIdx.x + i * Util::BLOCK_DIM]);
     }
   };
 
@@ -290,11 +338,20 @@ namespace PSMF
             const unsigned int *col_idx,
             const unsigned int *dof_indices_coarse,
             const unsigned int *dof_indices_fine,
+            const unsigned int *base_dof,
+            const unsigned int *dof_offset,
+            const unsigned int *base_dof_coarse,
+            const unsigned int *dof_offset_coarse,
             const unsigned int  n_child_cell_dofs)
   {
     constexpr unsigned int n_coarse =
       dim * Util::pow(degree + 1, dim - 1) * (degree + 2) +
       Util::pow(degree + 1, dim);
+
+    constexpr unsigned int n_first_dof =
+      dim == 2 ? 4 + 3 + 3 + 2 + 4 + (1 << dim) :
+                 6 + 5 + 5 + 4 + 5 + 4 + 4 + 3 + 8 + (1 << dim);
+    constexpr unsigned int n_first_dof_coarse = 2 * dim + 1 + 1;
 
     const unsigned int coarse_cell = blockIdx.x;
 
@@ -303,8 +360,12 @@ namespace PSMF
                    shape_values,
                    row_ptr,
                    col_idx,
-                   dof_indices_coarse + coarse_cell * n_coarse,
-                   dof_indices_fine + coarse_cell * n_child_cell_dofs);
+                   dof_indices_coarse + coarse_cell * n_first_dof_coarse,
+                   dof_indices_fine + coarse_cell * n_first_dof,
+                   base_dof,
+                   dof_offset,
+                   base_dof_coarse,
+                   dof_offset_coarse);
 
     body.run(dst, src);
   }
@@ -355,6 +416,10 @@ namespace PSMF
         transfer_matrix_col_idx[transfer_vatiant].get_values(),
         level_dof_indices_parent[fine_level - 1].get_values(),
         level_dof_indices_child[fine_level].get_values(),
+        base_dof.get_values(),
+        dof_offset.get_values(),
+        base_dof_coarse.get_values(),
+        dof_offset_coarse.get_values(),
         n_child_cell_dofs);
 
     AssertCudaKernel();
@@ -482,16 +547,53 @@ namespace PSMF
         copy_to_device(transfer_matrix_col_idx[i], transfer_matrix[i].col_idx);
       }
 
+    DoFMapping<dim> dm(fe_degree);
+
+    auto first_dofs_host      = dm.get_first_dofs();
+    auto base_dof_host        = dm.get_base_dof();
+    auto dof_offset_host      = dm.get_dof_offset();
+    auto first_dofs_cell_host = dm.get_first_dofs_cell();
+    auto base_dof_cell_host   = dm.get_base_dof_cell();
+    auto dof_offset_cell_host = dm.get_dof_offset_cell();
+
+    copy_to_device(base_dof, base_dof_host);
+    copy_to_device(dof_offset, dof_offset_host);
+    copy_to_device(base_dof_coarse, base_dof_cell_host);
+    copy_to_device(dof_offset_coarse, dof_offset_cell_host);
+
     level_dof_indices.resize(n_levels);
     level_dof_indices_parent.resize(n_levels);
     level_dof_indices_child.resize(n_levels);
 
     for (unsigned int l = 0; l < n_levels; l++)
       {
-        copy_to_device(level_dof_indices_parent[l],
-                       level_dof_indices_parent_host[l]);
-        copy_to_device(level_dof_indices_child[l],
-                       level_dof_indices_child_host[l]);
+        std::vector<unsigned int> level_parent_first_dof;
+        std::vector<unsigned int> level_child_first_dof;
+
+        for (auto ind = 0U; ind < level_dof_indices_parent_host[l].size();
+             ind += base_dof_cell_host.size())
+          {
+            for (auto ii = 0U; ii < first_dofs_cell_host.size(); ++ii)
+              level_parent_first_dof.push_back(
+                level_dof_indices_parent_host[l]
+                                             [ind + first_dofs_cell_host[ii]]);
+          }
+
+        for (auto ind = 0U; ind < level_dof_indices_child_host[l].size();
+             ind += base_dof_host.size())
+          {
+            for (auto ii = 0U; ii < first_dofs_host.size(); ++ii)
+              level_child_first_dof.push_back(
+                level_dof_indices_child_host[l][ind + first_dofs_host[ii]]);
+          }
+
+        // copy_to_device(level_dof_indices_parent[l],
+        //                level_dof_indices_parent_host[l]);
+        // copy_to_device(level_dof_indices_child[l],
+        //                level_dof_indices_child_host[l]);
+
+        copy_to_device(level_dof_indices_parent[l], level_parent_first_dof);
+        copy_to_device(level_dof_indices_child[l], level_child_first_dof);
 
         // std::cout << "Level " << l << std::endl;
         // for (auto ind : level_dof_indices_parent_host[l])
@@ -1021,8 +1123,8 @@ namespace PSMF
             level_indices[j]  = my_copy_indices[i][j].second;
           }
 
-        copy_to_device(copy_indices[i].global_indices, global_indices);
-        copy_to_device(copy_indices[i].level_indices, level_indices);
+        // copy_to_device(copy_indices[i].global_indices, global_indices);
+        // copy_to_device(copy_indices[i].level_indices, level_indices);
       }
 
     // check if we can run a plain copy operation between the global DoFs and

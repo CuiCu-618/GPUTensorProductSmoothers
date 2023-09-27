@@ -12,13 +12,16 @@
 #ifndef RENUMBER_H
 #define RENUMBER_H
 
+#include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_raviart_thomas_new.h>
+
 #include "utilities.cuh"
 
 using namespace dealii;
 
 namespace PSMF
 {
-  template <int dim, int fe_degree>
+  template <int dim, int fe_degree = -1>
   class DoFMapping
   {
   public:
@@ -218,6 +221,143 @@ namespace PSMF
       }
     }
 
+    DoFMapping(const unsigned int degree)
+    {
+      // first dof rt
+      {
+        int n_cells   = 1 << dim;
+        int face_dofs = Util::pow(degree + 1, dim - 1);
+        int quad_dofs = dim * Util::pow(degree + 1, dim - 1) * degree;
+        int n_patch_dofs =
+          dim * Util::pow(2 * degree + 2, dim - 1) * (2 * degree + 3);
+
+        std::vector<int> cell_faces;
+        if (dim == 2)
+          cell_faces = {{4, 3, 3, 2}};
+        else
+          cell_faces = {{6, 5, 5, 4, 5, 4, 4, 3}};
+
+        std::vector<value_type> cell_face_dofs;
+        std::vector<value_type> cell_dofs;
+
+        for (auto c = 0; c < n_cells; ++c)
+          {
+            cell_face_dofs.push_back(cell_faces[c] * face_dofs);
+            cell_dofs.push_back(cell_face_dofs[c] + quad_dofs);
+          }
+
+        int start = 0;
+        for (int c = 0; c < n_cells; ++c)
+          {
+            for (int f = 0; f < cell_faces[c]; ++f)
+              {
+                first_dofs_rt.push_back(start);
+                start += face_dofs;
+              }
+            first_dofs_rt.push_back(start);
+            start += quad_dofs;
+
+            if (c == 0)
+              {
+                first_dofs_cell = first_dofs_rt;
+                first_dofs_cell.push_back(start);
+              }
+          }
+
+        first_dofs = first_dofs_rt;
+        for (int c = 0; c < n_cells; ++c)
+          {
+            first_dofs.push_back(start);
+            start += Util::pow(degree + 1, dim);
+          }
+
+        int base   = -1;
+        int offset = -1;
+
+        for (int tid = 0; tid < n_patch_dofs; ++tid)
+          {
+            for (int c = 0; c < n_cells; ++c)
+              {
+                int patch_dof = 0;
+                for (int subc = 0; subc < c + 1; ++subc)
+                  patch_dof += cell_dofs[subc];
+
+                if (tid < patch_dof) // cell
+                  {
+                    int local_tid = tid - patch_dof + cell_dofs[c];
+
+                    if (local_tid >= cell_face_dofs[c]) // quad dof
+                      {
+                        int shift = -1;
+                        for (int subc = 0; subc <= c; ++subc)
+                          shift += (1 + cell_faces[subc]);
+                        base   = shift;
+                        offset = local_tid - cell_face_dofs[c];
+
+                        goto exitLoop;
+                      }
+
+                    for (int f = 0; f < cell_faces[c]; ++f)
+                      if (local_tid < (f + 1) * face_dofs) // face dof
+                        {
+                          int shift = 0;
+                          for (int subc = 0; subc < c; ++subc)
+                            shift += (1 + cell_faces[subc]);
+
+                          base   = shift + f;
+                          offset = local_tid - f * face_dofs;
+                          goto exitLoop;
+                        }
+                  }
+              }
+          exitLoop:
+            base_dof_rt.push_back(base);
+            dof_offset_rt.push_back(offset);
+
+            if (tid == cell_faces[0] * face_dofs + quad_dofs - 1)
+              {
+                base_dof_cell   = base_dof_rt;
+                dof_offset_cell = dof_offset_rt;
+              }
+          }
+      }
+
+      // first dof dg
+      {
+        int n_cells   = 1 << dim;
+        int quad_dofs = Util::pow(degree + 1, dim);
+
+        for (int c = 0; c < n_cells; ++c)
+          {
+            for (int ind = 0; ind < quad_dofs; ++ind)
+              {
+                base_dof_dg.push_back(c);
+                dof_offset_dg.push_back(ind);
+              }
+
+            if (c == 0)
+              {
+                auto n_dof_cell_rt = 2 * dim + 1;
+                for (auto ii = 0U; ii < base_dof_dg.size(); ++ii)
+                  base_dof_cell.push_back(base_dof_dg[0] + n_dof_cell_rt);
+
+                dof_offset_cell.insert(dof_offset_cell.end(),
+                                       dof_offset_dg.begin(),
+                                       dof_offset_dg.end());
+              }
+          }
+      }
+
+      base_dof = base_dof_rt;
+      for (auto ii = 0U; ii < base_dof_dg.size(); ++ii)
+        base_dof.push_back(base_dof_dg[ii] + first_dofs_rt.size());
+
+      dof_offset = dof_offset_rt;
+      dof_offset.insert(dof_offset.end(),
+                        dof_offset_dg.begin(),
+                        dof_offset_dg.end());
+    }
+
     std::vector<value_type>
     get_h_to_l_rt()
     {
@@ -304,6 +444,16 @@ namespace PSMF
       return first_dofs_rt;
     }
     std::vector<value_type>
+    get_first_dofs()
+    {
+      return first_dofs;
+    }
+    std::vector<value_type>
+    get_first_dofs_cell()
+    {
+      return first_dofs_cell;
+    }
+    std::vector<value_type>
     get_base_dof_rt()
     {
       return base_dof_rt;
@@ -322,6 +472,26 @@ namespace PSMF
     get_dof_offset_dg()
     {
       return dof_offset_dg;
+    }
+    std::vector<value_type>
+    get_base_dof()
+    {
+      return base_dof;
+    }
+    std::vector<value_type>
+    get_dof_offset()
+    {
+      return dof_offset;
+    }
+    std::vector<value_type>
+    get_base_dof_cell()
+    {
+      return base_dof_cell;
+    }
+    std::vector<value_type>
+    get_dof_offset_cell()
+    {
+      return dof_offset_cell;
     }
 
   private:
@@ -786,6 +956,14 @@ namespace PSMF
 
     std::vector<value_type> base_dof_dg;
     std::vector<value_type> dof_offset_dg;
+
+    std::vector<value_type> first_dofs;
+    std::vector<value_type> base_dof;
+    std::vector<value_type> dof_offset;
+
+    std::vector<value_type> first_dofs_cell;
+    std::vector<value_type> base_dof_cell;
+    std::vector<value_type> dof_offset_cell;
   };
 
 } // namespace PSMF

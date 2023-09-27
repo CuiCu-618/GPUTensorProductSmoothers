@@ -261,6 +261,11 @@ namespace PSMF
     std::vector<CudaVector<unsigned int>> level_dof_indices_parent;
     std::vector<CudaVector<unsigned int>> level_dof_indices_child;
 
+    CudaVector<unsigned int> base_dof;
+    CudaVector<unsigned int> dof_offset;
+    CudaVector<unsigned int> base_dof_coarse;
+    CudaVector<unsigned int> dof_offset_coarse;
+
     /**
      * A variable storing the connectivity from parent to child cell numbers
      * for each level.

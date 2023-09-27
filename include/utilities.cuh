@@ -42,6 +42,8 @@ namespace Util
 
   constexpr unsigned int DIM        = 3;
   constexpr unsigned int MAX_DEGREE = 4;
+  constexpr unsigned int MAX_CELL_DOFS_RT =
+    DIM * pow(MAX_DEGREE + 1, DIM - 1) * (MAX_DEGREE + 2);
   constexpr unsigned int MAX_PATCH_DOFS_RT =
     DIM * pow(2 * MAX_DEGREE + 2, DIM - 1) * (2 * MAX_DEGREE + 3);
   constexpr unsigned int MAX_PATCH_DOFS_RT_INT =

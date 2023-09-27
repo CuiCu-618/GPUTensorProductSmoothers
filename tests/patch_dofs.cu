@@ -573,14 +573,14 @@ print_dofs()
     std::cout << "\n";
   };
 
-  PSMF::DoFMapping<dim, degree> dm;
+  PSMF::DoFMapping<dim> dm(degree);
 
-  auto first_dof  = dm.get_first_dofs_rt();
-  auto base_dof   = dm.get_base_dof_rt();
-  auto dof_offset = dm.get_dof_offset_rt();
+  auto first_dof  = dm.get_first_dofs();
+  auto base_dof   = dm.get_base_dof_cell();
+  auto dof_offset = dm.get_dof_offset_cell();
 
-  auto base_dofdg   = dm.get_base_dof_dg();
-  auto dof_offsetdg = dm.get_dof_offset_dg();
+  auto base_dofdg   = dm.get_base_dof();
+  auto dof_offsetdg = dm.get_dof_offset();
 
 
   print_vec(first_dof);
