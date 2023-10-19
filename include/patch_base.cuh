@@ -46,6 +46,12 @@ namespace PSMF
     ConflictFree,
 
     /**
+     * A conflict-free implementation by restructuring data layout in shared
+     * memory.
+     */
+    ConflictFreeMem,
+
+    /**
      * Using the Warp Matrix Multiply and Accumulate (WMMA) API introduced in
      * CUDA 11.0.
      */

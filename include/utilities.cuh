@@ -115,6 +115,38 @@ namespace Util
     return multiple;
   }
 
+  template <int n_dofs_1d>
+  __device__ inline unsigned int
+  get_base(const unsigned int row, const unsigned int z = 0);
+
+  template <>
+  __device__ inline unsigned int
+  get_base<8>(const unsigned int row, const unsigned int z)
+  {
+    // auto base1 = row < 4 ? 0 : 8;
+    // auto base2 = (row & 3) < 2 ? 0 : 5;
+    // auto base3 = (z & 1) < 1 ? 0 : 8;
+
+    // return base1 ^ base2 ^ base3;
+
+    auto base1 = (row & 3) < 2 ? 0 : 4;
+    auto base2 = (z & 1) * 8;
+    auto base3 = (z & 3) < 2 ? 0 : 4;
+
+    return base1 ^ base2 ^ base3;
+  }
+
+  template <>
+  __device__ inline unsigned int
+  get_base<16>(const unsigned int row, const unsigned int z)
+  {
+    auto base1 = (row & 1) < 1 ? 0 : 8;
+    auto base2 = (row & 3) < 2 ? 0 : 4;
+    auto base3 = (z & 1) < 1 ? 0 : 8;
+    auto base4 = (z & 3) < 2 ? 0 : 4;
+
+    return base1 ^ base2 ^ base3 ^ base4;
+  }
 } // namespace Util
 
 #endif // UTILITIES_CUH

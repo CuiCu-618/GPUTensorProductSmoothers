@@ -138,7 +138,7 @@ namespace Step64
     MGLevelObject<std::shared_ptr<MatrixFreeSP>> mfdata_sp;
     MGConstrainedDoFs                            mg_constrained_dofs;
 
-    PSMF::MGTransferCUDA<dim, vcycle_number, CT::DOF_LAYOUT_> transfer;
+    PSMF::MGTransferCUDA<dim, vcycle_number> transfer;
   };
 
   template <int dim, int fe_degree>
@@ -397,9 +397,23 @@ namespace Step64
                            CT::SMOOTH_INV_[0]>(k, 0, 0, call_count);
                   break;
                 }
+              case LA::ConflictFreeMem:
+                {
+                  do_solve<LA::ConflictFreeMem,
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, 0, 0, call_count);
+                  break;
+                }
               case LA::TensorCore:
                 {
                   do_solve<LA::TensorCore,
+                           CT::SMOOTH_VMULT_[0],
+                           CT::SMOOTH_INV_[0]>(k, 0, 0, call_count);
+                  break;
+                }
+              case LA::TensorCoreMMA:
+                {
+                  do_solve<LA::TensorCoreMMA,
                            CT::SMOOTH_VMULT_[0],
                            CT::SMOOTH_INV_[0]>(k, 0, 0, call_count);
                   break;

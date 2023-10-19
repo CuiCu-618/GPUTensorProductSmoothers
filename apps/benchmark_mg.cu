@@ -283,6 +283,9 @@ LaplaceProblem<dim, fe_degree>::bench_Ax()
         case PSMF::LaplaceVariant::ConflictFree:
           do_Ax<PSMF::LaplaceVariant::ConflictFree>();
           break;
+        case PSMF::LaplaceVariant::ConflictFreeMem:
+          do_Ax<PSMF::LaplaceVariant::ConflictFreeMem>();
+          break;
         default:
           AssertThrow(false, ExcMessage("Invalid Laplace Variant."));
       }
@@ -299,8 +302,7 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
   u_coarse  = 1.;
   u_coarse_ = 1.;
 
-  PSMF::MGTransferCUDA<dim, full_number, CT::DOF_LAYOUT_> mg_transfer(
-    mg_constrained_dofs);
+  PSMF::MGTransferCUDA<dim, full_number> mg_transfer(mg_constrained_dofs);
   mg_transfer.build(dof_handler);
 
   Timer  time;
@@ -325,8 +327,7 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
 
   *pcout << "Benchmarking Transfer in single precision...\n";
 
-  PSMF::MGTransferCUDA<dim, vcycle_number, CT::DOF_LAYOUT_> mg_transfer_(
-    mg_constrained_dofs);
+  PSMF::MGTransferCUDA<dim, vcycle_number> mg_transfer_(mg_constrained_dofs);
   mg_transfer_.build(dof_handler);
 
   for (unsigned int i = 0; i < N; ++i)

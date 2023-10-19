@@ -189,7 +189,7 @@ namespace PSMF
       const DoFHandler<dim>                                 &dof_handler,
       const MGLevelObject<std::shared_ptr<MatrixFreeType>>  &mfdata_dp,
       const MGLevelObject<std::shared_ptr<MatrixFreeType2>> &mfdata,
-      const MGTransferCUDA<dim, Number2, dof_layout>        &transfer,
+      const MGTransferCUDA<dim, Number2>                    &transfer,
       const Function<dim, Number>                           &boundary_values,
       const Function<dim, Number>                           &right_hand_side,
       std::shared_ptr<ConditionalOStream>                    pcout,
@@ -771,7 +771,7 @@ namespace PSMF
 
     const SmartPointer<const DoFHandler<dim>> dof_handler;
 
-    const SmartPointer<const MGTransferCUDA<dim, Number2, dof_layout>> transfer;
+    const SmartPointer<const MGTransferCUDA<dim, Number2>> transfer;
 
     std::vector<std::map<unsigned int, Number>> inhomogeneous_bc;
 
@@ -884,11 +884,11 @@ namespace PSMF
       const DoFHandler<dim>                                &dof_handler,
       const MGLevelObject<std::shared_ptr<MatrixFreeType>> &mfdata_dp,
       const MGLevelObject<std::shared_ptr<MatrixFreeType>> &,
-      const MGTransferCUDA<dim, Number, dof_layout> &transfer_dp,
-      const Function<dim, Number>                   &boundary_values,
-      const Function<dim, Number>                   &right_hand_side,
-      std::shared_ptr<ConditionalOStream>            pcout,
-      const unsigned int                             n_cycles = 1)
+      const MGTransferCUDA<dim, Number>  &transfer_dp,
+      const Function<dim, Number>        &boundary_values,
+      const Function<dim, Number>        &right_hand_side,
+      std::shared_ptr<ConditionalOStream> pcout,
+      const unsigned int                  n_cycles = 1)
       : dof_handler(&dof_handler)
       , transfer(&transfer_dp)
       , minlevel(1)
@@ -1025,7 +1025,7 @@ namespace PSMF
         comp_data.push_back(data);
       };
 
-      for (unsigned int s = 0; s < 4; ++s)
+      for (unsigned int s = 0; s < 2; ++s)
         {
           switch (s)
             {
@@ -1438,8 +1438,8 @@ namespace PSMF
     }
 
 
-    const SmartPointer<const DoFHandler<dim>> dof_handler;
-    const SmartPointer<const MGTransferCUDA<dim, Number, dof_layout>> transfer;
+    const SmartPointer<const DoFHandler<dim>>             dof_handler;
+    const SmartPointer<const MGTransferCUDA<dim, Number>> transfer;
 
     MGLevelObject<MatrixType> matrix;
 

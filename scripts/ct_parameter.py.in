@@ -53,7 +53,7 @@ def parse_args():
                         help="number of shift elements"
     )
     parser.add_argument('-REDUCE','--reduce',
-                        default=1e-9,
+                        default=1e-8,
                         type=float,
                         help="desired reduction factor"                    
     )
@@ -80,7 +80,7 @@ def parse_args():
     parser.add_argument('-LA','--laplace_type',
                         default='B',
                         nargs='+',
-                        choices=['Basic','Cell','ConflictFree','TensorCore','TensorCoreMMA'],
+                        choices=['Basic','Cell','ConflictFree','ConflictFreeMem','TensorCore','TensorCoreMMA'],
                         help="variant of the Laplace operator kernel"
     )
     parser.add_argument('-SMV','--smooth_vmult',
@@ -157,6 +157,9 @@ class Parameter:
                 kernel_str += r'PSMF::LaplaceVariant::BasicCell, '
                 count += 1
             elif kernel.endswith('Free'):
+                kernel_str += r'PSMF::LaplaceVariant::ConflictFree, '
+                count += 1
+            elif kernel.endswith('FreeMem'):
                 kernel_str += r'PSMF::LaplaceVariant::ConflictFree, '
                 count += 1
             elif kernel.endswith('Core'):

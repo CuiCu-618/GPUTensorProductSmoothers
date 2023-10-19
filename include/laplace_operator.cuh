@@ -118,6 +118,61 @@ namespace PSMF
   };
 
   template <int dim, int fe_degree, typename Number>
+  struct LocalLaplace<dim, fe_degree, Number, LaplaceVariant::ConflictFreeMem>
+  {
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+
+    mutable std::size_t shared_mem;
+
+    LocalLaplace()
+      : shared_mem(0)
+    {
+      static_assert(fe_degree == 3 || fe_degree == 7,
+                    "Only degree==3,7 is implemented.");
+    };
+
+    void
+    setup_kernel(const unsigned int patch_per_block) const
+    {
+      shared_mem = 0;
+
+      const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+      // local_src, local_dst
+      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+      // local_mass, local_derivative
+      shared_mem +=
+        2 * patch_per_block * n_dofs_1d * n_dofs_1d * 3 * sizeof(Number);
+      // temp
+      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+
+      AssertCuda(cudaFuncSetAttribute(
+        laplace_kernel_cfmem<dim,
+                             fe_degree,
+                             Number,
+                             LaplaceVariant::ConflictFreeMem>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        shared_mem));
+    }
+
+    template <typename VectorType, typename DataType>
+    void
+    loop_kernel(const VectorType &src,
+                VectorType       &dst,
+                const DataType   &gpu_data,
+                const dim3       &grid_dim,
+                const dim3       &block_dim) const
+    {
+      laplace_kernel_cfmem<dim,
+                           fe_degree,
+                           Number,
+                           LaplaceVariant::ConflictFreeMem>
+        <<<grid_dim, block_dim, shared_mem>>>(src.get_values(),
+                                              dst.get_values(),
+                                              gpu_data);
+    }
+  };
+
+  template <int dim, int fe_degree, typename Number>
   struct LocalLaplace<dim, fe_degree, Number, LaplaceVariant::TensorCore>
   {
     static constexpr unsigned int n_dofs_1d         = 2 * fe_degree + 2;
@@ -126,7 +181,11 @@ namespace PSMF
     mutable std::size_t shared_mem;
 
     LocalLaplace()
-      : shared_mem(0){};
+      : shared_mem(0)
+    {
+      static_assert(fe_degree == 3 || fe_degree == 7,
+                    "Only degree==3,7 is implemented.");
+    };
 
     void
     setup_kernel(const unsigned int patch_per_block) const
@@ -179,7 +238,11 @@ namespace PSMF
     mutable std::size_t shared_mem;
 
     LocalLaplace()
-      : shared_mem(0){};
+      : shared_mem(0)
+    {
+      static_assert(fe_degree == 3 || fe_degree == 7,
+                    "Only degree==3,7 is implemented.");
+    };
 
     void
     setup_kernel(const unsigned int patch_per_block) const
@@ -193,13 +256,13 @@ namespace PSMF
       shared_mem +=
         2 * patch_per_block * n_dofs_1d * n_dofs_1d * 3 * sizeof(Number);
       // temp
-      shared_mem += (dim - 1) * patch_per_block * local_dim * sizeof(Number);
+      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
 
       AssertCuda(cudaFuncSetAttribute(
-        laplace_kernel_tensorcore<dim,
-                                  fe_degree,
-                                  Number,
-                                  LaplaceVariant::TensorCoreMMA>,
+        laplace_kernel_tensorcoremma<dim,
+                                     fe_degree,
+                                     Number,
+                                     LaplaceVariant::TensorCoreMMA>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         shared_mem));
     }
@@ -212,10 +275,10 @@ namespace PSMF
                 const dim3       &grid_dim,
                 const dim3       &block_dim) const
     {
-      laplace_kernel_tensorcore<dim,
-                                fe_degree,
-                                Number,
-                                LaplaceVariant::TensorCoreMMA>
+      laplace_kernel_tensorcoremma<dim,
+                                   fe_degree,
+                                   Number,
+                                   LaplaceVariant::TensorCoreMMA>
         <<<grid_dim, block_dim, shared_mem>>>(src.get_values(),
                                               dst.get_values(),
                                               gpu_data);

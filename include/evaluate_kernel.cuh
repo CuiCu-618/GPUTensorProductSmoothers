@@ -341,6 +341,171 @@ namespace PSMF
     }
   };
 
+  template <typename T, int n_dofs_1d, typename Number>
+  struct TPEvaluatorBase<T,
+                         n_dofs_1d,
+                         Number,
+                         LaplaceVariant::ConflictFreeMem,
+                         2>
+  {
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      constexpr int multiple = std::is_same<Number, double>::value ?
+                                 Util::calculate_multiple<n_dofs_1d, 16>() :
+                                 Util::calculate_multiple<n_dofs_1d, 32>();
+
+      const unsigned int row = threadIdx.y;
+      const unsigned int col = threadIdx.x & (n_dofs_1d - 1);
+
+      Number pval = 0;
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      // #pragma unroll
+      for (unsigned int k = 0; k < n_dofs_1d; ++k)
+        {
+          const unsigned int shape_idx = row * n_dofs_1d + k;
+
+          const unsigned int source_idx =
+            (direction == 0) ?
+              col * n_dofs_1d + ((k + col / multiple) & (n_dofs_1d - 1)) :
+              k * n_dofs_1d + ((col + k / multiple) & (n_dofs_1d - 1));
+
+          pval += shape_data[shape_idx] * in[source_idx];
+        }
+
+      const unsigned int destination_idx =
+        (direction == 0) ?
+          col * n_dofs_1d + ((row + col / multiple) & (n_dofs_1d - 1)) :
+          row * n_dofs_1d + ((col + row / multiple) & (n_dofs_1d - 1));
+
+      if (add)
+        out[destination_idx] += pval;
+      else if (sub)
+        out[destination_idx] -= pval;
+      else
+        out[destination_idx] = pval;
+    }
+  };
+
+  template <typename T, int n_dofs_1d, typename Number>
+  struct TPEvaluatorBase<T,
+                         n_dofs_1d,
+                         Number,
+                         LaplaceVariant::ConflictFreeMem,
+                         3>
+  {
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      constexpr int multiple = std::is_same<Number, double>::value ?
+                                 Util::calculate_multiple<n_dofs_1d, 16>() :
+                                 Util::calculate_multiple<n_dofs_1d, 32>();
+
+      constexpr int stride = n_dofs_1d * n_dofs_1d;
+
+      const unsigned int row = threadIdx.y;
+      const unsigned int col = threadIdx.x & (n_dofs_1d - 1);
+
+      Number pval[n_dofs_1d];
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+        {
+          pval[z] = 0;
+          // #pragma unroll
+          for (unsigned int k = 0; k < n_dofs_1d; ++k)
+            {
+              const unsigned int shape_idx = row * n_dofs_1d + k;
+
+              const unsigned int source_idx =
+                (direction == 0) ?
+                  (((col + z) & (n_dofs_1d - 1)) * n_dofs_1d +
+                   ((k + ((col + z) & (n_dofs_1d - 1)) / multiple) &
+                    (n_dofs_1d - 1)) +
+                   z * stride) :
+                (direction == 1) ?
+                  (((k + z) & (n_dofs_1d - 1)) * n_dofs_1d +
+                   ((col + ((k + z) & (n_dofs_1d - 1)) / multiple) &
+                    (n_dofs_1d - 1)) +
+                   z * stride) :
+                  (((z + k) & (n_dofs_1d - 1)) * n_dofs_1d +
+                   ((col + ((k + z) & (n_dofs_1d - 1)) / multiple) &
+                    (n_dofs_1d - 1)) +
+                   k * stride);
+
+              pval[z] += shape_data[shape_idx] * in[source_idx];
+            }
+        }
+
+      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+        {
+          const unsigned int destination_idx =
+            (direction == 0) ?
+              ((col + z) & (n_dofs_1d - 1)) * n_dofs_1d +
+                ((row + ((col + z) & (n_dofs_1d - 1)) / multiple) &
+                 (n_dofs_1d - 1)) +
+                z * stride :
+            (direction == 1) ?
+              ((row + z) & (n_dofs_1d - 1)) * n_dofs_1d +
+                ((col + ((row + z) & (n_dofs_1d - 1)) / multiple) &
+                 (n_dofs_1d - 1)) +
+                z * stride :
+              ((z + row) & (n_dofs_1d - 1)) * n_dofs_1d +
+                ((col + ((z + row) & (n_dofs_1d - 1)) / multiple) &
+                 (n_dofs_1d - 1)) +
+                row * stride;
+
+          if (add)
+            out[destination_idx] += pval[z];
+          else if (sub)
+            out[destination_idx] -= pval[z];
+          else
+            out[destination_idx] = pval[z];
+        }
+    }
+  };
+
   // template <typename T, int n_dofs_1d, typename Number>
   // struct TPEvaluatorBase<T, n_dofs_1d, Number, LaplaceVariant::ConflictFree,
   // 3>
@@ -481,7 +646,6 @@ namespace PSMF
   struct TPEvaluatorBase<T, 8, double, LaplaceVariant::TensorCoreMMA, 2>
   {
     using Number = double;
-    using s8x4   = Shape<8, 4>;
 
     static constexpr unsigned int n_dofs_1d = 8;
 
@@ -505,127 +669,192 @@ namespace PSMF
         dst, src, mass_matrix, derivative_matrix, tmp);
     }
 
-    template <typename shapeA,
-              typename shapeB,
-              bool add,
-              int  dir,
-              int  g_row,
-              int  g_col,
-              int  cycle>
+    template <int direction, bool add, bool sub = false>
     __device__ void
-    mma_op(const Number *shape_data, const Number *in, Number *out)
+    apply(const Number *shape_data, const Number *in, Number *out)
     {
       const unsigned int tid = (threadIdx.y * 8 + threadIdx.x);
 
       const unsigned int row = tid / 4;
-      const unsigned int col = tid % 4;
-
-      // const unsigned int a_idx =
-      //   (row + g_row * 8) * n_dofs_1d + col + cycle * 4;
-      // const unsigned int b_idx =
-      //   (dir == 0) ? (row + g_col * 8) * n_dofs_1d + col + cycle * 4 :
-      //                (col + cycle * 4) * n_dofs_1d + row + g_col * 8;
-      // const unsigned int cd_idx =
-      //   (dir == 0) ? (2 * col + g_col * 8) * n_dofs_1d + row + g_row * 8 :
-      //                (row + g_row * 8) * n_dofs_1d + 2 * col + g_col * 8;
-
-      const unsigned int a_idx = (row)*n_dofs_1d + col + cycle * 4;
-      const unsigned int b_idx = (dir == 0) ?
-                                   (row)*n_dofs_1d + col + cycle * 4 :
-                                   (col + cycle * 4) * n_dofs_1d + row;
-      const unsigned int cd_idx =
-        (dir == 0) ? (2 * col) * n_dofs_1d + row : (row)*n_dofs_1d + 2 * col;
-
-      // const bool is_avtive_a = row < shapeA::m && col < shapeA::n;
-      // const bool is_avtive_b = row < shapeB::m && col < shapeB::n;
-
-      // const bool is_avtive_cd = row < shapeA::m && col < shapeB::m / 2;
-
-      // Number tmp = 0;
-
-      constexpr unsigned int stride = (dir == 0) ? n_dofs_1d : 1;
-
-      // auto &d0 = is_avtive_cd ? out[cd_idx] : tmp;
-      // auto &d1 = is_avtive_cd ? out[cd_idx + stride] : tmp;
-
-      // auto a0 = is_avtive_a ? shape_data[a_idx] : 0;
-      // auto b0 = is_avtive_b ? in[b_idx] : 0;
-
-      // auto c0 = (is_avtive_cd && add) ? out[cd_idx] : 0;
-      // auto c1 = (is_avtive_cd && add) ? out[cd_idx + stride] : 0;
-
-      auto &d0 = out[cd_idx];
-      auto &d1 = out[cd_idx + stride];
-
-      // auto a0 = shape_data[a_idx];
-      // auto b0 = in[b_idx];
-
-      auto c0 = (add) ? out[cd_idx] : 0;
-      auto c1 = (add) ? out[cd_idx + stride] : 0;
+      const unsigned int col = tid & 3;
 
       if (tid > 31)
         return;
 
-      asm("mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
-          "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
-          : "=d"(d0), "=d"(d1)
-          : "d"(shape_data[a_idx]), "d"(in[b_idx]), "d"(c0), "d"(c1));
+      if constexpr (direction == 0)
+        {
+          double2 c = {0, 0};
+
+          const unsigned int cd_idx0 =
+            (row * n_dofs_1d + 2 * col) ^ Util::get_base<n_dofs_1d>(row);
+
+          if constexpr (add)
+            c = *((double2 *)(out + cd_idx0));
+
+          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+            {
+              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                         Util::get_base<n_dofs_1d>(row);
+              const unsigned int b_idx =
+                ((col + cycle * 4) * n_dofs_1d + row) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
+
+              auto a0 = (direction == 0) ? in[a_idx] : shape_data[a_idx];
+              auto b0 = (direction == 0) ? shape_data[b_idx] : in[b_idx];
+
+              asm volatile("mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                           "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                           : "=d"(c.x), "=d"(c.y)
+                           : "d"(a0), "d"(b0), "d"(c.x), "d"(c.y));
+            }
+
+          *((double2 *)(out + cd_idx0)) = c;
+        }
+      else
+        {
+          double2 c = {0, 0};
+
+          const unsigned int cd_idx0 =
+            (row * n_dofs_1d + 2 * col) ^ Util::get_base<n_dofs_1d>(row);
+
+          if constexpr (add)
+            c = *((double2 *)(out + cd_idx0));
+
+          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+            {
+              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                         Util::get_base<n_dofs_1d>(row);
+              const unsigned int b_idx =
+                ((col + cycle * 4) * n_dofs_1d + row) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
+
+              auto a0 = (direction == 0) ? in[a_idx] : shape_data[a_idx];
+              auto b0 = (direction == 0) ? shape_data[b_idx] : in[b_idx];
+
+              asm volatile("mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                           "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                           : "=d"(c.x), "=d"(c.y)
+                           : "d"(a0), "d"(b0), "d"(c.x), "d"(c.y));
+            }
+
+          *((double2 *)(out + cd_idx0)) = c;
+        }
+    }
+  };
+
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, double, LaplaceVariant::TensorCoreMMA, 2>
+  {
+    using Number = double;
+
+    static constexpr unsigned int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
     }
 
     template <int direction, bool add, bool sub = false>
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      // constexpr unsigned int skew_double = Util::padding;
+      const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+      const int rowId  = warpId / 2;
+      const int colId  = warpId & 1;
 
-      // mma_op<s8x4, s8x4, add, direction, 0, 0, 0>(shape_data, in, out);
-      // __syncthreads();
-      // mma_op<s8x4, s8x4, true, direction, 0, 0, 1>(shape_data, in, out);
+      const int tid = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
 
-      const unsigned int tid = (threadIdx.y * 8 + threadIdx.x);
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid % 4;
+      if (warpId > 3)
+        return;
 
-      constexpr unsigned int stride = (direction == 0) ? n_dofs_1d : 1;
-
-      for (unsigned int cycle = 0; cycle < 2; ++cycle)
+      if constexpr (direction == 0)
         {
-          const unsigned int a_idx  = (row)*n_dofs_1d + col + cycle * 4;
-          const unsigned int b_idx  = (direction == 0) ?
-                                        (row)*n_dofs_1d + col + cycle * 4 :
-                                        (col + cycle * 4) * n_dofs_1d + row;
-          const unsigned int cd_idx = (direction == 0) ?
-                                        (2 * col) * n_dofs_1d + row :
-                                        (row)*n_dofs_1d + 2 * col;
+          double2 c = {0, 0};
 
-          auto &d0 = out[cd_idx];
-          auto &d1 = out[cd_idx + stride];
+          const unsigned int cd_idx0 =
+            ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8) ^
+            Util::get_base<n_dofs_1d>(rowId * 8 + row);
 
-          auto a0 = shape_data[a_idx];
-          auto b0 = in[b_idx];
+          if constexpr (add)
+            c = *((double2 *)(out + cd_idx0));
 
-          auto c0 = (add || cycle == 1) ? out[cd_idx] : 0;
-          auto c1 = (add || cycle == 1) ? out[cd_idx + stride] : 0;
+          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              const unsigned int b_idx =
+                ((col + cycle * 4) * n_dofs_1d + row + colId * 8) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
 
-          if (tid > 31)
-            return;
+              auto a0 = (direction == 0) ? in[a_idx] : shape_data[a_idx];
+              auto b0 = (direction == 0) ? shape_data[b_idx] : in[b_idx];
 
-          asm("mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
-              "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
-              : "=d"(d0), "=d"(d1)
-              : "d"(a0), "d"(b0), "d"(c0), "d"(c1));
+              asm volatile("mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                           "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                           : "=d"(c.x), "=d"(c.y)
+                           : "d"(a0), "d"(b0), "d"(c.x), "d"(c.y));
+            }
+
+          *((double2 *)(out + cd_idx0)) = c;
+        }
+      else
+        {
+          double2 c = {0, 0};
+
+          const unsigned int cd_idx0 =
+            ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8) ^
+            Util::get_base<n_dofs_1d>(rowId * 8 + row);
+
+          if constexpr (add)
+            c = *((double2 *)(out + cd_idx0));
+
+          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              const unsigned int b_idx =
+                ((col + cycle * 4) * n_dofs_1d + row + colId * 8) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
+
+              auto a0 = (direction == 0) ? in[a_idx] : shape_data[a_idx];
+              auto b0 = (direction == 0) ? shape_data[b_idx] : in[b_idx];
+
+              asm volatile("mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                           "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                           : "=d"(c.x), "=d"(c.y)
+                           : "d"(a0), "d"(b0), "d"(c.x), "d"(c.y));
+            }
+
+          *((double2 *)(out + cd_idx0)) = c;
         }
     }
   };
-
 
 
   template <typename T>
   struct TPEvaluatorBase<T, 8, double, LaplaceVariant::TensorCoreMMA, 3>
   {
     using Number = double;
-    using s8x4   = Shape<8, 4>;
 
     static constexpr unsigned int n_dofs_1d = 8;
 
@@ -653,46 +882,353 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int tid    = (threadIdx.y * 8 + threadIdx.x) % 32;
+      const unsigned int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
       const unsigned int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
 
       const unsigned int row = tid / 4;
-      const unsigned int col = tid % 4;
+      const unsigned int col = tid & 3;
 
-      constexpr unsigned int stride = (direction == 0) ? n_dofs_1d : 1;
       constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
 
-      for (unsigned int cycle = 0; cycle < 2; ++cycle)
+      if (direction == 0)
         {
-          const unsigned int a_idx = row * n_dofs_1d + col + cycle * 4;
-          auto               a0 = sub ? -shape_data[a_idx] : shape_data[a_idx];
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+              if constexpr (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+            {
+              const unsigned int b_idx =
+                ((col + cycle * 4) * n_dofs_1d + row) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              auto b0 = shape_data[b_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int a_idx =
+                    (row * n_dofs_1d + col + cycle * 4 +
+                     (z * 2 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+                  auto a0 = in[a_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
 
           for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
             {
+              const unsigned int c_idx =
+                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+              if constexpr (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+            {
+              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                         Util::get_base<n_dofs_1d>(row, 0);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((col + cycle * 4) * n_dofs_1d + row +
+                     (z * 2 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d>(col + cycle * 4, z * 2 + warpId);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
+
+              if constexpr (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+            {
+              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                         Util::get_base<n_dofs_1d>(row, 0);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((z * 2 + warpId) * n_dofs_1d + row +
+                     (col + cycle * 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(z * 2 + warpId, col + cycle * 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+    }
+  };
+
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, double, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = double;
+
+    static constexpr unsigned int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+      const int subId  = warpId & 3;
+      const int rowId  = subId / 2;
+      const int colId  = subId & 1;
+
+      const int tid = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
+
+      const unsigned int row = tid / 4;
+      const unsigned int col = tid & 3;
+
+      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+
+      if (direction == 0)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              if constexpr (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+            {
               const unsigned int b_idx =
-                (direction == 0) ? row * n_dofs_1d + col + cycle * 4 +
-                                     (z * 2 + warpId) * offset :
-                (direction == 1) ? (col + cycle * 4) * n_dofs_1d + row +
-                                     (z * 2 + warpId) * offset :
-                                   (z * 2 + warpId) * n_dofs_1d + row +
-                                     (col + cycle * 4) * offset;
-              const unsigned int cd_idx =
-                (direction == 0) ?
-                  (2 * col) * n_dofs_1d + row + (z * 2 + warpId) * offset :
-                (direction == 1) ?
-                  row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset :
-                  (z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset;
+                ((col + cycle * 4) * n_dofs_1d + row + colId * 8) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              auto b0 = shape_data[b_idx];
 
-              auto  b0 = in[b_idx];
-              auto &d0 = out[cd_idx];
-              auto &d1 = out[cd_idx + stride];
-              auto  c0 = (add || sub || cycle == 1) ? out[cd_idx] : 0;
-              auto  c1 = (add || sub || cycle == 1) ? out[cd_idx + stride] : 0;
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int a_idx =
+                    ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4 +
+                     (z * 2 + warpId / 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(rowId * 8 + row,
+                                              z * 2 + warpId / 4);
 
-              asm("mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
-                  "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
-                  : "=d"(d0), "=d"(d1)
-                  : "d"(a0), "d"(b0), "d"(c0), "d"(c1));
+                  auto a0 = in[a_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              if constexpr (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((col + cycle * 4) * n_dofs_1d + row + colId * 8 +
+                     (z * 2 + warpId / 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(col + cycle * 4,
+                                              z * 2 + warpId / 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId / 4) * n_dofs_1d + 2 * col + colId * 8 +
+                 (rowId * 8 + row) * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
+
+              if constexpr (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((z * 2 + warpId / 4) * n_dofs_1d + colId * 8 + row +
+                     (col + cycle * 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(z * 2 + warpId / 4,
+                                              col + cycle * 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId / 4) * n_dofs_1d + 2 * col + colId * 8 +
+                 (rowId * 8 + row) * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
+
+              *((double2 *)(out + c_idx)) = c[z];
             }
         }
     }
