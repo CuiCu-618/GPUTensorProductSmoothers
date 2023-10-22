@@ -115,13 +115,13 @@ namespace Util
     return multiple;
   }
 
-  template <int n_dofs_1d>
+  template <int n_dofs_1d, typename Number = double>
   __device__ inline unsigned int
   get_base(const unsigned int row, const unsigned int z = 0);
 
   template <>
   __device__ inline unsigned int
-  get_base<8>(const unsigned int row, const unsigned int z)
+  get_base<8, double>(const unsigned int row, const unsigned int z)
   {
     // auto base1 = row < 4 ? 0 : 8;
     // auto base2 = (row & 3) < 2 ? 0 : 5;
@@ -138,7 +138,7 @@ namespace Util
 
   template <>
   __device__ inline unsigned int
-  get_base<16>(const unsigned int row, const unsigned int z)
+  get_base<16, double>(const unsigned int row, const unsigned int z)
   {
     auto base1 = (row & 1) < 1 ? 0 : 8;
     auto base2 = (row & 3) < 2 ? 0 : 4;
@@ -146,6 +146,19 @@ namespace Util
     auto base4 = (z & 3) < 2 ? 0 : 4;
 
     return base1 ^ base2 ^ base3 ^ base4;
+  }
+
+  template <>
+  __device__ inline unsigned int
+  get_base<16, float>(const unsigned int row, const unsigned int z)
+  {
+    auto base1 = (row & 3) < 2 ? 0 : 8;
+    auto base2 = (row & 7) < 4 ? 0 : 4;
+    auto base3 = (z & 1) < 1 ? 0 : 16;
+    auto base4 = (z & 3) < 2 ? 0 : 8;
+    auto base5 = (z & 7) < 4 ? 0 : 4;
+
+    return base1 ^ base2 ^ base3 ^ base4 ^ base5;
   }
 } // namespace Util
 

@@ -414,16 +414,15 @@ namespace PSMF
             shared_data
               .local_mass[(local_patch * dim + d) * n_dofs_1d * n_dofs_1d +
                           ((threadIdx.y * n_dofs_1d + local_tid_x) ^
-                           Util::get_base<n_dofs_1d>(threadIdx.y, 0))] =
+                           Util::get_base<n_dofs_1d, Number>(threadIdx.y, 0))] =
               gpu_data.laplace_mass_1d[gpu_data.patch_type[patch * dim + d] *
                                          n_dofs_1d * n_dofs_1d +
                                        threadIdx.y * n_dofs_1d + local_tid_x];
 
-            shared_data
-              .local_derivative[(local_patch * dim + d) * n_dofs_1d *
-                                  n_dofs_1d +
-                                ((threadIdx.y * n_dofs_1d + local_tid_x) ^
-                                 Util::get_base<n_dofs_1d>(threadIdx.y, 0))] =
+            shared_data.local_derivative
+              [(local_patch * dim + d) * n_dofs_1d * n_dofs_1d +
+               ((threadIdx.y * n_dofs_1d + local_tid_x) ^
+                Util::get_base<n_dofs_1d, Number>(threadIdx.y, 0))] =
               gpu_data.laplace_stiff_1d[gpu_data.patch_type[patch * dim + d] *
                                           n_dofs_1d * n_dofs_1d +
                                         threadIdx.y * n_dofs_1d + local_tid_x];
@@ -435,7 +434,7 @@ namespace PSMF
               local_patch * local_dim +
               ((z * n_dofs_1d * n_dofs_1d + threadIdx.y * n_dofs_1d +
                 local_tid_x) ^
-               Util::get_base<n_dofs_1d>(threadIdx.y, z));
+               Util::get_base<n_dofs_1d, Number>(threadIdx.y, z));
 
             const unsigned int global_dof_indices =
               Util::compute_indices<dim, fe_degree>(
@@ -459,7 +458,7 @@ namespace PSMF
               local_patch * local_dim +
               ((z * n_dofs_1d * n_dofs_1d + threadIdx.y * n_dofs_1d +
                 local_tid_x) ^
-               Util::get_base<n_dofs_1d>(threadIdx.y, z));
+               Util::get_base<n_dofs_1d, Number>(threadIdx.y, z));
 
             const unsigned int global_dof_indices =
               Util::compute_indices<dim, fe_degree>(
