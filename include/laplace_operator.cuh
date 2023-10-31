@@ -127,8 +127,8 @@ namespace PSMF
     LocalLaplace()
       : shared_mem(0)
     {
-      static_assert(fe_degree == 3 || fe_degree == 7,
-                    "Only degree==3,7 is implemented.");
+      Assert(fe_degree == 3 || fe_degree == 7,
+             "Only degree==3,7 is implemented.");
     };
 
     void
@@ -183,8 +183,8 @@ namespace PSMF
     LocalLaplace()
       : shared_mem(0)
     {
-      static_assert(fe_degree == 3 || fe_degree == 7,
-                    "Only degree==3,7 is implemented.");
+      Assert(fe_degree == 3 || fe_degree == 7,
+             "Only degree==3,7 is implemented.");
     };
 
     void
@@ -240,8 +240,8 @@ namespace PSMF
     LocalLaplace()
       : shared_mem(0)
     {
-      static_assert(fe_degree == 3 || fe_degree == 7,
-                    "Only degree==3,7 is implemented.");
+      Assert(fe_degree == 3 || fe_degree == 7,
+             "Only degree==3,7 is implemented.");
     };
 
     void
