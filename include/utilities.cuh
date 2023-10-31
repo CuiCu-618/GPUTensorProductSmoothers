@@ -117,7 +117,10 @@ namespace Util
 
   template <int n_dofs_1d, typename Number = double>
   __device__ inline unsigned int
-  get_base(const unsigned int row, const unsigned int z = 0);
+  get_base(const unsigned int row, const unsigned int z = 0)
+  {
+    return 0;
+  }
 
   template <>
   __device__ inline unsigned int
