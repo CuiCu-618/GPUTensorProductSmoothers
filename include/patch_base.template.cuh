@@ -441,6 +441,35 @@ namespace PSMF
     alloc_arrays(&laplace_mass_1d, n_dofs_2d * 3);
     alloc_arrays(&laplace_stiff_1d, n_dofs_2d * 3);
 
+    std::vector<unsigned int> permutation_host;
+    permutation_host.resize(Util::pow(n_dofs_1d, dim));
+    for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (unsigned int j = 0; j < n_dofs_1d; ++j)
+        for (unsigned int i = 0; i < n_dofs_1d; ++i)
+          {
+            unsigned int ind = z * n_dofs_1d * n_dofs_1d + j * n_dofs_1d + i;
+            unsigned int new_ind =
+              ind ^ Util::get_base<n_dofs_1d, Number>(j, z);
+            permutation_host[ind] = new_ind;
+          }
+
+    if (sizeof(Number) == 8)
+      error_code =
+        cudaMemcpyToSymbol(permutation_d,
+                           permutation_host.data(),
+                           permutation_host.size() * sizeof(unsigned int),
+                           0,
+                           cudaMemcpyHostToDevice);
+    else
+      error_code =
+        cudaMemcpyToSymbol(permutation_f,
+                           permutation_host.data(),
+                           permutation_host.size() * sizeof(unsigned int),
+                           0,
+                           cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+
+
     reinit_tensor_product_laplace();
     reinit_tensor_product_smoother();
   }

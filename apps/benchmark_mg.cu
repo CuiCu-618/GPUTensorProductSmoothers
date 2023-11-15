@@ -56,6 +56,10 @@
 
 using namespace dealii;
 
+#ifndef TIMING
+#define TIMING 1
+#endif
+
 template <int dim, int fe_degree>
 class LaplaceProblem
 {
@@ -222,6 +226,9 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
       time.restart();
       for (unsigned int i = 0; i < n_mv; ++i)
         {
+#if TIMING != 0
+        printf("Testing.............\n");
+#endif          
           matrix_dp.vmult(solution_dp, system_rhs_dp);
           cudaDeviceSynchronize();
         }

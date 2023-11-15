@@ -127,8 +127,7 @@ namespace PSMF
     LocalLaplace()
       : shared_mem(0)
     {
-      Assert(fe_degree == 3 || fe_degree == 7,
-             "Only degree==3,7 is implemented.");
+      Assert(fe_degree == 3 || fe_degree == 7, ExcNotImplemented());
     };
 
     void
@@ -183,8 +182,7 @@ namespace PSMF
     LocalLaplace()
       : shared_mem(0)
     {
-      Assert(fe_degree == 3 || fe_degree == 7,
-             "Only degree==3,7 is implemented.");
+      Assert(fe_degree == 3 || fe_degree == 7, ExcNotImplemented());
     };
 
     void
@@ -230,6 +228,7 @@ namespace PSMF
   };
 
 
+#if MMAKERNEL <= 2
   template <int dim, int fe_degree, typename Number>
   struct LocalLaplace<dim, fe_degree, Number, LaplaceVariant::TensorCoreMMA>
   {
@@ -240,8 +239,7 @@ namespace PSMF
     LocalLaplace()
       : shared_mem(0)
     {
-      Assert(fe_degree == 3 || fe_degree == 7,
-             "Only degree==3,7 is implemented.");
+      Assert(fe_degree == 3 || fe_degree == 7, ExcNotImplemented());
     };
 
     void
@@ -284,7 +282,66 @@ namespace PSMF
                                               gpu_data);
     }
   };
+#endif
 
+#if MMAKERNEL >= 3
+  template <int dim, int fe_degree, typename Number>
+  struct LocalLaplace<dim, fe_degree, Number, LaplaceVariant::TensorCoreMMA>
+  {
+    static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+
+    mutable std::size_t shared_mem;
+    mutable dim3        block_dim;
+
+    LocalLaplace()
+      : shared_mem(0)
+    {
+      Assert(fe_degree == 3 || fe_degree == 7, ExcNotImplemented());
+    };
+
+    void
+    setup_kernel(const unsigned int patch_per_block) const
+    {
+      shared_mem = 0;
+
+      const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+      // local_src, local_dst
+      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+      // local_mass, local_derivative
+      shared_mem +=
+        2 * patch_per_block * n_dofs_1d * n_dofs_1d * 3 * sizeof(Number);
+      // temp
+      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+
+      block_dim = dim3(n_dofs_1d, n_dofs_1d * 2, 1);
+
+      AssertCuda(cudaFuncSetAttribute(
+        laplace_kernel_tensorcoremma<dim,
+                                     fe_degree,
+                                     Number,
+                                     LaplaceVariant::TensorCoreMMA>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        shared_mem));
+    }
+
+    template <typename VectorType, typename DataType>
+    void
+    loop_kernel(const VectorType &src,
+                VectorType       &dst,
+                const DataType   &gpu_data,
+                const dim3       &grid_dim,
+                const dim3 &) const
+    {
+      laplace_kernel_tensorcoremma<dim,
+                                   fe_degree,
+                                   Number,
+                                   LaplaceVariant::TensorCoreMMA>
+        <<<grid_dim, block_dim, shared_mem>>>(src.get_values(),
+                                              dst.get_values(),
+                                              gpu_data);
+    }
+  };
+#endif
 
 
   template <int dim, int fe_degree, typename Number, LaplaceVariant kernel>

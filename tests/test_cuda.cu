@@ -36,6 +36,34 @@ global_func()
 }
 
 __global__ void
+test_wmmaload()
+{
+  __shared__ double buf[64];
+
+  int tid = threadIdx.x;
+  int warpid = tid / 32;
+  buf[tid] = 100.1 + tid;
+  buf[tid + 32] = 100.1 + tid + 32;
+
+  for (uint32_t i = tid, c = 0; i < 2048;
+       i += 256, c++)
+    printf("%d: %d\n", c, (warpid + c * 8 + 1) * 32 % 2048);
+
+  __syncthreads();
+
+  // double reg[2];
+  // unsigned smem_ptr =
+  //   static_cast<unsigned>(__cvta_generic_to_shared(buf));
+
+  // asm volatile("wmma.load.c.sync.aligned.row.m8n8k4.shared.f64 {%0,%1}, [%2];"
+  //              : "=d"(reg[0]), "=d"(reg[1])
+  //              : "r"(smem_ptr));
+
+  // __syncthreads();
+  // printf("[%d, %f, %f, %f]\n", tid, reg[0], reg[1], buf[tid]);
+}
+
+__global__ void
 test_ldmatrix()
 {
   __shared__ float buf[32];
@@ -224,10 +252,11 @@ int
 main()
 {
   // global_func<<<1, 66>>>();
+  test_wmmaload<<<1, 256>>>();
   // test_ldmatrix<<<1, 32>>>();
   // test_wideload<<<1, 32>>>();
   // test_shfl<<<1, 32>>>();
-  test_mma<<<1, 32>>>();
+  // test_mma<<<1, 32>>>();
 
   cudaDeviceSynchronize();
 

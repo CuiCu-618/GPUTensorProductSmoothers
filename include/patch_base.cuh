@@ -567,6 +567,9 @@ namespace PSMF
     Number *eigenvectors;
   };
 
+  __constant__ unsigned int permutation_d[16 * 16 * 16];
+  __constant__ unsigned int permutation_f[16 * 16 * 16];
+
   /**
    * Structure to pass the shared memory into a general user function.
    * TODO: specialize for cell loop and patch loop

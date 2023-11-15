@@ -116,31 +116,25 @@ namespace Util
   }
 
   template <int n_dofs_1d, typename Number = double>
-  __device__ inline unsigned int
+  __host__ __device__ inline unsigned int
   get_base(const unsigned int row, const unsigned int z = 0)
   {
     return 0;
   }
 
   template <>
-  __device__ inline unsigned int
+  __host__ __device__ inline unsigned int
   get_base<8, double>(const unsigned int row, const unsigned int z)
   {
-    // auto base1 = row < 4 ? 0 : 8;
-    // auto base2 = (row & 3) < 2 ? 0 : 5;
-    // auto base3 = (z & 1) < 1 ? 0 : 8;
-
-    // return base1 ^ base2 ^ base3;
-
     auto base1 = (row & 3) < 2 ? 0 : 4;
-    auto base2 = (z & 1) * 8;
+    auto base2 = (z & 1) << 3;
     auto base3 = (z & 3) < 2 ? 0 : 4;
 
     return base1 ^ base2 ^ base3;
   }
 
   template <>
-  __device__ inline unsigned int
+  __host__ __device__ inline unsigned int
   get_base<16, double>(const unsigned int row, const unsigned int z)
   {
     auto base1 = (row & 1) < 1 ? 0 : 8;
@@ -152,7 +146,7 @@ namespace Util
   }
 
   template <>
-  __device__ inline unsigned int
+  __host__ __device__ inline unsigned int
   get_base<16, float>(const unsigned int row, const unsigned int z)
   {
     auto base1 = (row & 3) < 2 ? 0 : 8;

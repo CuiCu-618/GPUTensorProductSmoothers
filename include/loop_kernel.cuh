@@ -69,6 +69,9 @@ namespace PSMF
 
     if (patch < gpu_data.n_patches)
       {
+#  if TIMING == 2
+        auto start = clock64();
+#  endif
         for (unsigned int d = 0; d < dim; ++d)
           {
             shared_data
@@ -105,10 +108,28 @@ namespace PSMF
 
             shared_data.local_dst[index] = 0.;
           }
+#  if TIMING == 2
+        __syncthreads();
+        auto elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("loading from global timing info: %ld cycles\n", elapsed);
+#  endif
+#  if TIMING == 2
+        start = clock64();
+#  endif
 
         evaluate_laplace<dim, fe_degree, Number, laplace>(local_patch,
                                                           &shared_data);
 
+#  if TIMING == 2
+        __syncthreads();
+        elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("Vmult timing info: %ld cycles\n", elapsed);
+#  endif
+#  if TIMING == 2
+        start = clock64();
+#  endif
         for (unsigned int z = 0; z < n_dofs_z; ++z)
           {
             const unsigned int index = local_patch * local_dim +
@@ -125,6 +146,12 @@ namespace PSMF
 
             atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
           }
+#  if TIMING == 2
+        __syncthreads();
+        elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("Storing to global timing info: %ld cycles\n", elapsed);
+#  endif
       }
   }
 
@@ -386,6 +413,7 @@ namespace PSMF
       }
   }
 
+#if MMAKERNEL == 0
   template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
   __global__ void
   laplace_kernel_tensorcoremma(
@@ -409,6 +437,95 @@ namespace PSMF
 
     if (patch < gpu_data.n_patches)
       {
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            shared_data
+              .local_mass[(local_patch * dim + d) * n_dofs_1d * n_dofs_1d +
+                          ((threadIdx.y * n_dofs_1d + local_tid_x))] =
+              gpu_data.laplace_mass_1d[gpu_data.patch_type[patch * dim + d] *
+                                         n_dofs_1d * n_dofs_1d +
+                                       threadIdx.y * n_dofs_1d + local_tid_x];
+
+            shared_data
+              .local_derivative[(local_patch * dim + d) * n_dofs_1d *
+                                  n_dofs_1d +
+                                ((threadIdx.y * n_dofs_1d + local_tid_x))] =
+              gpu_data.laplace_stiff_1d[gpu_data.patch_type[patch * dim + d] *
+                                          n_dofs_1d * n_dofs_1d +
+                                        threadIdx.y * n_dofs_1d + local_tid_x];
+          }
+
+        for (unsigned int z = 0; z < n_dofs_z; ++z)
+          {
+            const unsigned int index =
+              local_patch * local_dim +
+              ((z * n_dofs_1d * n_dofs_1d + threadIdx.y * n_dofs_1d +
+                local_tid_x));
+
+            const unsigned int global_dof_indices =
+              Util::compute_indices<dim, fe_degree>(
+                &gpu_data.first_dof[patch * (1 << dim)],
+                local_patch,
+                local_tid_x,
+                threadIdx.y,
+                z);
+
+            shared_data.local_src[index] = src[global_dof_indices];
+
+            shared_data.local_dst[index] = 0.;
+          }
+
+        evaluate_laplace<dim, fe_degree, Number, laplace>(local_patch,
+                                                          &shared_data);
+
+        for (unsigned int z = 0; z < n_dofs_z; ++z)
+          {
+            const unsigned int index =
+              local_patch * local_dim +
+              ((z * n_dofs_1d * n_dofs_1d + threadIdx.y * n_dofs_1d +
+                local_tid_x));
+
+            const unsigned int global_dof_indices =
+              Util::compute_indices<dim, fe_degree>(
+                &gpu_data.first_dof[patch * (1 << dim)],
+                local_patch,
+                local_tid_x,
+                threadIdx.y,
+                z);
+
+            atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
+          }
+      }
+  }
+#endif
+
+#if MMAKERNEL == 1
+  template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
+  __global__ void
+  laplace_kernel_tensorcoremma(
+    const Number                                                 *src,
+    Number                                                       *dst,
+    const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
+  {
+    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+    constexpr unsigned int n_dofs_z  = dim == 2 ? 1 : n_dofs_1d;
+
+    const unsigned int patch_per_block = gpu_data.patch_per_block;
+    const unsigned int local_patch     = threadIdx.x / n_dofs_1d;
+    const unsigned int patch       = local_patch + patch_per_block * blockIdx.x;
+    const unsigned int local_tid_x = threadIdx.x % n_dofs_1d;
+
+    SharedMemData<dim, Number, true> shared_data(get_shared_data_ptr<Number>(),
+                                                 patch_per_block,
+                                                 n_dofs_1d,
+                                                 local_dim);
+
+    if (patch < gpu_data.n_patches)
+      {
+#  if TIMING == 2
+        auto start = clock64();
+#  endif
         for (unsigned int d = 0; d < dim; ++d)
           {
             shared_data
@@ -448,9 +565,28 @@ namespace PSMF
 
             shared_data.local_dst[index] = 0.;
           }
+#  if TIMING == 2
+        __syncthreads();
+        auto elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("loading from global timing info: %ld cycles\n", elapsed);
+#  endif
+#  if TIMING == 2
+        start = clock64();
+#  endif
 
         evaluate_laplace<dim, fe_degree, Number, laplace>(local_patch,
                                                           &shared_data);
+
+#  if TIMING == 2
+        __syncthreads();
+        elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("Vmult timing info: %ld cycles\n", elapsed);
+#  endif
+#  if TIMING == 2
+        start = clock64();
+#  endif
 
         for (unsigned int z = 0; z < n_dofs_z; ++z)
           {
@@ -470,10 +606,253 @@ namespace PSMF
 
             atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
           }
+#  if TIMING == 2
+        __syncthreads();
+        elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("Storing to global timing info: %ld cycles\n", elapsed);
+#  endif
       }
   }
+#endif
 
+#if MMAKERNEL == 2
+  template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
+  __global__ void
+  laplace_kernel_tensorcoremma(
+    const Number                                                 *src,
+    Number                                                       *dst,
+    const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
+  {
+    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+    constexpr unsigned int n_dofs_z  = dim == 2 ? 1 : n_dofs_1d;
 
+    const unsigned int patch_per_block = gpu_data.patch_per_block;
+    const unsigned int local_patch     = threadIdx.x / n_dofs_1d;
+    const unsigned int patch       = local_patch + patch_per_block * blockIdx.x;
+    const unsigned int local_tid_x = threadIdx.x % n_dofs_1d;
+
+    SharedMemData<dim, Number, true> shared_data(get_shared_data_ptr<Number>(),
+                                                 patch_per_block,
+                                                 n_dofs_1d,
+                                                 local_dim);
+
+    if (patch < gpu_data.n_patches)
+      {
+#  if TIMING == 2
+        auto start = clock64();
+#  endif
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            shared_data
+              .local_mass[(local_patch * dim + d) * n_dofs_1d * n_dofs_1d +
+                          ((threadIdx.y * n_dofs_1d + local_tid_x) ^
+                           Util::get_base<n_dofs_1d, Number>(threadIdx.y, 0))] =
+              gpu_data.laplace_mass_1d[gpu_data.patch_type[patch * dim + d] *
+                                         n_dofs_1d * n_dofs_1d +
+                                       threadIdx.y * n_dofs_1d + local_tid_x];
+
+            shared_data.local_derivative
+              [(local_patch * dim + d) * n_dofs_1d * n_dofs_1d +
+               ((threadIdx.y * n_dofs_1d + local_tid_x) ^
+                Util::get_base<n_dofs_1d, Number>(threadIdx.y, 0))] =
+              gpu_data.laplace_stiff_1d[gpu_data.patch_type[patch * dim + d] *
+                                          n_dofs_1d * n_dofs_1d +
+                                        threadIdx.y * n_dofs_1d + local_tid_x];
+          }
+
+        for (unsigned int z = 0; z < n_dofs_z; ++z)
+          {
+            const unsigned int index =
+              local_patch * local_dim +
+              ((z * n_dofs_1d * n_dofs_1d + threadIdx.y * n_dofs_1d +
+                local_tid_x) ^
+               Util::get_base<n_dofs_1d, Number>(threadIdx.y, z));
+
+            const unsigned int global_dof_indices =
+              Util::compute_indices<dim, fe_degree>(
+                &gpu_data.first_dof[patch * (1 << dim)],
+                local_patch,
+                local_tid_x,
+                threadIdx.y,
+                z);
+
+            shared_data.local_src[index] = src[global_dof_indices];
+
+            shared_data.local_dst[index] = 0.;
+          }
+#  if TIMING == 2
+        __syncthreads();
+        auto elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("loading from global timing info: %ld cycles\n", elapsed);
+#  endif
+#  if TIMING == 2
+        start = clock64();
+#  endif
+
+        evaluate_laplace<dim, fe_degree, Number, laplace>(local_patch,
+                                                          &shared_data);
+
+#  if TIMING == 2
+        __syncthreads();
+        elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("Vmult timing info: %ld cycles\n", elapsed);
+#  endif
+#  if TIMING == 2
+        start = clock64();
+#  endif
+        for (unsigned int z = 0; z < n_dofs_z; ++z)
+          {
+            const unsigned int index =
+              local_patch * local_dim +
+              ((z * n_dofs_1d * n_dofs_1d + threadIdx.y * n_dofs_1d +
+                local_tid_x) ^
+               Util::get_base<n_dofs_1d, Number>(threadIdx.y, z));
+
+            const unsigned int global_dof_indices =
+              Util::compute_indices<dim, fe_degree>(
+                &gpu_data.first_dof[patch * (1 << dim)],
+                local_patch,
+                local_tid_x,
+                threadIdx.y,
+                z);
+
+            atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
+          }
+#  if TIMING == 2
+        __syncthreads();
+        elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("Storing to global timing info: %ld cycles\n", elapsed);
+#  endif
+      }
+  }
+#endif
+
+#if MMAKERNEL >= 3
+  template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
+  __global__ void
+  laplace_kernel_tensorcoremma(
+    const Number                                                 *src,
+    Number                                                       *dst,
+    const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
+  {
+    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+    constexpr unsigned int n_dofs_z  = dim == 2 ? 1 : n_dofs_1d;
+
+    const unsigned int patch_per_block = gpu_data.patch_per_block;
+    const unsigned int local_patch     = threadIdx.x / n_dofs_1d;
+    const unsigned int patch       = local_patch + patch_per_block * blockIdx.x;
+    const unsigned int local_tid_x = threadIdx.x % n_dofs_1d;
+    const unsigned int local_tid_y = threadIdx.y % n_dofs_1d;
+    const unsigned int warpid      = threadIdx.y / n_dofs_1d;
+
+    SharedMemData<dim, Number, true> shared_data(get_shared_data_ptr<Number>(),
+                                                 patch_per_block,
+                                                 n_dofs_1d,
+                                                 local_dim);
+
+    if (patch < gpu_data.n_patches)
+      {
+#  if TIMING == 2
+        auto start = clock64();
+#  endif
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            if (warpid == 0)
+              shared_data
+                .local_mass[(local_patch * dim + d) * n_dofs_1d * n_dofs_1d +
+                            ((local_tid_y * n_dofs_1d + local_tid_x) ^
+                             Util::get_base<n_dofs_1d, Number>(local_tid_y,
+                                                               0))] =
+                gpu_data.laplace_mass_1d[gpu_data.patch_type[patch * dim + d] *
+                                           n_dofs_1d * n_dofs_1d +
+                                         local_tid_y * n_dofs_1d + local_tid_x];
+            else
+              shared_data.local_derivative
+                [(local_patch * dim + d) * n_dofs_1d * n_dofs_1d +
+                 ((local_tid_y * n_dofs_1d + local_tid_x) ^
+                  Util::get_base<n_dofs_1d, Number>(local_tid_y, 0))] =
+                gpu_data
+                  .laplace_stiff_1d[gpu_data.patch_type[patch * dim + d] *
+                                      n_dofs_1d * n_dofs_1d +
+                                    local_tid_y * n_dofs_1d + local_tid_x];
+          }
+
+        for (unsigned int z = 0; z < n_dofs_z / 2; ++z)
+          {
+            const unsigned int index =
+              local_patch * local_dim +
+              (((2 * z + warpid) * n_dofs_1d * n_dofs_1d +
+                local_tid_y * n_dofs_1d + local_tid_x) ^
+               Util::get_base<n_dofs_1d, Number>(local_tid_y, 2 * z + warpid));
+
+            const unsigned int global_dof_indices =
+              Util::compute_indices<dim, fe_degree>(
+                &gpu_data.first_dof[patch * (1 << dim)],
+                local_patch,
+                local_tid_x,
+                local_tid_y,
+                2 * z + warpid);
+
+            shared_data.local_src[index] = src[global_dof_indices];
+
+            shared_data.local_dst[index] = 0.;
+          }
+
+#  if TIMING == 2
+        __syncthreads();
+        auto elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("loading from global timing info: %ld cycles\n", elapsed);
+#  endif
+#  if TIMING == 2
+        start = clock64();
+#  endif
+
+        evaluate_laplace<dim, fe_degree, Number, laplace>(local_patch,
+                                                          &shared_data);
+
+#  if TIMING == 2
+        __syncthreads();
+        elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("Vmult timing info: %ld cycles\n", elapsed);
+#  endif
+#  if TIMING == 2
+        start = clock64();
+#  endif
+        for (unsigned int z = 0; z < n_dofs_z / 2; ++z)
+          {
+            const unsigned int index =
+              local_patch * local_dim +
+              (((2 * z + warpid) * n_dofs_1d * n_dofs_1d +
+                local_tid_y * n_dofs_1d + local_tid_x) ^
+               Util::get_base<n_dofs_1d, Number>(local_tid_y, 2 * z + warpid));
+
+            const unsigned int global_dof_indices =
+              Util::compute_indices<dim, fe_degree>(
+                &gpu_data.first_dof[patch * (1 << dim)],
+                local_patch,
+                local_tid_x,
+                local_tid_y,
+                2 * z + warpid);
+
+            atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
+          }
+#  if TIMING == 2
+        __syncthreads();
+        elapsed = clock64() - start;
+        if (threadIdx.x == 0 && threadIdx.y == 0)
+          printf("Storing to global timing info: %ld cycles\n", elapsed);
+#  endif
+      }
+  }
+#endif
 
   template <int dim, int fe_degree, typename Number>
   __global__ void
