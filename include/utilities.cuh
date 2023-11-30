@@ -135,6 +135,42 @@ namespace Util
 
   template <>
   __host__ __device__ inline unsigned int
+  get_base<10, double>(const unsigned int row, const unsigned int z)
+  {
+    auto base1 = (row & 1) < 1 ? 0 : 8;
+    auto base2 = (row & 3) < 2 ? 0 : 4;
+    auto base3 = (z & 1) < 1 ? 0 : 8;
+    auto base4 = (z & 3) < 2 ? 0 : 4;
+
+    return base1 ^ base2 ^ base3 ^ base4;
+  }
+
+  template <>
+  __host__ __device__ inline unsigned int
+  get_base<12, double>(const unsigned int row, const unsigned int z)
+  {
+    auto base1 = (row & 1) < 1 ? 0 : 8;
+    auto base2 = (row & 3) < 2 ? 0 : 4;
+    auto base3 = (z & 1) < 1 ? 0 : 8;
+    auto base4 = (z & 3) < 2 ? 0 : 4;
+
+    return base1 ^ base2 ^ base3 ^ base4;
+  }
+
+  template <>
+  __host__ __device__ inline unsigned int
+  get_base<14, double>(const unsigned int row, const unsigned int z)
+  {
+    auto base1 = (row & 1) < 1 ? 0 : 8;
+    auto base2 = (row & 3) < 2 ? 0 : 4;
+    auto base3 = (z & 1) < 1 ? 0 : 8;
+    auto base4 = (z & 3) < 2 ? 0 : 4;
+
+    return base1 ^ base2 ^ base3 ^ base4;
+  }
+
+  template <>
+  __host__ __device__ inline unsigned int
   get_base<16, double>(const unsigned int row, const unsigned int z)
   {
     auto base1 = (row & 1) < 1 ? 0 : 8;

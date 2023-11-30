@@ -235,11 +235,14 @@ namespace PSMF
     static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
 
     mutable std::size_t shared_mem;
+    mutable dim3        block_dim;
 
     LocalLaplace()
       : shared_mem(0)
     {
-      Assert(fe_degree == 3 || fe_degree == 7, ExcNotImplemented());
+      Assert(fe_degree == 2 || fe_degree == 3 || fe_degree == 4 ||
+               fe_degree == 6 || fe_degree == 7,
+             ExcNotImplemented());
     };
 
     void
@@ -247,14 +250,17 @@ namespace PSMF
     {
       shared_mem = 0;
 
-      const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+      auto n_dofs_1d_p = fe_degree <= 3 ? 8 : 16;
+
+      const unsigned int local_dim_p =
+        Util::pow(n_dofs_1d_p, dim - 1) * n_dofs_1d;
       // local_src, local_dst
-      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+      shared_mem += 2 * patch_per_block * local_dim_p * sizeof(Number);
       // local_mass, local_derivative
       shared_mem +=
-        2 * patch_per_block * n_dofs_1d * n_dofs_1d * 3 * sizeof(Number);
+        2 * patch_per_block * n_dofs_1d_p * n_dofs_1d_p * 3 * sizeof(Number);
       // temp
-      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+      shared_mem += 2 * patch_per_block * local_dim_p * sizeof(Number);
 
       AssertCuda(cudaFuncSetAttribute(
         laplace_kernel_tensorcoremma<dim,
@@ -263,6 +269,8 @@ namespace PSMF
                                      LaplaceVariant::TensorCoreMMA>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         shared_mem));
+
+      block_dim = dim3(n_dofs_1d_p, n_dofs_1d_p);
     }
 
     template <typename VectorType, typename DataType>
@@ -271,7 +279,7 @@ namespace PSMF
                 VectorType       &dst,
                 const DataType   &gpu_data,
                 const dim3       &grid_dim,
-                const dim3       &block_dim) const
+                const dim3 &) const
     {
       laplace_kernel_tensorcoremma<dim,
                                    fe_degree,

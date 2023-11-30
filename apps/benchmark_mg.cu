@@ -57,7 +57,7 @@
 using namespace dealii;
 
 #ifndef TIMING
-#define TIMING 1
+#  define TIMING 1
 #endif
 
 template <int dim, int fe_degree>
@@ -159,7 +159,7 @@ LaplaceProblem<dim, fe_degree>::setup_system()
 
   n_dofs = dof_handler.n_dofs();
   N      = 5;
-  n_mv   = dof_handler.n_dofs() < 10000000 ? 100 : 20;
+  n_mv   = 20; // dof_handler.n_dofs() < 10000000 ? 100 : 20;
 
   const unsigned int nlevels = triangulation.n_global_levels();
 
@@ -215,11 +215,31 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   matrix_dp.initialize_dof_vector(system_rhs_dp);
   solution_dp.reinit(system_rhs_dp);
 
+  unsigned int max_level = triangulation.n_levels() - 1;
+  unsigned int n_patches = std::pow((1 << max_level) - 1, dim);
+
   system_rhs_dp = 1.;
   solution_dp   = 0.;
 
+  // LinearAlgebra::ReadWriteVector<double> rw_vector(dof_handler.n_dofs());
+  // for (unsigned int i = 0; i < rw_vector.size(); ++i)
+  //   rw_vector[i] = i;
+  // system_rhs_dp.import(rw_vector, VectorOperation::insert);
+
   Timer  time;
   double best_time = 1e10;
+
+  double max_cycles = 0;
+  double min_cycles = 0;
+
+  LinearAlgebra::distributed::Vector<double, MemorySpace::Host> solution_host(
+    solution_dp.size());
+
+  auto copy_back = [&]() {
+    LinearAlgebra::ReadWriteVector<double> rw_vector(solution_dp.size());
+    rw_vector.import(solution_dp, VectorOperation::insert);
+    solution_host.import(rw_vector, VectorOperation::insert);
+  };
 
   for (unsigned int i = 0; i < N; ++i)
     {
@@ -227,16 +247,32 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
       for (unsigned int i = 0; i < n_mv; ++i)
         {
 #if TIMING != 0
-        printf("Testing.............\n");
-#endif          
+          printf("Testing.............\n");
+#endif
           matrix_dp.vmult(solution_dp, system_rhs_dp);
           cudaDeviceSynchronize();
+#if TIMING != 0
+          copy_back();
+          auto max_ =
+            *std::max_element(solution_host.begin(), solution_host.end());
+          auto min_  = *std::min_element(solution_host.begin(),
+                                        solution_host.begin() + n_patches);
+          max_cycles = std::max(max_, max_cycles);
+          min_cycles = std::max(min_, min_cycles);
+#endif
         }
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
 
+  std::cout << min_cycles << " " << max_cycles << std::endl;
+
+#if TIMING != 0
+  for (unsigned int i = 0; i < n_patches; ++i)
+    std::cout << solution_host[i] << " ";
+  std::cout << "\n";
+#endif
+
   // solution_dp.print(std::cout);
-  // std::cout << solution_dp.l2_norm() << std::endl;
 
   info_table[0].add_value("Name", std::string(LaplaceToString(kernel)) + " DP");
   info_table[0].add_value("Time[s]", best_time);
@@ -251,16 +287,49 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   system_rhs_sp = 1.;
   solution_sp   = 0.;
 
+  LinearAlgebra::distributed::Vector<float, MemorySpace::Host> solution_hosts(
+    solution_sp.size());
+
+  auto copy_back_sp = [&]() {
+    LinearAlgebra::ReadWriteVector<float> rw_vector(solution_sp.size());
+    rw_vector.import(solution_sp, VectorOperation::insert);
+    solution_hosts.import(rw_vector, VectorOperation::insert);
+  };
+
+  float max_cycless = 0;
+  float min_cycless = 0;
+
   for (unsigned int i = 0; i < N; ++i)
     {
       time.restart();
       for (unsigned int i = 0; i < n_mv; ++i)
         {
+#if TIMING != 0
+          printf("Testing.............\n");
+#endif
           matrix_sp.vmult(solution_sp, system_rhs_sp);
           cudaDeviceSynchronize();
+#if TIMING != 0
+          copy_back_sp();
+          auto max_ =
+            *std::max_element(solution_hosts.begin(), solution_hosts.end());
+          auto min_   = *std::min_element(solution_hosts.begin(),
+                                        solution_hosts.begin() + n_patches);
+          max_cycless = std::max(max_, max_cycless);
+          min_cycless = std::max(min_, min_cycless);
+#endif
         }
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
+
+  std::cout << min_cycless << " " << max_cycless << std::endl;
+  std::cout << solution_sp.l2_norm() << std::endl;
+
+#if TIMING != 0
+  for (unsigned int i = 0; i < n_patches; ++i)
+    std::cout << solution_hosts[i] << " ";
+  std::cout << "\n";
+#endif
 
   info_table[1].add_value("Name", std::string(LaplaceToString(kernel)) + " SP");
   info_table[1].add_value("Time[s]", best_time);

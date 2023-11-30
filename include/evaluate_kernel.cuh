@@ -18,14 +18,20 @@
 
 using namespace nvcuda;
 
-#define TIMING 2
+#define GACCESS 1
+// 0 - no global memory access
+// 1 - load/store global memeory
+// 2 - ideal global memeory access
+
+#define TIMING 0
 // 0 - No timing
 // 1 - Instruction level
 // 2 - Component level, e.g. load, store, vmult.
 #define MMAKERNEL 1
+// mma.m8n8k4.f64
 // 0 - Basic, without permutation_d
-// 1 - Conflict Free, 2 warps ILP = 1, using puer permutation_d
-// 2 - Conflict Free, 2 warps ILP = 1, using permutation_d array
+// 1 - Conflict Free, 2 warps ILP = 1,
+// 2 - Conflict Free, 2 warps ILP = 2,
 // 3 - 4 warps ILP = 1
 // 4 - 4 warps ILP = 2
 
@@ -1039,6 +1045,253 @@ namespace PSMF
     }
   };
 
+#if MMAKERNEL == 1
+  template <typename T>
+  struct TPEvaluatorBase<T, 6, double, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = double;
+
+    static constexpr unsigned int n_dofs_1d = 6;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const unsigned int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
+      const unsigned int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
+
+      const unsigned int row = tid / 4;
+      const unsigned int col = tid & 3;
+
+      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+
+      if (direction == 0)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+              if (add && row < 6 && col < 3)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+            {
+#  if TIMING == 1
+              auto start = clock64();
+#  endif
+              const unsigned int b_idx =
+                ((col + cycle * 4) * n_dofs_1d + row) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              auto b0 = cycle == 0 ?
+                          (row < 6 ? shape_data[b_idx] : 0) :
+                          ((row < 6 && col < 2) ? shape_data[b_idx] : 0);
+#  if TIMING == 1
+              auto elapsed = clock64() - start;
+              if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
+                printf(
+                  "mma load frag b dir-%d loop-%d timing info: %ld cycles\n",
+                  direction,
+                  cycle,
+                  elapsed);
+#  endif
+#  pragma unroll
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+#  if TIMING == 1
+                  start = clock64();
+#  endif
+                  const unsigned int a_idx =
+                    (row * n_dofs_1d + col + cycle * 4 +
+                     (z * 2 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+                  auto a0 = cycle == 0 ? (row < 6 ? in[a_idx] : 0) :
+                                         ((row < 6 && col < 2) ? in[a_idx] : 0);
+#  if TIMING == 1
+                  elapsed = clock64() - start;
+                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
+                    printf(
+                      "mma load frag a dir-%d loop-(%d,%d) timing info: %ld cycles\n",
+                      direction,
+                      cycle,
+                      z,
+                      elapsed);
+#  endif
+
+#  if TIMING == 1
+                  start = clock64();
+#  endif
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+#  if TIMING == 1
+                  elapsed = clock64() - start;
+                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
+                    printf(
+                      "mma.sync.aligned.m8n8k4 dir-%d loop-(%d,%d) timing info: %ld cycles\n",
+                      direction,
+                      cycle,
+                      z,
+                      elapsed);
+#  endif
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+#  if TIMING == 1
+              auto start = clock64();
+#  endif
+              const unsigned int c_idx =
+                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+              if (row < 6 && col < 3)
+                *((double2 *)(out + c_idx)) = c[z];
+#  if TIMING == 1
+              auto elapsed = clock64() - start;
+              if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
+                printf(
+                  "mma store frag c dir-%d loop-%d timing info: %ld cycles\n",
+                  direction,
+                  z,
+                  elapsed);
+#  endif
+            }
+        }
+      else if (direction == 1)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+              if (add && row < 6 && col < 3)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+            {
+              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                         Util::get_base<n_dofs_1d>(row, 0);
+              auto a0 = cycle == 0 ?
+                          (row < 6 ? shape_data[a_idx] : 0) :
+                          ((row < 6 && col < 2) ? shape_data[a_idx] : 0);
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((col + cycle * 4) * n_dofs_1d + row +
+                     (z * 2 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d>(col + cycle * 4, z * 2 + warpId);
+
+                  auto b0 = cycle == 0 ? (row < 6 ? in[b_idx] : 0) :
+                                         ((row < 6 && col < 2) ? in[b_idx] : 0);
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
+
+              if (row < 6 && col < 3)
+                *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
+
+              if (add && row < 6 && col < 3)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+            {
+              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                         Util::get_base<n_dofs_1d>(row, 0);
+              auto a0 = cycle == 0 ?
+                          (row < 6 ? shape_data[a_idx] : 0) :
+                          ((row < 6 && col < 2) ? shape_data[a_idx] : 0);
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((z * 2 + warpId) * n_dofs_1d + row +
+                     (col + cycle * 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(z * 2 + warpId, col + cycle * 4);
+
+                  auto b0 = cycle == 0 ? (row < 6 ? in[b_idx] : 0) :
+                                         ((row < 6 && col < 2) ? in[b_idx] : 0);
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
+
+              if (row < 6 && col < 3)
+                *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+    }
+  };
+#endif
 
 #if MMAKERNEL == 0
   template <typename T>
@@ -1163,7 +1416,7 @@ namespace PSMF
               auto elapsed = clock64() - start;
               if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
                 printf(
-                  "mma load frag c dir-%d loop-%d timing info: %ld cycles\n",
+                  "mma store frag c dir-%d loop-%d timing info: %ld cycles\n",
                   direction,
                   z,
                   elapsed);
@@ -1389,7 +1642,7 @@ namespace PSMF
               auto elapsed = clock64() - start;
               if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
                 printf(
-                  "mma load frag c dir-%d loop-%d timing info: %ld cycles\n",
+                  "mma store frag c dir-%d loop-%d timing info: %ld cycles\n",
                   direction,
                   z,
                   elapsed);
@@ -1537,16 +1790,26 @@ namespace PSMF
       if (direction == 0)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
             {
               const unsigned int c_idx =
-                permutation_d[row * n_dofs_1d + 2 * col +
-                              (z * 2 + warpId) * offset];
+                (row * n_dofs_1d + 2 * col + (z * 4 + 2 * warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId);
+              const unsigned int c_idx2 =
+                (row * n_dofs_1d + 2 * col +
+                 (z * 4 + 2 * warpId + 1) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId + 1);
 
               if constexpr (add)
-                c[z] = *((double2 *)(out + c_idx));
+                {
+                  c[z * 4 + 2 * warpId]     = *((double2 *)(out + c_idx));
+                  c[z * 4 + 2 * warpId + 1] = *((double2 *)(out + c_idx));
+                }
               else
-                c[z] = {0, 0};
+                {
+                  c[z * 4 + 2 * warpId]     = {0, 0};
+                  c[z * 4 + 2 * warpId + 1] = {0, 0};
+                }
             }
 
           for (unsigned int cycle = 0; cycle < 2; ++cycle)
@@ -1555,7 +1818,8 @@ namespace PSMF
               auto start = clock64();
 #  endif
               const unsigned int b_idx =
-                permutation_d[(col + cycle * 4) * n_dofs_1d + row];
+                ((col + cycle * 4) * n_dofs_1d + row) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = shape_data[b_idx];
 #  if TIMING == 1
               auto elapsed = clock64() - start;
@@ -1567,16 +1831,22 @@ namespace PSMF
                   elapsed);
 #  endif
 #  pragma unroll
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
                 {
 #  if TIMING == 1
                   start = clock64();
 #  endif
                   const unsigned int a_idx =
-                    permutation_d[row * n_dofs_1d + col + cycle * 4 +
-                                  (z * 2 + warpId) * offset];
+                    (row * n_dofs_1d + col + cycle * 4 +
+                     (z * 4 + 2 * warpId) * offset) ^
+                    Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId);
+                  const unsigned int a_idx2 =
+                    (row * n_dofs_1d + col + cycle * 4 +
+                     (z * 4 + 2 * warpId + 1) * offset) ^
+                    Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId + 1);
 
                   auto a0 = in[a_idx];
+                  auto a2 = in[a_idx2];
 #  if TIMING == 1
                   elapsed = clock64() - start;
                   if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
@@ -1594,8 +1864,21 @@ namespace PSMF
                   asm volatile(
                     "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
                     "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
-                    : "=d"(c[z].x), "=d"(c[z].y)
-                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                    : "=d"(c[z * 4 + 2 * warpId].x),
+                      "=d"(c[z * 4 + 2 * warpId].y)
+                    : "d"(a0),
+                      "d"(b0),
+                      "d"(c[z * 4 + 2 * warpId].x),
+                      "d"(c[z * 4 + 2 * warpId].y));
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z * 4 + 2 * warpId + 1].x),
+                      "=d"(c[z * 4 + 2 * warpId + 1].y)
+                    : "d"(a2),
+                      "d"(b0),
+                      "d"(c[z * 4 + 2 * warpId + 1].x),
+                      "d"(c[z * 4 + 2 * warpId + 1].y));
 #  if TIMING == 1
                   elapsed = clock64() - start;
                   if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
@@ -1609,21 +1892,26 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
               const unsigned int c_idx =
-                permutation_d[row * n_dofs_1d + 2 * col +
-                              (z * 2 + warpId) * offset];
+                (row * n_dofs_1d + 2 * col + (z * 4 + 2 * warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId);
+              const unsigned int c_idx2 =
+                (row * n_dofs_1d + 2 * col +
+                 (z * 4 + 2 * warpId + 1) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId + 1);
 
-              *((double2 *)(out + c_idx)) = c[z];
+              *((double2 *)(out + c_idx))  = c[z * 4 + 2 * warpId];
+              *((double2 *)(out + c_idx2)) = c[z * 4 + 2 * warpId + 1];
 #  if TIMING == 1
               auto elapsed = clock64() - start;
               if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
                 printf(
-                  "mma load frag c dir-%d loop-%d timing info: %ld cycles\n",
+                  "mma store frag c dir-%d loop-%d timing info: %ld cycles\n",
                   direction,
                   z,
                   elapsed);
@@ -1860,7 +2148,7 @@ namespace PSMF
               auto elapsed = clock64() - start;
               if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
                 printf(
-                  "mma load frag c dir-%d loop-%d timing info: %ld cycles\n",
+                  "mma store frag c dir-%d loop-%d timing info: %ld cycles\n",
                   direction,
                   z,
                   elapsed);
@@ -2102,7 +2390,7 @@ namespace PSMF
 #  if TIMING == 1
           auto elapsed = clock64() - start;
           if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
-            printf("mma load frag c dir-%d loop-%d timing info: %ld cycles\n",
+            printf("mma store frag c dir-%d loop-%d timing info: %ld cycles\n",
                    direction,
                    0,
                    elapsed);
@@ -2218,6 +2506,606 @@ namespace PSMF
     }
   };
 #endif
+
+  template <typename T>
+  struct TPEvaluatorBase<T, 10, double, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = double;
+
+    static constexpr unsigned int n_dofs_1d   = 10;
+    static constexpr unsigned int n_dofs_1d_p = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = (threadIdx.y * 16 + threadIdx.x) / 32;
+      const int subId  = warpId & 3;
+      const int rowId  = subId / 2;
+      const int colId  = subId & 1;
+
+      const int tid = (threadIdx.y * 16 + threadIdx.x) & 31;
+
+      const unsigned int row = tid / 4;
+      const unsigned int col = tid & 3;
+
+      constexpr unsigned int offset = n_dofs_1d_p * n_dofs_1d_p;
+
+      if (direction == 0)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              if (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+            {
+              const unsigned int b_idx =
+                ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              auto b0 = shape_data[b_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int a_idx =
+                    ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4 +
+                     (z * 2 + warpId / 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(rowId * 8 + row,
+                                              z * 2 + warpId / 4);
+
+                  auto a0 = in[a_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              if (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8 +
+                     (z * 2 + warpId / 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(col + cycle * 4,
+                                              z * 2 + warpId / 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (rowId * 8 + row) * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
+
+              if (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((z * 2 + warpId / 4) * n_dofs_1d_p + colId * 8 + row +
+                     (col + cycle * 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(z * 2 + warpId / 4,
+                                              col + cycle * 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (rowId * 8 + row) * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
+
+              if (rowId == 0 || row < 2)
+                *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+    }
+  };
+
+  template <typename T>
+  struct TPEvaluatorBase<T, 12, double, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = double;
+
+    static constexpr unsigned int n_dofs_1d   = 12;
+    static constexpr unsigned int n_dofs_1d_p = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = (threadIdx.y * 16 + threadIdx.x) / 32;
+      const int subId  = warpId & 3;
+      const int rowId  = subId / 2;
+      const int colId  = subId & 1;
+
+      const int tid = (threadIdx.y * 16 + threadIdx.x) & 31;
+
+      const unsigned int row = tid / 4;
+      const unsigned int col = tid & 3;
+
+      constexpr unsigned int offset = n_dofs_1d_p * n_dofs_1d_p;
+
+      if (direction == 0)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+            {
+              const unsigned int b_idx =
+                ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              auto b0 = shape_data[b_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int a_idx =
+                    ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4 +
+                     (z * 2 + warpId / 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(rowId * 8 + row,
+                                              z * 2 + warpId / 4);
+
+                  auto a0 = in[a_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              if (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8 +
+                     (z * 2 + warpId / 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(col + cycle * 4,
+                                              z * 2 + warpId / 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (rowId * 8 + row) * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
+
+              if (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((z * 2 + warpId / 4) * n_dofs_1d_p + colId * 8 + row +
+                     (col + cycle * 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(z * 2 + warpId / 4,
+                                              col + cycle * 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (rowId * 8 + row) * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
+
+              if (rowId == 0 || row < 4)
+                *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+    }
+  };
+
+  template <typename T>
+  struct TPEvaluatorBase<T, 14, double, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = double;
+
+    static constexpr unsigned int n_dofs_1d   = 14;
+    static constexpr unsigned int n_dofs_1d_p = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = (threadIdx.y * 16 + threadIdx.x) / 32;
+      const int subId  = warpId & 3;
+      const int rowId  = subId / 2;
+      const int colId  = subId & 1;
+
+      const int tid = (threadIdx.y * 16 + threadIdx.x) & 31;
+
+      const unsigned int row = tid / 4;
+      const unsigned int col = tid & 3;
+
+      constexpr unsigned int offset = n_dofs_1d_p * n_dofs_1d_p;
+
+      if (direction == 0)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              if (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+            {
+              const unsigned int b_idx =
+                ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8) ^
+                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              auto b0 = shape_data[b_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int a_idx =
+                    ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4 +
+                     (z * 2 + warpId / 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(rowId * 8 + row,
+                                              z * 2 + warpId / 4);
+
+                  auto a0 = in[a_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              if (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8 +
+                     (z * 2 + warpId / 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(col + cycle * 4,
+                                              z * 2 + warpId / 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (z * 2 + warpId / 4) * offset) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else
+        {
+          double2 c[n_dofs_1d / 2];
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (rowId * 8 + row) * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
+
+              if (add)
+                c[z] = *((double2 *)(out + c_idx));
+              else
+                c[z] = {0, 0};
+            }
+
+          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+            {
+              const unsigned int a_idx =
+                ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
+                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+              auto a0 = shape_data[a_idx];
+
+              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const unsigned int b_idx =
+                    ((z * 2 + warpId / 4) * n_dofs_1d_p + colId * 8 + row +
+                     (col + cycle * 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(z * 2 + warpId / 4,
+                                              col + cycle * 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const unsigned int c_idx =
+                ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
+                 (rowId * 8 + row) * offset) ^
+                Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
+
+              if (rowId == 0 || row < 6)
+                *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+    }
+  };
 
   template <typename T>
   struct TPEvaluatorBase<T, 16, double, LaplaceVariant::TensorCoreMMA, 3>
@@ -2515,14 +3403,26 @@ namespace PSMF
 
                   auto smem_ptr =
                     static_cast<uint32_t>(__cvta_generic_to_shared(&in[a_idx]));
-
+#if TIMING == 1
+                  auto start = clock64();
+#endif
                   asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
                                "{%0, %1, %2, %3}, [%4]; "
                                : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
                                : "r"(smem_ptr));
-
+#if TIMING == 1
+                  auto elapsed = clock64() - start;
+                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
+                    printf(
+                      "mma load frag a dir-%d loop-%d timing info: %ld cycles\n",
+                      direction,
+                      cycle,
+                      elapsed);
+#endif
                   uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
-
+#if TIMING == 1
+                  start = clock64();
+#endif
                   asm volatile(
                     "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
                     "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
@@ -2537,6 +3437,16 @@ namespace PSMF
                       "f"(c0[z].y),
                       "f"(c1[z].x),
                       "f"(c1[z].y));
+#if TIMING == 1
+                  elapsed = clock64() - start;
+                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
+                    printf(
+                      "mma.sync.aligned.m16n8k8 dir-%d loop-(%d,%d) timing info: %ld cycles\n",
+                      direction,
+                      cycle,
+                      z,
+                      elapsed);
+#endif
                 }
             }
 
@@ -2982,7 +3892,7 @@ namespace PSMF
               auto elapsed = clock64() - start;
               if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
                 printf(
-                  "wmma load frag c dir-%d loop-%d timing info: %ld cycles\n",
+                  "wmma store frag c dir-%d loop-%d timing info: %ld cycles\n",
                   direction,
                   z,
                   elapsed);
@@ -3816,9 +4726,12 @@ namespace PSMF
                const Number *derivative_matrix,
                Number       *tmp)
     {
-      constexpr unsigned int local_dim =
-        Util::pow(n_dofs_1d, 2) * (n_dofs_1d + Util::padding);
-      constexpr unsigned int offset = n_dofs_1d * (n_dofs_1d + Util::padding);
+      constexpr unsigned n_dofs_1d_p =
+        (laplace_type == LaplaceVariant::TensorCoreMMA) ?
+          (n_dofs_1d <= 8 ? 8 : 16) :
+          n_dofs_1d;
+      constexpr unsigned int local_dim = Util::pow(n_dofs_1d_p, 2) * n_dofs_1d;
+      constexpr unsigned int offset    = n_dofs_1d_p * n_dofs_1d_p;
 
       apply<0, false>(mass_matrix, src, &tmp[local_dim]);
       __syncthreads();
@@ -4654,17 +5567,15 @@ namespace PSMF
                    SharedMemData<dim, Number, true> *shared_data)
   {
     constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
-    constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
 
     TPEvaluatorLaplace<laplace, Number, n_dofs_1d, dim> eval;
     __syncthreads();
 
-    eval.vmult(
-      &shared_data->local_dst[local_patch * local_dim],
-      &shared_data->local_src[local_patch * local_dim],
-      &shared_data->local_mass[local_patch * n_dofs_1d * n_dofs_1d * dim],
-      &shared_data->local_derivative[local_patch * n_dofs_1d * n_dofs_1d * dim],
-      &shared_data->tmp[local_patch * local_dim * (dim - 1)]);
+    eval.vmult(shared_data->local_dst,
+               shared_data->local_src,
+               shared_data->local_mass,
+               shared_data->local_derivative,
+               shared_data->tmp);
     __syncthreads();
   }
 
