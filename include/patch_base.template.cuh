@@ -689,6 +689,7 @@ namespace PSMF
     AssertCuda(error_code);
 
     // Neural Network
+    if (dim == 2)
     {
       // TODO: 3d
       std::string filenamea0 =
