@@ -30,10 +30,18 @@ using namespace nvcuda;
 #define MMAKERNEL 1
 // mma.m8n8k4.f64
 // 0 - Basic, without permutation_d
-// 1 - Conflict Free, 2 warps ILP = 1,
-// 2 - Conflict Free, 2 warps ILP = 2,
+// 1 - Conflict Free, 2 warps ILP = 1
+// 2 - Conflict Free, 2 warps ILP = 2
 // 3 - 4 warps ILP = 1
 // 4 - 4 warps ILP = 2
+// 5 - Conflict Free, 1 warps ILP = 1
+// mma.m16n8k8.tf32
+// 0 - Basic, without permutation_d
+// 1 - Conflict Free, 8 warps ILP = 1
+// 2 - 8 warps ILP = 1, ld
+// 3 - Conflict Free, 8 warps ILP = 2
+// 4 - Conflict Free, 16 warps ILP = 1
+// 5 - Conflict Free, 4 warps ILP = 1
 
 namespace PSMF
 {
@@ -41,8 +49,8 @@ namespace PSMF
   template <int dim_m, int dim_n>
   struct Shape
   {
-    static constexpr unsigned int m = dim_m;
-    static constexpr unsigned int n = dim_n;
+    static constexpr int m = dim_m;
+    static constexpr int n = dim_n;
   };
 
   ////////////////////////////////////////////////////////////////////
@@ -119,24 +127,24 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int row = threadIdx.y;
-      const unsigned int col = threadIdx.x % n_dofs_1d;
+      const int row = threadIdx.y;
+      const int col = threadIdx.x % n_dofs_1d;
 
       Number pval = 0;
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       // #pragma unroll
-      for (unsigned int k = 0; k < n_dofs_1d; ++k)
+      for (int k = 0; k < n_dofs_1d; ++k)
         {
-          const unsigned int shape_idx = row * n_dofs_1d + k;
+          const int shape_idx = row * n_dofs_1d + k;
 
-          const unsigned int source_idx =
+          const int source_idx =
             (direction == 0) ? (col * n_dofs_1d + k) : (k * n_dofs_1d + col);
 
           pval += shape_data[shape_idx] * in[source_idx];
         }
 
 
-      const unsigned int destination_idx =
+      const int destination_idx =
         (direction == 0) ? (col * n_dofs_1d + row) : (row * n_dofs_1d + col);
 
       if (add)
@@ -177,20 +185,20 @@ namespace PSMF
     {
       constexpr int stride = n_dofs_1d * n_dofs_1d;
 
-      const unsigned int row = threadIdx.y;
-      const unsigned int col = threadIdx.x % n_dofs_1d;
+      const int row = threadIdx.y;
+      const int col = threadIdx.x % n_dofs_1d;
 
       Number pval[n_dofs_1d];
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (int z = 0; z < n_dofs_1d; ++z)
         {
           pval[z] = 0;
           // #pragma unroll
-          for (unsigned int k = 0; k < n_dofs_1d; ++k)
+          for (int k = 0; k < n_dofs_1d; ++k)
             {
-              const unsigned int shape_idx = row * n_dofs_1d + k;
+              const int shape_idx = row * n_dofs_1d + k;
 
-              const unsigned int source_idx =
+              const int source_idx =
                 (direction == 0) ? (col * n_dofs_1d + k + z * stride) :
                 (direction == 1) ? (k * n_dofs_1d + col + z * stride) :
                                    (z * n_dofs_1d + col + k * stride);
@@ -199,9 +207,9 @@ namespace PSMF
             }
         }
 
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (int z = 0; z < n_dofs_1d; ++z)
         {
-          const unsigned int destination_idx =
+          const int destination_idx =
             (direction == 0) ? (col * n_dofs_1d + row + z * stride) :
             (direction == 1) ? (row * n_dofs_1d + col + z * stride) :
                                (z * n_dofs_1d + col + row * stride);
@@ -249,20 +257,20 @@ namespace PSMF
                                  Util::calculate_multiple<n_dofs_1d, 16>() :
                                  Util::calculate_multiple<n_dofs_1d, 32>();
 
-      const unsigned int row = threadIdx.y;
-      const unsigned int col = threadIdx.x % n_dofs_1d;
+      const int row = threadIdx.y;
+      const int col = threadIdx.x % n_dofs_1d;
 
       Number pval = 0;
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       // #pragma unroll
-      for (unsigned int k = 0; k < n_dofs_1d; ++k)
+      for (int k = 0; k < n_dofs_1d; ++k)
         {
-          const unsigned int shape_idx =
+          const int shape_idx =
             (direction == 0) ?
               (col * n_dofs_1d + (k + col / multiple) % n_dofs_1d) :
               (row * n_dofs_1d + k);
 
-          const unsigned int source_idx =
+          const int source_idx =
             (direction == 0) ?
               (row * n_dofs_1d + (k + col / multiple) % n_dofs_1d) :
               (k * n_dofs_1d + col);
@@ -270,7 +278,7 @@ namespace PSMF
           pval += shape_data[shape_idx] * in[source_idx];
         }
 
-      const unsigned int destination_idx = row * n_dofs_1d + col;
+      const int destination_idx = row * n_dofs_1d + col;
 
       if (add)
         out[destination_idx] += pval;
@@ -314,24 +322,24 @@ namespace PSMF
 
       constexpr int stride = n_dofs_1d * n_dofs_1d;
 
-      const unsigned int row = threadIdx.y;
-      const unsigned int col = threadIdx.x % n_dofs_1d;
+      const int row = threadIdx.y;
+      const int col = threadIdx.x % n_dofs_1d;
 
       Number pval[n_dofs_1d];
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (int z = 0; z < n_dofs_1d; ++z)
         {
           pval[z] = 0;
           // #pragma unroll
-          for (unsigned int k = 0; k < n_dofs_1d; ++k)
+          for (int k = 0; k < n_dofs_1d; ++k)
             {
-              const unsigned int shape_idx =
+              const int shape_idx =
                 (direction == 0) ?
                   col * n_dofs_1d + (k + col / multiple) % n_dofs_1d :
                 (direction == 1) ? row * n_dofs_1d + k :
                                    z * n_dofs_1d + k;
 
-              const unsigned int source_idx =
+              const int source_idx =
                 (direction == 0) ?
                   (row * n_dofs_1d + (k + col / multiple) % n_dofs_1d +
                    z * stride) :
@@ -342,10 +350,9 @@ namespace PSMF
             }
         }
 
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (int z = 0; z < n_dofs_1d; ++z)
         {
-          const unsigned int destination_idx =
-            row * n_dofs_1d + col + z * stride;
+          const int destination_idx = row * n_dofs_1d + col + z * stride;
 
           if (add)
             out[destination_idx] += pval[z];
@@ -392,17 +399,17 @@ namespace PSMF
                                  Util::calculate_multiple<n_dofs_1d, 16>() :
                                  Util::calculate_multiple<n_dofs_1d, 32>();
 
-      const unsigned int row = threadIdx.y;
-      const unsigned int col = threadIdx.x & (n_dofs_1d - 1);
+      const int row = threadIdx.y;
+      const int col = threadIdx.x & (n_dofs_1d - 1);
 
       Number pval = 0;
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       // #pragma unroll
-      for (unsigned int k = 0; k < n_dofs_1d; ++k)
+      for (int k = 0; k < n_dofs_1d; ++k)
         {
-          const unsigned int shape_idx = row * n_dofs_1d + k;
+          const int shape_idx = row * n_dofs_1d + k;
 
-          const unsigned int source_idx =
+          const int source_idx =
             (direction == 0) ?
               col * n_dofs_1d + ((k + col / multiple) & (n_dofs_1d - 1)) :
               k * n_dofs_1d + ((col + k / multiple) & (n_dofs_1d - 1));
@@ -410,7 +417,7 @@ namespace PSMF
           pval += shape_data[shape_idx] * in[source_idx];
         }
 
-      const unsigned int destination_idx =
+      const int destination_idx =
         (direction == 0) ?
           col * n_dofs_1d + ((row + col / multiple) & (n_dofs_1d - 1)) :
           row * n_dofs_1d + ((col + row / multiple) & (n_dofs_1d - 1));
@@ -461,20 +468,20 @@ namespace PSMF
 
       constexpr int stride = n_dofs_1d * n_dofs_1d;
 
-      const unsigned int row = threadIdx.y;
-      const unsigned int col = threadIdx.x & (n_dofs_1d - 1);
+      const int row = threadIdx.y;
+      const int col = threadIdx.x & (n_dofs_1d - 1);
 
       Number pval[n_dofs_1d];
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (int z = 0; z < n_dofs_1d; ++z)
         {
           pval[z] = 0;
           // #pragma unroll
-          for (unsigned int k = 0; k < n_dofs_1d; ++k)
+          for (int k = 0; k < n_dofs_1d; ++k)
             {
-              const unsigned int shape_idx = row * n_dofs_1d + k;
+              const int shape_idx = row * n_dofs_1d + k;
 
-              const unsigned int source_idx =
+              const int source_idx =
                 (direction == 0) ?
                   (((col + z) & (n_dofs_1d - 1)) * n_dofs_1d +
                    ((k + ((col + z) & (n_dofs_1d - 1)) / multiple) &
@@ -494,9 +501,9 @@ namespace PSMF
             }
         }
 
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (int z = 0; z < n_dofs_1d; ++z)
         {
-          const unsigned int destination_idx =
+          const int destination_idx =
             (direction == 0) ?
               ((col + z) & (n_dofs_1d - 1)) * n_dofs_1d +
                 ((row + ((col + z) & (n_dofs_1d - 1)) / multiple) &
@@ -558,39 +565,39 @@ namespace PSMF
 
   //     constexpr int stride = n_dofs_1d * n_dofs_1d;
 
-  //     const unsigned int row = threadIdx.y;
-  //     const unsigned int col = threadIdx.x % n_dofs_1d;
+  //     const int row = threadIdx.y;
+  //     const int col = threadIdx.x % n_dofs_1d;
 
   //     Number rc_sh[n_dofs_1d];
   //     // rc_sh[0] = shape_data[row * n_dofs_1d + col];
   //     // rc_sh[1] = shape_data[((row + 4) & 7) * n_dofs_1d + col];
 
   //     auto src_ind = direction == 0 ? col * n_dofs_1d : row * n_dofs_1d;
-  //     for (unsigned int i = 0; i < n_dofs_1d; ++i)
+  //     for (int i = 0; i < n_dofs_1d; ++i)
   //       rc_sh[i] = shape_data[src_ind + i];
 
   //     Number pval[n_dofs_1d];
   //     // kernel product: A kdot src, [N x N] * [N^dim, 1]
-  //     for (unsigned int z = 0; z < n_dofs_1d; ++z)
+  //     for (int z = 0; z < n_dofs_1d; ++z)
   //       {
   //         pval[z] = 0;
   //         // #pragma unroll
-  //         for (unsigned int k = 0; k < n_dofs_1d; ++k)
+  //         for (int k = 0; k < n_dofs_1d; ++k)
   //           {
-  //             const unsigned int shape_idx =
+  //             const int shape_idx =
   //               (direction == 0) ? col * n_dofs_1d + k :
   //               (direction == 1) ? row * n_dofs_1d + k :
   //                                  z * n_dofs_1d + k;
 
-  //             const unsigned int source_idx =
+  //             const int source_idx =
   //               (direction == 0) ? (row * n_dofs_1d + k + z * stride) :
   //               (direction == 1) ? (k * n_dofs_1d + col + z * stride) :
   //                                  (row * n_dofs_1d + col + k * stride);
 
   //             if (direction == 3)
   //               {
-  //                 unsigned int src_lane_sh = (col * n_dofs_1d + k) % 32;
-  //                 unsigned int bk          = (col / 4 + row / 4) % 2;
+  //                 int src_lane_sh = (col * n_dofs_1d + k) % 32;
+  //                 int bk          = (col / 4 + row / 4) % 2;
 
   //                 pval[z] += __shfl_sync(0xffffffff, rc_sh[bk], src_lane_sh)
   //                 *
@@ -600,7 +607,7 @@ namespace PSMF
   //               {
   //                 pval[z] += rc_sh[k] * in[source_idx];
 
-  //                 // unsigned int src_lane_sh = (row * n_dofs_1d + k) & 31;
+  //                 // int src_lane_sh = (row * n_dofs_1d + k) & 31;
 
   //                 // pval[z] += __shfl_sync(0xffffffff, rc_sh[0],
   //                 src_lane_sh) *
@@ -608,8 +615,8 @@ namespace PSMF
   //               }
   //             else if (direction == 3)
   //               {
-  //                 unsigned int src_lane_sh = (z * n_dofs_1d + k) % 32;
-  //                 unsigned int bk          = (z / 4 + row / 4) % 2;
+  //                 int src_lane_sh = (z * n_dofs_1d + k) % 32;
+  //                 int bk          = (z / 4 + row / 4) % 2;
 
   //                 pval[z] += __shfl_sync(0xffffffff, rc_sh[bk], src_lane_sh)
   //                 *
@@ -628,10 +635,10 @@ namespace PSMF
 
   //             // if (direction == 1)
   //             //   {
-  //             //     unsigned int src_lane_sh = (row * n_dofs_1d + k) % 32;
-  //             //     unsigned int src_lane_in = (k * n_dofs_1d + col) % 32;
+  //             //     int src_lane_sh = (row * n_dofs_1d + k) % 32;
+  //             //     int src_lane_in = (k * n_dofs_1d + col) % 32;
 
-  //             //     unsigned int bk = (row / 4 + k / 4) % 2;
+  //             //     int bk = (row / 4 + k / 4) % 2;
 
   //             //     pval[z] += __shfl_sync(0xffffffff, rc_sh, src_lane_sh) *
   //             //                __shfl_sync(0xffffffff, rc_in[bk],
@@ -642,9 +649,9 @@ namespace PSMF
   //           }
   //       }
 
-  //     for (unsigned int z = 0; z < n_dofs_1d; ++z)
+  //     for (int z = 0; z < n_dofs_1d; ++z)
   //       {
-  //         const unsigned int destination_idx =
+  //         const int destination_idx =
   //           row * n_dofs_1d + col + z * stride;
 
   //         if (add)
@@ -663,7 +670,7 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d = 8;
+    static constexpr int n_dofs_1d = 8;
 
     /**
      * Default constructor.
@@ -689,10 +696,10 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int tid = (threadIdx.y * 8 + threadIdx.x);
+      const int tid = (threadIdx.y * 8 + threadIdx.x);
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
       if (tid > 31)
         return;
@@ -701,19 +708,18 @@ namespace PSMF
         {
           double2 c = {0, 0};
 
-          const unsigned int cd_idx0 =
+          const int cd_idx0 =
             (row * n_dofs_1d + 2 * col) ^ Util::get_base<n_dofs_1d>(row);
 
           if constexpr (add)
             c = *((double2 *)(out + cd_idx0));
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row);
-              const unsigned int b_idx =
-                ((col + cycle * 4) * n_dofs_1d + row) ^
-                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row);
+              const int b_idx = ((col + cycle * 4) * n_dofs_1d + row) ^
+                                Util::get_base<n_dofs_1d>(col + cycle * 4);
 
               auto a0 = (direction == 0) ? in[a_idx] : shape_data[a_idx];
               auto b0 = (direction == 0) ? shape_data[b_idx] : in[b_idx];
@@ -730,19 +736,18 @@ namespace PSMF
         {
           double2 c = {0, 0};
 
-          const unsigned int cd_idx0 =
+          const int cd_idx0 =
             (row * n_dofs_1d + 2 * col) ^ Util::get_base<n_dofs_1d>(row);
 
           if constexpr (add)
             c = *((double2 *)(out + cd_idx0));
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row);
-              const unsigned int b_idx =
-                ((col + cycle * 4) * n_dofs_1d + row) ^
-                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row);
+              const int b_idx = ((col + cycle * 4) * n_dofs_1d + row) ^
+                                Util::get_base<n_dofs_1d>(col + cycle * 4);
 
               auto a0 = (direction == 0) ? in[a_idx] : shape_data[a_idx];
               auto b0 = (direction == 0) ? shape_data[b_idx] : in[b_idx];
@@ -763,7 +768,7 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d = 16;
+    static constexpr int n_dofs_1d = 16;
 
     /**
      * Default constructor.
@@ -805,19 +810,19 @@ namespace PSMF
         {
           double2 c = {0, 0};
 
-          const unsigned int cd_idx0 =
+          const int cd_idx0 =
             ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8) ^
             Util::get_base<n_dofs_1d>(rowId * 8 + row);
 
           if constexpr (add)
             c = *((double2 *)(out + cd_idx0));
 
-          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+          for (int cycle = 0; cycle < 4; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
-              const unsigned int b_idx =
+              const int b_idx =
                 ((col + cycle * 4) * n_dofs_1d + row + colId * 8) ^
                 Util::get_base<n_dofs_1d>(col + cycle * 4);
 
@@ -836,19 +841,19 @@ namespace PSMF
         {
           double2 c = {0, 0};
 
-          const unsigned int cd_idx0 =
+          const int cd_idx0 =
             ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8) ^
             Util::get_base<n_dofs_1d>(rowId * 8 + row);
 
           if constexpr (add)
             c = *((double2 *)(out + cd_idx0));
 
-          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+          for (int cycle = 0; cycle < 4; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
-              const unsigned int b_idx =
+              const int b_idx =
                 ((col + cycle * 4) * n_dofs_1d + row + colId * 8) ^
                 Util::get_base<n_dofs_1d>(col + cycle * 4);
 
@@ -871,7 +876,7 @@ namespace PSMF
   {
     using Number = float;
 
-    static constexpr unsigned int n_dofs_1d = 16;
+    static constexpr int n_dofs_1d = 16;
 
     /**
      * Default constructor.
@@ -917,11 +922,10 @@ namespace PSMF
           float a[4];
           float b[2];
 
-          const unsigned int c_idx0 = (row * n_dofs_1d + 2 * col + warpId * 8) ^
-                                      Util::get_base<n_dofs_1d, float>(row);
-          const unsigned int c_idx1 =
-            ((row + 8) * n_dofs_1d + 2 * col + warpId * 8) ^
-            Util::get_base<n_dofs_1d, float>(row + 8);
+          const int c_idx0 = (row * n_dofs_1d + 2 * col + warpId * 8) ^
+                             Util::get_base<n_dofs_1d, float>(row);
+          const int c_idx1 = ((row + 8) * n_dofs_1d + 2 * col + warpId * 8) ^
+                             Util::get_base<n_dofs_1d, float>(row + 8);
 
           if constexpr (add)
             {
@@ -929,17 +933,17 @@ namespace PSMF
               c1 = *((float2 *)(out + c_idx1));
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
                  cycle * 8) ^
                 Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
 
-              const unsigned int b_idx0 =
+              const int b_idx0 =
                 ((col + cycle * 8) * n_dofs_1d + row + warpId * 8) ^
                 Util::get_base<n_dofs_1d, float>(col + cycle * 8);
-              const unsigned int b_idx1 =
+              const int b_idx1 =
                 ((col + cycle * 8 + 4) * n_dofs_1d + row + warpId * 8) ^
                 Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4);
 
@@ -984,11 +988,10 @@ namespace PSMF
           float a[4];
           float b[2];
 
-          const unsigned int c_idx0 = (row * n_dofs_1d + 2 * col + warpId * 8) ^
-                                      Util::get_base<n_dofs_1d, float>(row);
-          const unsigned int c_idx1 =
-            ((row + 8) * n_dofs_1d + 2 * col + warpId * 8) ^
-            Util::get_base<n_dofs_1d, float>(row + 8);
+          const int c_idx0 = (row * n_dofs_1d + 2 * col + warpId * 8) ^
+                             Util::get_base<n_dofs_1d, float>(row);
+          const int c_idx1 = ((row + 8) * n_dofs_1d + 2 * col + warpId * 8) ^
+                             Util::get_base<n_dofs_1d, float>(row + 8);
 
           if constexpr (add)
             {
@@ -996,17 +999,17 @@ namespace PSMF
               c1 = *((float2 *)(out + c_idx1));
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
                  cycle * 8) ^
                 Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
 
-              const unsigned int b_idx0 =
+              const int b_idx0 =
                 ((col + cycle * 8) * n_dofs_1d + row + warpId * 8) ^
                 Util::get_base<n_dofs_1d, float>(col + cycle * 8);
-              const unsigned int b_idx1 =
+              const int b_idx1 =
                 ((col + cycle * 8 + 4) * n_dofs_1d + row + warpId * 8) ^
                 Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4);
               auto smem_ptr = static_cast<uint32_t>(
@@ -1051,7 +1054,7 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d = 6;
+    static constexpr int n_dofs_1d = 6;
 
     /**
      * Default constructor.
@@ -1077,20 +1080,20 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
-      const unsigned int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
+      const int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
+      const int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
 
       if (direction == 0)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
@@ -1100,14 +1103,13 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
-              const unsigned int b_idx =
-                ((col + cycle * 4) * n_dofs_1d + row) ^
-                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              const int b_idx = ((col + cycle * 4) * n_dofs_1d + row) ^
+                                Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = cycle == 0 ?
                           (row < 6 ? shape_data[b_idx] : 0) :
                           ((row < 6 && col < 2) ? shape_data[b_idx] : 0);
@@ -1121,12 +1123,12 @@ namespace PSMF
                   elapsed);
 #  endif
 #  pragma unroll
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
 #  if TIMING == 1
                   start = clock64();
 #  endif
-                  const unsigned int a_idx =
+                  const int a_idx =
                     (row * n_dofs_1d + col + cycle * 4 +
                      (z * 2 + warpId) * offset) ^
                     Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
@@ -1165,12 +1167,12 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
@@ -1190,9 +1192,9 @@ namespace PSMF
       else if (direction == 1)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
@@ -1202,17 +1204,17 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = cycle == 0 ?
                           (row < 6 ? shape_data[a_idx] : 0) :
                           ((row < 6 && col < 2) ? shape_data[a_idx] : 0);
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((col + cycle * 4) * n_dofs_1d + row +
                      (z * 2 + warpId) * offset) ^
                     Util::get_base<n_dofs_1d>(col + cycle * 4, z * 2 + warpId);
@@ -1228,9 +1230,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
@@ -1241,9 +1243,9 @@ namespace PSMF
       else
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
 
@@ -1253,17 +1255,17 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = cycle == 0 ?
                           (row < 6 ? shape_data[a_idx] : 0) :
                           ((row < 6 && col < 2) ? shape_data[a_idx] : 0);
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((z * 2 + warpId) * n_dofs_1d + row +
                      (col + cycle * 4) * offset) ^
                     Util::get_base<n_dofs_1d>(z * 2 + warpId, col + cycle * 4);
@@ -1279,9 +1281,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
 
@@ -1299,7 +1301,7 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d = 8;
+    static constexpr int n_dofs_1d = 8;
 
     /**
      * Default constructor.
@@ -1325,20 +1327,20 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
-      const unsigned int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
+      const int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
+      const int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
 
       if (direction == 0)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset);
 
               if constexpr (add)
@@ -1347,13 +1349,13 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
-              const unsigned int b_idx = ((col + cycle * 4) * n_dofs_1d + row);
-              auto               b0    = shape_data[b_idx];
+              const int b_idx = ((col + cycle * 4) * n_dofs_1d + row);
+              auto      b0    = shape_data[b_idx];
 #  if TIMING == 1
               auto elapsed = clock64() - start;
               if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
@@ -1363,15 +1365,14 @@ namespace PSMF
                   cycle,
                   elapsed);
 #  endif
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
 #  if TIMING == 1
                   start = clock64();
 #  endif
-                  const unsigned int a_idx =
-                    (row * n_dofs_1d + col + cycle * 4 +
-                     (z * 2 + warpId) * offset);
-                  auto a0 = in[a_idx];
+                  const int a_idx = (row * n_dofs_1d + col + cycle * 4 +
+                                     (z * 2 + warpId) * offset);
+                  auto      a0    = in[a_idx];
 #  if TIMING == 1
                   elapsed = clock64() - start;
                   if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
@@ -1404,12 +1405,12 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset);
               *((double2 *)(out + c_idx)) = c[z];
 #  if TIMING == 1
@@ -1426,9 +1427,9 @@ namespace PSMF
       else if (direction == 1)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset);
 
               if constexpr (add)
@@ -1437,15 +1438,15 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4);
-              auto               a0    = shape_data[a_idx];
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4);
+              auto      a0    = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx = ((col + cycle * 4) * n_dofs_1d +
-                                              row + (z * 2 + warpId) * offset);
+                  const int b_idx = ((col + cycle * 4) * n_dofs_1d + row +
+                                     (z * 2 + warpId) * offset);
 
                   auto b0 = in[b_idx];
 
@@ -1457,9 +1458,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset);
 
               *((double2 *)(out + c_idx)) = c[z];
@@ -1468,9 +1469,9 @@ namespace PSMF
       else
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset);
 
               if constexpr (add)
@@ -1479,15 +1480,15 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4);
-              auto               a0    = shape_data[a_idx];
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4);
+              auto      a0    = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx = ((z * 2 + warpId) * n_dofs_1d +
-                                              row + (col + cycle * 4) * offset);
+                  const int b_idx = ((z * 2 + warpId) * n_dofs_1d + row +
+                                     (col + cycle * 4) * offset);
 
                   auto b0 = in[b_idx];
 
@@ -1499,9 +1500,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset);
 
               *((double2 *)(out + c_idx)) = c[z];
@@ -1517,7 +1518,7 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d = 8;
+    static constexpr int n_dofs_1d = 8;
 
     /**
      * Default constructor.
@@ -1543,37 +1544,29 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
-      const unsigned int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
+      const int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
+      const int warpId = threadIdx.y / 4;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
 
       if (direction == 0)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
-                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
-                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
-
-              if constexpr (add)
-                c[z] = *((double2 *)(out + c_idx));
-              else
-                c[z] = {0, 0};
+              c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
-              const unsigned int b_idx =
-                ((col + cycle * 4) * n_dofs_1d + row) ^
-                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              const int b_idx = ((col + cycle * 4) * n_dofs_1d + row) ^
+                                Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = shape_data[b_idx];
 #  if TIMING == 1
               auto elapsed = clock64() - start;
@@ -1585,12 +1578,12 @@ namespace PSMF
                   elapsed);
 #  endif
 #  pragma unroll
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
 #  if TIMING == 1
                   start = clock64();
 #  endif
-                  const unsigned int a_idx =
+                  const int a_idx =
                     (row * n_dofs_1d + col + cycle * 4 +
                      (z * 2 + warpId) * offset) ^
                     Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
@@ -1628,12 +1621,12 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
@@ -1652,9 +1645,9 @@ namespace PSMF
       else if (direction == 1)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
@@ -1664,15 +1657,15 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((col + cycle * 4) * n_dofs_1d + row +
                      (z * 2 + warpId) * offset) ^
                     Util::get_base<n_dofs_1d>(col + cycle * 4, z * 2 + warpId);
@@ -1687,9 +1680,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
@@ -1699,9 +1692,9 @@ namespace PSMF
       else
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
 
@@ -1711,15 +1704,15 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((z * 2 + warpId) * n_dofs_1d + row +
                      (col + cycle * 4) * offset) ^
                     Util::get_base<n_dofs_1d>(z * 2 + warpId, col + cycle * 4);
@@ -1734,9 +1727,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
 
@@ -1753,7 +1746,7 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d = 8;
+    static constexpr int n_dofs_1d = 8;
 
     /**
      * Default constructor.
@@ -1779,151 +1772,74 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
-      const unsigned int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
+      const int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
+      const int warpId = threadIdx.y / 4;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
 
       if (direction == 0)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
-                (row * n_dofs_1d + 2 * col + (z * 4 + 2 * warpId) * offset) ^
-                Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId);
-              const unsigned int c_idx2 =
-                (row * n_dofs_1d + 2 * col +
-                 (z * 4 + 2 * warpId + 1) * offset) ^
-                Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId + 1);
-
-              if constexpr (add)
-                {
-                  c[z * 4 + 2 * warpId]     = *((double2 *)(out + c_idx));
-                  c[z * 4 + 2 * warpId + 1] = *((double2 *)(out + c_idx));
-                }
-              else
-                {
-                  c[z * 4 + 2 * warpId]     = {0, 0};
-                  c[z * 4 + 2 * warpId + 1] = {0, 0};
-                }
+              c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-#  if TIMING == 1
-              auto start = clock64();
-#  endif
-              const unsigned int b_idx =
-                ((col + cycle * 4) * n_dofs_1d + row) ^
-                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              const int b_idx = ((col + cycle * 4) * n_dofs_1d + row) ^
+                                Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = shape_data[b_idx];
-#  if TIMING == 1
-              auto elapsed = clock64() - start;
-              if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
-                printf(
-                  "mma load frag b dir-%d loop-%d timing info: %ld cycles\n",
-                  direction,
-                  cycle,
-                  elapsed);
-#  endif
-#  pragma unroll
-              for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
-#  if TIMING == 1
-                  start = clock64();
-#  endif
-                  const unsigned int a_idx =
+                  const int a_idx =
                     (row * n_dofs_1d + col + cycle * 4 +
-                     (z * 4 + 2 * warpId) * offset) ^
-                    Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId);
-                  const unsigned int a_idx2 =
+                     (z * 4 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d>(row, z * 4 + warpId);
+                  const int a_idx2 =
                     (row * n_dofs_1d + col + cycle * 4 +
-                     (z * 4 + 2 * warpId + 1) * offset) ^
-                    Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId + 1);
+                     (z * 4 + warpId + 2) * offset) ^
+                    Util::get_base<n_dofs_1d>(row, z * 4 + warpId + 2);
 
                   auto a0 = in[a_idx];
                   auto a2 = in[a_idx2];
-#  if TIMING == 1
-                  elapsed = clock64() - start;
-                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
-                    printf(
-                      "mma load frag a dir-%d loop-(%d,%d) timing info: %ld cycles\n",
-                      direction,
-                      cycle,
-                      z,
-                      elapsed);
-#  endif
 
-#  if TIMING == 1
-                  start = clock64();
-#  endif
                   asm volatile(
                     "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
                     "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
-                    : "=d"(c[z * 4 + 2 * warpId].x),
-                      "=d"(c[z * 4 + 2 * warpId].y)
-                    : "d"(a0),
-                      "d"(b0),
-                      "d"(c[z * 4 + 2 * warpId].x),
-                      "d"(c[z * 4 + 2 * warpId].y));
+                    : "=d"(c[z * 2].x), "=d"(c[z * 2].y)
+                    : "d"(a0), "d"(b0), "d"(c[z * 2].x), "d"(c[z * 2].y));
                   asm volatile(
                     "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
                     "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
-                    : "=d"(c[z * 4 + 2 * warpId + 1].x),
-                      "=d"(c[z * 4 + 2 * warpId + 1].y)
+                    : "=d"(c[z * 2 + 1].x), "=d"(c[z * 2 + 1].y)
                     : "d"(a2),
                       "d"(b0),
-                      "d"(c[z * 4 + 2 * warpId + 1].x),
-                      "d"(c[z * 4 + 2 * warpId + 1].y));
-#  if TIMING == 1
-                  elapsed = clock64() - start;
-                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
-                    printf(
-                      "mma.sync.aligned.m8n8k4 dir-%d loop-(%d,%d) timing info: %ld cycles\n",
-                      direction,
-                      cycle,
-                      z,
-                      elapsed);
-#  endif
+                      "d"(c[z * 2 + 1].x),
+                      "d"(c[z * 2 + 1].y));
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-#  if TIMING == 1
-              auto start = clock64();
-#  endif
-              const unsigned int c_idx =
-                (row * n_dofs_1d + 2 * col + (z * 4 + 2 * warpId) * offset) ^
-                Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId);
-              const unsigned int c_idx2 =
-                (row * n_dofs_1d + 2 * col +
-                 (z * 4 + 2 * warpId + 1) * offset) ^
-                Util::get_base<n_dofs_1d>(row, z * 4 + 2 * warpId + 1);
+              const int c_idx =
+                (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
+                Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
-              *((double2 *)(out + c_idx))  = c[z * 4 + 2 * warpId];
-              *((double2 *)(out + c_idx2)) = c[z * 4 + 2 * warpId + 1];
-#  if TIMING == 1
-              auto elapsed = clock64() - start;
-              if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
-                printf(
-                  "mma store frag c dir-%d loop-%d timing info: %ld cycles\n",
-                  direction,
-                  z,
-                  elapsed);
-#  endif
+              *((double2 *)(out + c_idx)) = c[z];
             }
         }
       else if (direction == 1)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
@@ -1933,32 +1849,46 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((col + cycle * 4) * n_dofs_1d + row +
-                     (z * 2 + warpId) * offset) ^
-                    Util::get_base<n_dofs_1d>(col + cycle * 4, z * 2 + warpId);
+                     (z * 4 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d>(col + cycle * 4, z * 4 + warpId);
+                  const int b_idx2 =
+                    ((col + cycle * 4) * n_dofs_1d + row +
+                     (z * 4 + warpId + 2) * offset) ^
+                    Util::get_base<n_dofs_1d>(col + cycle * 4,
+                                              z * 4 + warpId + 2);
 
                   auto b0 = in[b_idx];
+                  auto b2 = in[b_idx2];
 
                   asm volatile(
                     "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
                     "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
-                    : "=d"(c[z].x), "=d"(c[z].y)
-                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                    : "=d"(c[z * 2].x), "=d"(c[z * 2].y)
+                    : "d"(a0), "d"(b0), "d"(c[z * 2].x), "d"(c[z * 2].y));
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z * 2 + 1].x), "=d"(c[z * 2 + 1].y)
+                    : "d"(a0),
+                      "d"(b2),
+                      "d"(c[z * 2 + 1].x),
+                      "d"(c[z * 2 + 1].y));
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 2 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 2 + warpId);
 
@@ -1968,9 +1898,9 @@ namespace PSMF
       else
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
 
@@ -1980,32 +1910,46 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
-                  const unsigned int b_idx =
-                    ((z * 2 + warpId) * n_dofs_1d + row +
+                  const int b_idx =
+                    ((z * 4 + warpId) * n_dofs_1d + row +
                      (col + cycle * 4) * offset) ^
-                    Util::get_base<n_dofs_1d>(z * 2 + warpId, col + cycle * 4);
+                    Util::get_base<n_dofs_1d>(z * 4 + warpId, col + cycle * 4);
+                  const int b_idx2 =
+                    ((z * 4 + warpId + 2) * n_dofs_1d + row +
+                     (col + cycle * 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(z * 4 + warpId + 2,
+                                              col + cycle * 4);
 
                   auto b0 = in[b_idx];
+                  auto b2 = in[b_idx2];
 
                   asm volatile(
                     "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
                     "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
-                    : "=d"(c[z].x), "=d"(c[z].y)
-                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                    : "=d"(c[z * 2].x), "=d"(c[z * 2].y)
+                    : "d"(a0), "d"(b0), "d"(c[z * 2].x), "d"(c[z * 2].y));
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z * 2 + 1].x), "=d"(c[z * 2 + 1].y)
+                    : "d"(a0),
+                      "d"(b2),
+                      "d"(c[z * 2 + 1].x),
+                      "d"(c[z * 2 + 1].y));
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId, row);
 
@@ -2022,7 +1966,7 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d = 8;
+    static constexpr int n_dofs_1d = 8;
 
     /**
      * Default constructor.
@@ -2048,38 +1992,34 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
-      const unsigned int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
+      const int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
+      const int warpId = threadIdx.y / 4;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
 
       if (direction == 0)
         {
           double2 c[2];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 4 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 4 + warpId);
 
-              if constexpr (add)
-                c[z] = *((double2 *)(out + c_idx));
-              else
-                c[z] = {0, 0};
+              c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
-              const unsigned int b_idx =
-                ((col + cycle * 4) * n_dofs_1d + row) ^
-                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              const int b_idx = ((col + cycle * 4) * n_dofs_1d + row) ^
+                                Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = shape_data[b_idx];
 #  if TIMING == 1
               auto elapsed = clock64() - start;
@@ -2091,12 +2031,12 @@ namespace PSMF
                   elapsed);
 #  endif
 
-              for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
 #  if TIMING == 1
                   start = clock64();
 #  endif
-                  const unsigned int a_idx =
+                  const int a_idx =
                     (row * n_dofs_1d + col + cycle * 4 +
                      (z * 4 + warpId) * offset) ^
                     Util::get_base<n_dofs_1d>(row, z * 4 + warpId);
@@ -2134,12 +2074,12 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 4 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 4 + warpId);
 
@@ -2158,9 +2098,9 @@ namespace PSMF
       else if (direction == 1)
         {
           double2 c[2];
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 4 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 4 + warpId);
 
@@ -2170,15 +2110,15 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((col + cycle * 4) * n_dofs_1d + row +
                      (z * 4 + warpId) * offset) ^
                     Util::get_base<n_dofs_1d>(col + cycle * 4, z * 4 + warpId);
@@ -2193,9 +2133,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 (row * n_dofs_1d + 2 * col + (z * 4 + warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, z * 4 + warpId);
 
@@ -2205,9 +2145,9 @@ namespace PSMF
       else
         {
           double2 c[2];
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 4 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
                 Util::get_base<n_dofs_1d>(z * 4 + warpId, row);
 
@@ -2217,15 +2157,15 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((z * 4 + warpId) * n_dofs_1d + row +
                      (col + cycle * 4) * offset) ^
                     Util::get_base<n_dofs_1d>(z * 4 + warpId, col + cycle * 4);
@@ -2240,9 +2180,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 4 + warpId) * n_dofs_1d + 2 * col + row * offset) ^
                 Util::get_base<n_dofs_1d>(z * 4 + warpId, row);
 
@@ -2259,7 +2199,7 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d = 8;
+    static constexpr int n_dofs_1d = 8;
 
     /**
      * Default constructor.
@@ -2285,22 +2225,22 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
-      const unsigned int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
+      const int tid    = (threadIdx.y * 8 + threadIdx.x) & 31;
+      const int warpId = (threadIdx.y * 8 + threadIdx.x) / 32;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
 
       if (direction == 0)
         {
           double2 c[2];
 
-          const unsigned int c_idx =
+          const int c_idx =
             (row * n_dofs_1d + 2 * col + (2 * warpId) * offset) ^
             Util::get_base<n_dofs_1d>(row, 2 * warpId);
-          const unsigned int c_idx2 =
+          const int c_idx2 =
             (row * n_dofs_1d + 2 * col + (2 * warpId + 1) * offset) ^
             Util::get_base<n_dofs_1d>(row, 2 * warpId + 1);
 
@@ -2315,14 +2255,13 @@ namespace PSMF
               c[1] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
 #  if TIMING == 1
               auto start = clock64();
 #  endif
-              const unsigned int b_idx =
-                ((col + cycle * 4) * n_dofs_1d + row) ^
-                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              const int b_idx = ((col + cycle * 4) * n_dofs_1d + row) ^
+                                Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = shape_data[b_idx];
 #  if TIMING == 1
               auto elapsed = clock64() - start;
@@ -2337,13 +2276,12 @@ namespace PSMF
 #  if TIMING == 1
               start = clock64();
 #  endif
-              const unsigned int a_idx =
+              const int a_idx =
                 (row * n_dofs_1d + col + cycle * 4 + (2 * warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(row, 2 * warpId);
-              const unsigned int a_idx2 =
-                (row * n_dofs_1d + col + cycle * 4 +
-                 (2 * warpId + 1) * offset) ^
-                Util::get_base<n_dofs_1d>(row, 2 * warpId + 1);
+              const int a_idx2 = (row * n_dofs_1d + col + cycle * 4 +
+                                  (2 * warpId + 1) * offset) ^
+                                 Util::get_base<n_dofs_1d>(row, 2 * warpId + 1);
 
               auto a0 = in[a_idx];
               auto a2 = in[a_idx2];
@@ -2400,10 +2338,10 @@ namespace PSMF
         {
           double2 c[2];
 
-          const unsigned int c_idx =
+          const int c_idx =
             (row * n_dofs_1d + 2 * col + (2 * warpId) * offset) ^
             Util::get_base<n_dofs_1d>(row, 2 * warpId);
-          const unsigned int c_idx2 =
+          const int c_idx2 =
             (row * n_dofs_1d + 2 * col + (2 * warpId + 1) * offset) ^
             Util::get_base<n_dofs_1d>(row, 2 * warpId + 1);
 
@@ -2418,17 +2356,17 @@ namespace PSMF
               c[1] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = shape_data[a_idx];
 
 
-              const unsigned int b_idx =
+              const int b_idx =
                 ((col + cycle * 4) * n_dofs_1d + row + (2 * warpId) * offset) ^
                 Util::get_base<n_dofs_1d>(col + cycle * 4, 2 * warpId);
-              const unsigned int b_idx2 =
+              const int b_idx2 =
                 ((col + cycle * 4) * n_dofs_1d + row +
                  (2 * warpId + 1) * offset) ^
                 Util::get_base<n_dofs_1d>(col + cycle * 4, 2 * warpId + 1);
@@ -2454,10 +2392,10 @@ namespace PSMF
         {
           double2 c[2];
 
-          const unsigned int c_idx =
+          const int c_idx =
             ((2 * warpId) * n_dofs_1d + 2 * col + row * offset) ^
             Util::get_base<n_dofs_1d>(2 * warpId, row);
-          const unsigned int c_idx2 =
+          const int c_idx2 =
             ((2 * warpId + 1) * n_dofs_1d + 2 * col + row * offset) ^
             Util::get_base<n_dofs_1d>(2 * warpId + 1, row);
 
@@ -2472,16 +2410,16 @@ namespace PSMF
               c[1] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
-                                         Util::get_base<n_dofs_1d>(row, 0);
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = shape_data[a_idx];
 
-              const unsigned int b_idx =
+              const int b_idx =
                 ((2 * warpId) * n_dofs_1d + row + (col + cycle * 4) * offset) ^
                 Util::get_base<n_dofs_1d>(2 * warpId, col + cycle * 4);
-              const unsigned int b_idx2 =
+              const int b_idx2 =
                 ((2 * warpId + 1) * n_dofs_1d + row +
                  (col + cycle * 4) * offset) ^
                 Util::get_base<n_dofs_1d>(2 * warpId + 1, col + cycle * 4);
@@ -2507,13 +2445,184 @@ namespace PSMF
   };
 #endif
 
+#if MMAKERNEL == 5
+  template <typename T>
+  struct TPEvaluatorBase<T, 8, double, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = double;
+
+    static constexpr int n_dofs_1d = 8;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int tid = (threadIdx.y * 8 + threadIdx.x) & 31;
+
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
+
+      if (direction == 0)
+        {
+          double2 c[n_dofs_1d];
+          for (int z = 0; z < n_dofs_1d; ++z)
+            c[z] = {0, 0};
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int b_idx = ((col + cycle * 4) * n_dofs_1d + row) ^
+                                Util::get_base<n_dofs_1d>(col + cycle * 4);
+              auto b0 = shape_data[b_idx];
+
+              for (int z = 0; z < n_dofs_1d; ++z)
+                {
+                  const int a_idx =
+                    (row * n_dofs_1d + col + cycle * 4 + z * offset) ^
+                    Util::get_base<n_dofs_1d>(row, z);
+
+                  auto a0 = in[a_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d; ++z)
+            {
+              const int c_idx = (row * n_dofs_1d + 2 * col + z * offset) ^
+                                Util::get_base<n_dofs_1d>(row, z);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          double2 c[n_dofs_1d];
+          for (int z = 0; z < n_dofs_1d; ++z)
+            {
+              if constexpr (add)
+                {
+                  const int c_idx = (row * n_dofs_1d + 2 * col + z * offset) ^
+                                    Util::get_base<n_dofs_1d>(row, z);
+
+                  c[z] = *((double2 *)(out + c_idx));
+                }
+              else
+                c[z] = {0, 0};
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
+              auto a0 = shape_data[a_idx];
+
+              for (int z = 0; z < n_dofs_1d; ++z)
+                {
+                  const int b_idx =
+                    ((col + cycle * 4) * n_dofs_1d + row + z * offset) ^
+                    Util::get_base<n_dofs_1d>(col + cycle * 4, z);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d; ++z)
+            {
+              const int c_idx = (row * n_dofs_1d + 2 * col + z * offset) ^
+                                Util::get_base<n_dofs_1d>(row, z);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+      else
+        {
+          double2 c[n_dofs_1d];
+          for (int z = 0; z < n_dofs_1d; ++z)
+            {
+              if constexpr (add)
+                {
+                  const int c_idx = (z * n_dofs_1d + 2 * col + row * offset) ^
+                                    Util::get_base<n_dofs_1d>(z, row);
+
+                  c[z] = *((double2 *)(out + c_idx));
+                }
+              else
+                c[z] = {0, 0};
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
+                                Util::get_base<n_dofs_1d>(row, 0);
+              auto a0 = shape_data[a_idx];
+
+              for (int z = 0; z < n_dofs_1d; ++z)
+                {
+                  const int b_idx =
+                    (z * n_dofs_1d + row + (col + cycle * 4) * offset) ^
+                    Util::get_base<n_dofs_1d>(z, col + cycle * 4);
+
+                  auto b0 = in[b_idx];
+
+                  asm volatile(
+                    "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                    "{%0,%1}, {%2}, {%3}, {%4,%5};\n"
+                    : "=d"(c[z].x), "=d"(c[z].y)
+                    : "d"(a0), "d"(b0), "d"(c[z].x), "d"(c[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d; ++z)
+            {
+              const int c_idx = (z * n_dofs_1d + 2 * col + row * offset) ^
+                                Util::get_base<n_dofs_1d>(z, row);
+
+              *((double2 *)(out + c_idx)) = c[z];
+            }
+        }
+    }
+  };
+#endif
+
   template <typename T>
   struct TPEvaluatorBase<T, 10, double, LaplaceVariant::TensorCoreMMA, 3>
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d   = 10;
-    static constexpr unsigned int n_dofs_1d_p = 16;
+    static constexpr int n_dofs_1d   = 10;
+    static constexpr int n_dofs_1d_p = 16;
 
     /**
      * Default constructor.
@@ -2546,17 +2655,17 @@ namespace PSMF
 
       const int tid = (threadIdx.y * 16 + threadIdx.x) & 31;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d_p * n_dofs_1d_p;
+      constexpr int offset = n_dofs_1d_p * n_dofs_1d_p;
 
       if (direction == 0)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -2567,16 +2676,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+          for (int cycle = 0; cycle < 3; ++cycle)
             {
-              const unsigned int b_idx =
+              const int b_idx =
                 ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8) ^
                 Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = shape_data[b_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int a_idx =
+                  const int a_idx =
                     ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4 +
                      (z * 2 + warpId / 4) * offset) ^
                     Util::get_base<n_dofs_1d>(rowId * 8 + row,
@@ -2592,9 +2701,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -2605,9 +2714,9 @@ namespace PSMF
       else if (direction == 1)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -2618,16 +2727,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+          for (int cycle = 0; cycle < 3; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8 +
                      (z * 2 + warpId / 4) * offset) ^
                     Util::get_base<n_dofs_1d>(col + cycle * 4,
@@ -2643,9 +2752,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -2656,9 +2765,9 @@ namespace PSMF
       else
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (rowId * 8 + row) * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
@@ -2669,16 +2778,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+          for (int cycle = 0; cycle < 3; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((z * 2 + warpId / 4) * n_dofs_1d_p + colId * 8 + row +
                      (col + cycle * 4) * offset) ^
                     Util::get_base<n_dofs_1d>(z * 2 + warpId / 4,
@@ -2694,9 +2803,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (rowId * 8 + row) * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
@@ -2713,8 +2822,8 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d   = 12;
-    static constexpr unsigned int n_dofs_1d_p = 16;
+    static constexpr int n_dofs_1d   = 12;
+    static constexpr int n_dofs_1d_p = 16;
 
     /**
      * Default constructor.
@@ -2747,17 +2856,17 @@ namespace PSMF
 
       const int tid = (threadIdx.y * 16 + threadIdx.x) & 31;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d_p * n_dofs_1d_p;
+      constexpr int offset = n_dofs_1d_p * n_dofs_1d_p;
 
       if (direction == 0)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -2765,16 +2874,16 @@ namespace PSMF
               c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+          for (int cycle = 0; cycle < 3; ++cycle)
             {
-              const unsigned int b_idx =
+              const int b_idx =
                 ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8) ^
                 Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = shape_data[b_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int a_idx =
+                  const int a_idx =
                     ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4 +
                      (z * 2 + warpId / 4) * offset) ^
                     Util::get_base<n_dofs_1d>(rowId * 8 + row,
@@ -2790,9 +2899,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -2803,9 +2912,9 @@ namespace PSMF
       else if (direction == 1)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -2816,16 +2925,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+          for (int cycle = 0; cycle < 3; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8 +
                      (z * 2 + warpId / 4) * offset) ^
                     Util::get_base<n_dofs_1d>(col + cycle * 4,
@@ -2841,9 +2950,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -2854,9 +2963,9 @@ namespace PSMF
       else
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (rowId * 8 + row) * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
@@ -2867,16 +2976,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 3; ++cycle)
+          for (int cycle = 0; cycle < 3; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((z * 2 + warpId / 4) * n_dofs_1d_p + colId * 8 + row +
                      (col + cycle * 4) * offset) ^
                     Util::get_base<n_dofs_1d>(z * 2 + warpId / 4,
@@ -2892,9 +3001,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (rowId * 8 + row) * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
@@ -2911,8 +3020,8 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d   = 14;
-    static constexpr unsigned int n_dofs_1d_p = 16;
+    static constexpr int n_dofs_1d   = 14;
+    static constexpr int n_dofs_1d_p = 16;
 
     /**
      * Default constructor.
@@ -2945,17 +3054,17 @@ namespace PSMF
 
       const int tid = (threadIdx.y * 16 + threadIdx.x) & 31;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d_p * n_dofs_1d_p;
+      constexpr int offset = n_dofs_1d_p * n_dofs_1d_p;
 
       if (direction == 0)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -2966,16 +3075,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+          for (int cycle = 0; cycle < 4; ++cycle)
             {
-              const unsigned int b_idx =
+              const int b_idx =
                 ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8) ^
                 Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = shape_data[b_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int a_idx =
+                  const int a_idx =
                     ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4 +
                      (z * 2 + warpId / 4) * offset) ^
                     Util::get_base<n_dofs_1d>(rowId * 8 + row,
@@ -2991,9 +3100,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -3004,9 +3113,9 @@ namespace PSMF
       else if (direction == 1)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -3017,16 +3126,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+          for (int cycle = 0; cycle < 4; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((col + cycle * 4) * n_dofs_1d_p + row + colId * 8 +
                      (z * 2 + warpId / 4) * offset) ^
                     Util::get_base<n_dofs_1d>(col + cycle * 4,
@@ -3042,9 +3151,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -3055,9 +3164,9 @@ namespace PSMF
       else
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (rowId * 8 + row) * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
@@ -3068,16 +3177,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+          for (int cycle = 0; cycle < 4; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d_p + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((z * 2 + warpId / 4) * n_dofs_1d_p + colId * 8 + row +
                      (col + cycle * 4) * offset) ^
                     Util::get_base<n_dofs_1d>(z * 2 + warpId / 4,
@@ -3093,9 +3202,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId / 4) * n_dofs_1d_p + 2 * col + colId * 8 +
                  (rowId * 8 + row) * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
@@ -3112,7 +3221,7 @@ namespace PSMF
   {
     using Number = double;
 
-    static constexpr unsigned int n_dofs_1d = 16;
+    static constexpr int n_dofs_1d = 16;
 
     /**
      * Default constructor.
@@ -3145,17 +3254,17 @@ namespace PSMF
 
       const int tid = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
 
-      const unsigned int row = tid / 4;
-      const unsigned int col = tid & 3;
+      const int row = tid / 4;
+      const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
 
       if (direction == 0)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -3166,16 +3275,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+          for (int cycle = 0; cycle < 4; ++cycle)
             {
-              const unsigned int b_idx =
+              const int b_idx =
                 ((col + cycle * 4) * n_dofs_1d + row + colId * 8) ^
                 Util::get_base<n_dofs_1d>(col + cycle * 4);
               auto b0 = shape_data[b_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int a_idx =
+                  const int a_idx =
                     ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4 +
                      (z * 2 + warpId / 4) * offset) ^
                     Util::get_base<n_dofs_1d>(rowId * 8 + row,
@@ -3191,9 +3300,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -3204,9 +3313,9 @@ namespace PSMF
       else if (direction == 1)
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -3217,16 +3326,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+          for (int cycle = 0; cycle < 4; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((col + cycle * 4) * n_dofs_1d + row + colId * 8 +
                      (z * 2 + warpId / 4) * offset) ^
                     Util::get_base<n_dofs_1d>(col + cycle * 4,
@@ -3242,9 +3351,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((rowId * 8 + row) * n_dofs_1d + 2 * col + colId * 8 +
                  (z * 2 + warpId / 4) * offset) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row, z * 2 + warpId / 4);
@@ -3255,9 +3364,9 @@ namespace PSMF
       else
         {
           double2 c[n_dofs_1d / 2];
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId / 4) * n_dofs_1d + 2 * col + colId * 8 +
                  (rowId * 8 + row) * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
@@ -3268,16 +3377,16 @@ namespace PSMF
                 c[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 4; ++cycle)
+          for (int cycle = 0; cycle < 4; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
               auto a0 = shape_data[a_idx];
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
-                  const unsigned int b_idx =
+                  const int b_idx =
                     ((z * 2 + warpId / 4) * n_dofs_1d + colId * 8 + row +
                      (col + cycle * 4) * offset) ^
                     Util::get_base<n_dofs_1d>(z * 2 + warpId / 4,
@@ -3293,9 +3402,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             {
-              const unsigned int c_idx =
+              const int c_idx =
                 ((z * 2 + warpId / 4) * n_dofs_1d + 2 * col + colId * 8 +
                  (rowId * 8 + row) * offset) ^
                 Util::get_base<n_dofs_1d>(z * 2 + warpId / 4, rowId * 8 + row);
@@ -3306,12 +3415,13 @@ namespace PSMF
     }
   };
 
+#if MMAKERNEL == 0
   template <typename T>
   struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3>
   {
     using Number = float;
 
-    static constexpr unsigned int n_dofs_1d = 16;
+    static constexpr int n_dofs_1d = 16;
 
     /**
      * Default constructor.
@@ -3337,16 +3447,14 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+      const int warpId = threadIdx.y / 2;
 
-      const int tid   = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
-      const int rowId = tid / 8;
-      const int colId = tid & 7;
+      const int tid = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
 
       const int row = tid / 4;
       const int col = tid & 3;
 
-      constexpr unsigned int offset = n_dofs_1d * n_dofs_1d;
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
 
       if constexpr (direction == 0)
         {
@@ -3356,73 +3464,42 @@ namespace PSMF
           float a[4];
           float b[2];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx0 =
-                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
-                 (z * 4 + warpId / 2) * offset) ^
-                Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
-              const unsigned int c_idx1 =
-                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
-                 (z * 4 + warpId / 2) * offset) ^
-                Util::get_base<n_dofs_1d, float>(row + 8, z * 4 + warpId / 2);
-
-              if constexpr (add)
-                {
-                  c0[z] = *((float2 *)(out + c_idx0));
-                  c1[z] = *((float2 *)(out + c_idx1));
-                }
-              else
-                {
-                  c0[z] = {0, 0};
-                  c1[z] = {0, 0};
-                }
+              c0[z] = {0, 0};
+              c1[z] = {0, 0};
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int b_idx0 =
-                ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8) ^
-                Util::get_base<n_dofs_1d, float>(col + cycle * 8);
-              const unsigned int b_idx1 =
-                ((col + cycle * 8 + 4) * n_dofs_1d + row + (warpId & 1) * 8) ^
-                Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4);
+              const int b_idx0 =
+                (col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8;
+              const int b_idx1 =
+                (col + cycle * 8 + 4) * n_dofs_1d + row + (warpId & 1) * 8;
 
               b[0] = shape_data[b_idx0];
               b[1] = shape_data[b_idx1];
 
               uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
 
-              for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
-                  const unsigned int a_idx =
-                    ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
-                     cycle * 8 + (z * 4 + warpId / 2) * offset) ^
-                    Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8,
-                                                     z * 4 + warpId / 2);
+                  const int a_idx = row * n_dofs_1d + col + cycle * 8 +
+                                    (z * 4 + warpId / 2) * offset;
+                  const int a_idx1 = (row + 8) * n_dofs_1d + col + cycle * 8 +
+                                     (z * 4 + warpId / 2) * offset;
+                  const int a_idx2 = row * n_dofs_1d + col + 4 + cycle * 8 +
+                                     (z * 4 + warpId / 2) * offset;
+                  const int a_idx3 = (row + 8) * n_dofs_1d + col + 4 +
+                                     cycle * 8 + (z * 4 + warpId / 2) * offset;
 
-                  auto smem_ptr =
-                    static_cast<uint32_t>(__cvta_generic_to_shared(&in[a_idx]));
-#if TIMING == 1
-                  auto start = clock64();
-#endif
-                  asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
-                               "{%0, %1, %2, %3}, [%4]; "
-                               : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
-                               : "r"(smem_ptr));
-#if TIMING == 1
-                  auto elapsed = clock64() - start;
-                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
-                    printf(
-                      "mma load frag a dir-%d loop-%d timing info: %ld cycles\n",
-                      direction,
-                      cycle,
-                      elapsed);
-#endif
+                  a[0] = in[a_idx];
+                  a[1] = in[a_idx1];
+                  a[2] = in[a_idx2];
+                  a[3] = in[a_idx3];
+
                   uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
-#if TIMING == 1
-                  start = clock64();
-#endif
+
                   asm volatile(
                     "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
                     "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
@@ -3437,7 +3514,310 @@ namespace PSMF
                       "f"(c0[z].y),
                       "f"(c1[z].x),
                       "f"(c1[z].y));
-#if TIMING == 1
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 = row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                                 (z * 4 + warpId / 2) * offset;
+              const int c_idx1 = (row + 8) * n_dofs_1d + 2 * col +
+                                 (warpId & 1) * 8 +
+                                 (z * 4 + warpId / 2) * offset;
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          float2 c0[n_dofs_1d / 4];
+          float2 c1[n_dofs_1d / 4];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 = row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                                 (z * 4 + warpId / 2) * offset;
+              const int c_idx1 = (row + 8) * n_dofs_1d + 2 * col +
+                                 (warpId & 1) * 8 +
+                                 (z * 4 + warpId / 2) * offset;
+
+              if constexpr (add)
+                {
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx  = row * n_dofs_1d + col + cycle * 8;
+              const int a_idx1 = (row + 8) * n_dofs_1d + col + cycle * 8;
+              const int a_idx2 = row * n_dofs_1d + col + 4 + cycle * 8;
+              const int a_idx3 = (row + 8) * n_dofs_1d + col + 4 + cycle * 8;
+
+              a[0] = shape_data[a_idx];
+              a[1] = shape_data[a_idx1];
+              a[2] = shape_data[a_idx2];
+              a[3] = shape_data[a_idx3];
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
+                {
+                  const int b_idx0 = (col + cycle * 8) * n_dofs_1d + row +
+                                     (warpId & 1) * 8 +
+                                     (z * 4 + warpId / 2) * offset;
+                  const int b_idx1 = (col + cycle * 8 + 4) * n_dofs_1d + row +
+                                     (warpId & 1) * 8 +
+                                     (z * 4 + warpId / 2) * offset;
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 = row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                                 (z * 4 + warpId / 2) * offset;
+              const int c_idx1 = (row + 8) * n_dofs_1d + 2 * col +
+                                 (warpId & 1) * 8 +
+                                 (z * 4 + warpId / 2) * offset;
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else
+        {
+          float2 c0[n_dofs_1d / 4];
+          float2 c1[n_dofs_1d / 4];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 = (z * 4 + warpId / 2) * n_dofs_1d + 2 * col +
+                                 (warpId & 1) * 8 + row * offset;
+              const int c_idx1 = (z * 4 + warpId / 2) * n_dofs_1d + 2 * col +
+                                 (warpId & 1) * 8 + (row + 8) * offset;
+
+              if constexpr (add)
+                {
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx  = row * n_dofs_1d + col + cycle * 8;
+              const int a_idx1 = (row + 8) * n_dofs_1d + col + cycle * 8;
+              const int a_idx2 = row * n_dofs_1d + col + 4 + cycle * 8;
+              const int a_idx3 = (row + 8) * n_dofs_1d + col + 4 + cycle * 8;
+
+              a[0] = shape_data[a_idx];
+              a[1] = shape_data[a_idx1];
+              a[2] = shape_data[a_idx2];
+              a[3] = shape_data[a_idx3];
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
+                {
+                  const int b_idx0 = (z * 4 + warpId / 2) * n_dofs_1d + row +
+                                     (warpId & 1) * 8 +
+                                     (col + cycle * 8) * offset;
+                  const int b_idx1 = (z * 4 + warpId / 2) * n_dofs_1d + row +
+                                     (warpId & 1) * 8 +
+                                     (col + cycle * 8 + 4) * offset;
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 = (z * 4 + warpId / 2) * n_dofs_1d + 2 * col +
+                                 (warpId & 1) * 8 + row * offset;
+              const int c_idx1 = (z * 4 + warpId / 2) * n_dofs_1d + 2 * col +
+                                 (warpId & 1) * 8 + (row + 8) * offset;
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+    }
+  };
+#endif
+
+
+#if MMAKERNEL == 1
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = float;
+
+    static constexpr int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = threadIdx.y / 2;
+
+      const int tid   = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
+      const int rowId = tid / 8;
+      const int colId = tid & 7;
+
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
+
+      if constexpr (direction == 0)
+        {
+          float2 c0[n_dofs_1d / 4];
+          float2 c1[n_dofs_1d / 4];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              c0[z] = {0, 0};
+              c1[z] = {0, 0};
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int b_idx0 =
+                ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8);
+              const int b_idx1 =
+                ((col + cycle * 8 + 4) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4);
+
+              b[0] = shape_data[b_idx0];
+              b[1] = shape_data[b_idx1];
+
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
+                {
+                  const int a_idx =
+                    ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                     cycle * 8 + (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8,
+                                                     z * 4 + warpId / 2);
+
+                  auto smem_ptr =
+                    static_cast<uint32_t>(__cvta_generic_to_shared(&in[a_idx]));
+#  if TIMING == 1
+                  auto start = clock64();
+#  endif
+                  asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                               "{%0, %1, %2, %3}, [%4]; "
+                               : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                               : "r"(smem_ptr));
+#  if TIMING == 1
+                  auto elapsed = clock64() - start;
+                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
+                    printf(
+                      "mma load frag a dir-%d loop-%d timing info: %ld cycles\n",
+                      direction,
+                      cycle,
+                      elapsed);
+#  endif
+                  uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if TIMING == 1
+                  start = clock64();
+#  endif
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+#  if TIMING == 1
                   elapsed = clock64() - start;
                   if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
                     printf(
@@ -3446,17 +3826,17 @@ namespace PSMF
                       cycle,
                       z,
                       elapsed);
-#endif
+#  endif
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx0 =
+              const int c_idx0 =
                 (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
                  (z * 4 + warpId / 2) * offset) ^
                 Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
-              const unsigned int c_idx1 =
+              const int c_idx1 =
                 ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
                  (z * 4 + warpId / 2) * offset) ^
                 Util::get_base<n_dofs_1d, float>(row + 8, z * 4 + warpId / 2);
@@ -3473,19 +3853,20 @@ namespace PSMF
           float a[4];
           float b[2];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx0 =
-                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
-                 (z * 4 + warpId / 2) * offset) ^
-                Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
-              const unsigned int c_idx1 =
-                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
-                 (z * 4 + warpId / 2) * offset) ^
-                Util::get_base<n_dofs_1d, float>(row + 8, z * 4 + warpId / 2);
-
               if constexpr (add)
                 {
+                  const int c_idx0 =
+                    (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                     (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+                  const int c_idx1 =
+                    ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                     (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8,
+                                                     z * 4 + warpId / 2);
+
                   c0[z] = *((float2 *)(out + c_idx0));
                   c1[z] = *((float2 *)(out + c_idx1));
                 }
@@ -3496,9 +3877,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
                  cycle * 8) ^
                 Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
@@ -3513,14 +3894,14 @@ namespace PSMF
 
               uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
 
-              for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
-                  const unsigned int b_idx0 =
+                  const int b_idx0 =
                     ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8 +
                      (z * 4 + warpId / 2) * offset) ^
                     Util::get_base<n_dofs_1d, float>(col + cycle * 8,
                                                      z * 4 + warpId / 2);
-                  const unsigned int b_idx1 =
+                  const int b_idx1 =
                     ((col + cycle * 8 + 4) * n_dofs_1d + row +
                      (warpId & 1) * 8 + (z * 4 + warpId / 2) * offset) ^
                     Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4,
@@ -3548,13 +3929,13 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx0 =
+              const int c_idx0 =
                 (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
                  (z * 4 + warpId / 2) * offset) ^
                 Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
-              const unsigned int c_idx1 =
+              const int c_idx1 =
                 ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
                  (z * 4 + warpId / 2) * offset) ^
                 Util::get_base<n_dofs_1d, float>(row + 8, z * 4 + warpId / 2);
@@ -3571,19 +3952,20 @@ namespace PSMF
           float a[4];
           float b[2];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx0 =
-                ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
-                 row * offset) ^
-                Util::get_base<n_dofs_1d, float>((z * 4 + warpId / 2), row);
-              const unsigned int c_idx1 =
-                ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
-                 (row + 8) * offset) ^
-                Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2, row + 8);
-
               if constexpr (add)
                 {
+                  const int c_idx0 =
+                    ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col +
+                     (warpId & 1) * 8 + row * offset) ^
+                    Util::get_base<n_dofs_1d, float>((z * 4 + warpId / 2), row);
+                  const int c_idx1 =
+                    ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col +
+                     (warpId & 1) * 8 + (row + 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2,
+                                                     row + 8);
+
                   c0[z] = *((float2 *)(out + c_idx0));
                   c1[z] = *((float2 *)(out + c_idx1));
                 }
@@ -3594,9 +3976,9 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int cycle = 0; cycle < 2; ++cycle)
+          for (int cycle = 0; cycle < 2; ++cycle)
             {
-              const unsigned int a_idx =
+              const int a_idx =
                 ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
                  cycle * 8) ^
                 Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
@@ -3611,14 +3993,14 @@ namespace PSMF
 
               uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
 
-              for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
-                  const unsigned int b_idx0 =
+                  const int b_idx0 =
                     ((z * 4 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
                      (col + cycle * 8) * offset) ^
                     Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2,
                                                      col + cycle * 8);
-                  const unsigned int b_idx1 =
+                  const int b_idx1 =
                     ((z * 4 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
                      (col + cycle * 8 + 4) * offset) ^
                     Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2,
@@ -3646,13 +4028,13 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 4; ++z)
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
             {
-              const unsigned int c_idx0 =
+              const int c_idx0 =
                 ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
                  row * offset) ^
                 Util::get_base<n_dofs_1d, float>((z * 4 + warpId / 2), row);
-              const unsigned int c_idx1 =
+              const int c_idx1 =
                 ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
                  (row + 8) * offset) ^
                 Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2, row + 8);
@@ -3663,8 +4045,1433 @@ namespace PSMF
         }
     }
   };
+#endif
 
 
+#if MMAKERNEL == 2
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = float;
+
+    static constexpr int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = threadIdx.y / 2;
+
+      const int tid = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
+
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
+
+      if constexpr (direction == 0)
+        {
+          float2 c0[n_dofs_1d / 4];
+          float2 c1[n_dofs_1d / 4];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              c0[z] = {0, 0};
+              c1[z] = {0, 0};
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int b_idx0 =
+                ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8);
+              const int b_idx1 =
+                ((col + cycle * 8 + 4) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4);
+
+              b[0] = shape_data[b_idx0];
+              b[1] = shape_data[b_idx1];
+
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
+                {
+                  const int a_idx =
+                    (row * n_dofs_1d + col + cycle * 8 +
+                     (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+                  const int a_idx1 =
+                    ((row + 8) * n_dofs_1d + col + cycle * 8 +
+                     (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8,
+                                                     z * 4 + warpId / 2);
+                  const int a_idx2 =
+                    (row * n_dofs_1d + col + 4 + cycle * 8 +
+                     (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+                  const int a_idx3 =
+                    ((row + 8) * n_dofs_1d + col + 4 + cycle * 8 +
+                     (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+
+                  a[0] = in[a_idx];
+                  a[1] = in[a_idx1];
+                  a[2] = in[a_idx2];
+                  a[3] = in[a_idx3];
+
+                  uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, z * 4 + warpId / 2);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          float2 c0[n_dofs_1d / 4];
+          float2 c1[n_dofs_1d / 4];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, z * 4 + warpId / 2);
+
+              if constexpr (add)
+                {
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx = (row * n_dofs_1d + col + cycle * 8) ^
+                                Util::get_base<n_dofs_1d, float>(row);
+              const int a_idx1 = ((row + 8) * n_dofs_1d + col + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(row + 8);
+              const int a_idx2 = (row * n_dofs_1d + col + 4 + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(row);
+              const int a_idx3 = ((row + 8) * n_dofs_1d + col + 4 + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(row);
+
+              a[0] = shape_data[a_idx];
+              a[1] = shape_data[a_idx1];
+              a[2] = shape_data[a_idx2];
+              a[3] = shape_data[a_idx3];
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
+                {
+                  const int b_idx0 =
+                    ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8,
+                                                     z * 4 + warpId / 2);
+                  const int b_idx1 =
+                    ((col + cycle * 8 + 4) * n_dofs_1d + row +
+                     (warpId & 1) * 8 + (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4,
+                                                     z * 4 + warpId / 2);
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, z * 4 + warpId / 2);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else
+        {
+          float2 c0[n_dofs_1d / 4];
+          float2 c1[n_dofs_1d / 4];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 =
+                ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 row * offset) ^
+                Util::get_base<n_dofs_1d, float>((z * 4 + warpId / 2), row);
+              const int c_idx1 =
+                ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (row + 8) * offset) ^
+                Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2, row + 8);
+
+              if constexpr (add)
+                {
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx = (row * n_dofs_1d + col + cycle * 8) ^
+                                Util::get_base<n_dofs_1d, float>(row);
+              const int a_idx1 = ((row + 8) * n_dofs_1d + col + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(row + 8);
+              const int a_idx2 = (row * n_dofs_1d + col + 4 + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(row);
+              const int a_idx3 = ((row + 8) * n_dofs_1d + col + 4 + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(row);
+
+              a[0] = shape_data[a_idx];
+              a[1] = shape_data[a_idx1];
+              a[2] = shape_data[a_idx2];
+              a[3] = shape_data[a_idx3];
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < n_dofs_1d / 4; ++z)
+                {
+                  const int b_idx0 =
+                    ((z * 4 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (col + cycle * 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2,
+                                                     col + cycle * 8);
+                  const int b_idx1 =
+                    ((z * 4 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (col + cycle * 8 + 4) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2,
+                                                     col + cycle * 8 + 4);
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 =
+                ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 row * offset) ^
+                Util::get_base<n_dofs_1d, float>((z * 4 + warpId / 2), row);
+              const int c_idx1 =
+                ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (row + 8) * offset) ^
+                Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2, row + 8);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+    }
+  };
+#endif
+
+
+
+#if MMAKERNEL == 3
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = float;
+
+    static constexpr int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = threadIdx.y / 2;
+
+      const int tid   = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
+      const int rowId = tid / 8;
+      const int colId = tid & 7;
+
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
+
+      if constexpr (direction == 0)
+        {
+          float2 c0[n_dofs_1d / 4];
+          float2 c1[n_dofs_1d / 4];
+
+          float a[8];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              c0[z] = {0, 0};
+              c1[z] = {0, 0};
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int b_idx0 =
+                ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8);
+              const int b_idx1 =
+                ((col + cycle * 8 + 4) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4);
+
+              b[0] = shape_data[b_idx0];
+              b[1] = shape_data[b_idx1];
+
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+              for (int z = 0; z < n_dofs_1d / 8; ++z)
+                {
+                  const int a_idx =
+                    ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                     cycle * 8 + (z * 8 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8,
+                                                     z * 8 + warpId / 2);
+                  const int a_idx1 =
+                    ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                     cycle * 8 + (z * 8 + 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8,
+                                                     z * 8 + 4 + warpId / 2);
+
+                  auto smem_ptr =
+                    static_cast<uint32_t>(__cvta_generic_to_shared(&in[a_idx]));
+                  auto smem_ptr1 = static_cast<uint32_t>(
+                    __cvta_generic_to_shared(&in[a_idx1]));
+
+                  asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                               "{%0, %1, %2, %3}, [%4]; "
+                               : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                               : "r"(smem_ptr));
+                  asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                               "{%0, %1, %2, %3}, [%4]; "
+                               : "=f"(a[4]), "=f"(a[5]), "=f"(a[6]), "=f"(a[7])
+                               : "r"(smem_ptr1));
+
+                  uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z * 2].x),
+                      "=f"(c0[z * 2].y),
+                      "=f"(c1[z * 2].x),
+                      "=f"(c1[z * 2].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z * 2].x),
+                      "f"(c0[z * 2].y),
+                      "f"(c1[z * 2].x),
+                      "f"(c1[z * 2].y));
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z * 2 + 1].x),
+                      "=f"(c0[z * 2 + 1].y),
+                      "=f"(c1[z * 2 + 1].x),
+                      "=f"(c1[z * 2 + 1].y)
+                    : "r"(A[4]),
+                      "r"(A[5]),
+                      "r"(A[6]),
+                      "r"(A[7]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z * 2 + 1].x),
+                      "f"(c0[z * 2 + 1].y),
+                      "f"(c1[z * 2 + 1].x),
+                      "f"(c1[z * 2 + 1].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, z * 4 + warpId / 2);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          float2 c0[n_dofs_1d / 4];
+          float2 c1[n_dofs_1d / 4];
+
+          float a[4];
+          float b[4];
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              if constexpr (add)
+                {
+                  const int c_idx0 =
+                    (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                     (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+                  const int c_idx1 =
+                    ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                     (z * 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8,
+                                                     z * 4 + warpId / 2);
+
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx =
+                ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                 cycle * 8) ^
+                Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
+
+              auto smem_ptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[a_idx]));
+
+              asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                           "{%0, %1, %2, %3}, [%4]; "
+                           : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                           : "r"(smem_ptr));
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < n_dofs_1d / 8; ++z)
+                {
+                  const int b_idx0 =
+                    ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (z * 8 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8,
+                                                     z * 8 + warpId / 2);
+                  const int b_idx1 =
+                    ((col + cycle * 8 + 4) * n_dofs_1d + row +
+                     (warpId & 1) * 8 + (z * 8 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4,
+                                                     z * 8 + warpId / 2);
+
+                  const int b_idx2 =
+                    ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (z * 8 + 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8,
+                                                     z * 8 + 4 + warpId / 2);
+                  const int b_idx3 =
+                    ((col + cycle * 8 + 4) * n_dofs_1d + row +
+                     (warpId & 1) * 8 + (z * 8 + 4 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4,
+                                                     z * 8 + 4 + warpId / 2);
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+
+                  b[2] = in[b_idx2];
+                  b[3] = in[b_idx3];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z * 2].x),
+                      "=f"(c0[z * 2].y),
+                      "=f"(c1[z * 2].x),
+                      "=f"(c1[z * 2].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z * 2].x),
+                      "f"(c0[z * 2].y),
+                      "f"(c1[z * 2].x),
+                      "f"(c1[z * 2].y));
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z * 2 + 1].x),
+                      "=f"(c0[z * 2 + 1].y),
+                      "=f"(c1[z * 2 + 1].x),
+                      "=f"(c1[z * 2 + 1].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[2]),
+                      "r"(B[3]),
+                      "f"(c0[z * 2 + 1].x),
+                      "f"(c0[z * 2 + 1].y),
+                      "f"(c1[z * 2 + 1].x),
+                      "f"(c1[z * 2 + 1].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, z * 4 + warpId / 2);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 4 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, z * 4 + warpId / 2);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else
+        {
+          float2 c0[n_dofs_1d / 4];
+          float2 c1[n_dofs_1d / 4];
+
+          float a[4];
+          float b[4];
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              if constexpr (add)
+                {
+                  const int c_idx0 =
+                    ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col +
+                     (warpId & 1) * 8 + row * offset) ^
+                    Util::get_base<n_dofs_1d, float>((z * 4 + warpId / 2), row);
+                  const int c_idx1 =
+                    ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col +
+                     (warpId & 1) * 8 + (row + 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2,
+                                                     row + 8);
+
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx =
+                ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                 cycle * 8) ^
+                Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
+
+              auto smem_ptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[a_idx]));
+
+              asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                           "{%0, %1, %2, %3}, [%4]; "
+                           : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                           : "r"(smem_ptr));
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < n_dofs_1d / 8; ++z)
+                {
+                  const int b_idx0 =
+                    ((z * 8 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (col + cycle * 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId / 2,
+                                                     col + cycle * 8);
+                  const int b_idx1 =
+                    ((z * 8 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (col + cycle * 8 + 4) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId / 2,
+                                                     col + cycle * 8 + 4);
+                  const int b_idx2 =
+                    ((z * 8 + 4 + warpId / 2) * n_dofs_1d + row +
+                     (warpId & 1) * 8 + (col + cycle * 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + 4 + warpId / 2,
+                                                     col + cycle * 8);
+                  const int b_idx3 =
+                    ((z * 8 + 4 + warpId / 2) * n_dofs_1d + row +
+                     (warpId & 1) * 8 + (col + cycle * 8 + 4) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + 4 + warpId / 2,
+                                                     col + cycle * 8 + 4);
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+                  b[2] = in[b_idx2];
+                  b[3] = in[b_idx3];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z * 2].x),
+                      "=f"(c0[z * 2].y),
+                      "=f"(c1[z * 2].x),
+                      "=f"(c1[z * 2].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z * 2].x),
+                      "f"(c0[z * 2].y),
+                      "f"(c1[z * 2].x),
+                      "f"(c1[z * 2].y));
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z * 2 + 1].x),
+                      "=f"(c0[z * 2 + 1].y),
+                      "=f"(c1[z * 2 + 1].x),
+                      "=f"(c1[z * 2 + 1].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[2]),
+                      "r"(B[3]),
+                      "f"(c0[z * 2 + 1].x),
+                      "f"(c0[z * 2 + 1].y),
+                      "f"(c1[z * 2 + 1].x),
+                      "f"(c1[z * 2 + 1].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 4; ++z)
+            {
+              const int c_idx0 =
+                ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 row * offset) ^
+                Util::get_base<n_dofs_1d, float>((z * 4 + warpId / 2), row);
+              const int c_idx1 =
+                ((z * 4 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (row + 8) * offset) ^
+                Util::get_base<n_dofs_1d, float>(z * 4 + warpId / 2, row + 8);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+    }
+  };
+#endif
+
+
+#if MMAKERNEL == 4
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = float;
+
+    static constexpr int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = threadIdx.y / 2;
+
+      const int tid   = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
+      const int rowId = tid / 8;
+      const int colId = tid & 7;
+
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
+
+      if constexpr (direction == 0)
+        {
+          float2 c0[2];
+          float2 c1[2];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < 2; ++z)
+            {
+              c0[z] = {0, 0};
+              c1[z] = {0, 0};
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int b_idx0 =
+                ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8);
+              const int b_idx1 =
+                ((col + cycle * 8 + 4) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4);
+
+              b[0] = shape_data[b_idx0];
+              b[1] = shape_data[b_idx1];
+
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int a_idx =
+                    ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                     cycle * 8 + (z * 8 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8,
+                                                     z * 8 + warpId / 2);
+
+                  auto smem_ptr =
+                    static_cast<uint32_t>(__cvta_generic_to_shared(&in[a_idx]));
+
+                  asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                               "{%0, %1, %2, %3}, [%4]; "
+                               : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                               : "r"(smem_ptr));
+
+                  uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < 2; ++z)
+            {
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 8 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId / 2);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 8 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId / 2);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          float2 c0[2];
+          float2 c1[2];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < 2; ++z)
+            {
+              if constexpr (add)
+                {
+                  const int c_idx0 =
+                    (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                     (z * 8 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId / 2);
+                  const int c_idx1 =
+                    ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                     (z * 8 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8,
+                                                     z * 8 + warpId / 2);
+
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx =
+                ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                 cycle * 8) ^
+                Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
+
+              auto smem_ptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[a_idx]));
+
+              asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                           "{%0, %1, %2, %3}, [%4]; "
+                           : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                           : "r"(smem_ptr));
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int b_idx0 =
+                    ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (z * 8 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8,
+                                                     z * 8 + warpId / 2);
+                  const int b_idx1 =
+                    ((col + cycle * 8 + 4) * n_dofs_1d + row +
+                     (warpId & 1) * 8 + (z * 8 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4,
+                                                     z * 8 + warpId / 2);
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < 2; ++z)
+            {
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 8 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId / 2);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 8 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId / 2);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else
+        {
+          float2 c0[2];
+          float2 c1[2];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < 2; ++z)
+            {
+              if constexpr (add)
+                {
+                  const int c_idx0 =
+                    ((z * 8 + warpId / 2) * n_dofs_1d + 2 * col +
+                     (warpId & 1) * 8 + row * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId / 2, row);
+                  const int c_idx1 =
+                    ((z * 8 + warpId / 2) * n_dofs_1d + 2 * col +
+                     (warpId & 1) * 8 + (row + 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId / 2,
+                                                     row + 8);
+
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx =
+                ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                 cycle * 8) ^
+                Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
+
+              auto smem_ptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[a_idx]));
+
+              asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                           "{%0, %1, %2, %3}, [%4]; "
+                           : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                           : "r"(smem_ptr));
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int b_idx0 =
+                    ((z * 8 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (col + cycle * 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId / 2,
+                                                     col + cycle * 8);
+                  const int b_idx1 =
+                    ((z * 8 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (col + cycle * 8 + 4) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId / 2,
+                                                     col + cycle * 8 + 4);
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < 2; ++z)
+            {
+              const int c_idx0 =
+                ((z * 8 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 row * offset) ^
+                Util::get_base<n_dofs_1d, float>(z * 8 + warpId / 2, row);
+              const int c_idx1 =
+                ((z * 8 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (row + 8) * offset) ^
+                Util::get_base<n_dofs_1d, float>(z * 8 + warpId / 2, row + 8);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+    }
+  };
+#endif
+
+
+#if MMAKERNEL == 5
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = float;
+
+    static constexpr int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = threadIdx.y / 2;
+
+      const int tid   = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
+      const int rowId = tid / 8;
+      const int colId = tid & 7;
+
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
+
+      if constexpr (direction == 0)
+        {
+          float2 c0[n_dofs_1d / 2];
+          float2 c1[n_dofs_1d / 2];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              c0[z] = {0, 0};
+              c1[z] = {0, 0};
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int b_idx0 =
+                ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8);
+              const int b_idx1 =
+                ((col + cycle * 8 + 4) * n_dofs_1d + row + (warpId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4);
+
+              b[0] = shape_data[b_idx0];
+              b[1] = shape_data[b_idx1];
+
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const int a_idx =
+                    ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                     cycle * 8 + (z * 2 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8,
+                                                     z * 2 + warpId / 2);
+
+                  auto smem_ptr =
+                    static_cast<uint32_t>(__cvta_generic_to_shared(&in[a_idx]));
+#  if TIMING == 1
+                  auto start = clock64();
+#  endif
+                  asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                               "{%0, %1, %2, %3}, [%4]; "
+                               : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                               : "r"(smem_ptr));
+#  if TIMING == 1
+                  auto elapsed = clock64() - start;
+                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
+                    printf(
+                      "mma load frag a dir-%d loop-%d timing info: %ld cycles\n",
+                      direction,
+                      cycle,
+                      elapsed);
+#  endif
+                  uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if TIMING == 1
+                  start = clock64();
+#  endif
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+#  if TIMING == 1
+                  elapsed = clock64() - start;
+                  if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0)
+                    printf(
+                      "mma.sync.aligned.m16n8k8 dir-%d loop-(%d,%d) timing info: %ld cycles\n",
+                      direction,
+                      cycle,
+                      z,
+                      elapsed);
+#  endif
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 2 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, z * 2 + warpId / 2);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 2 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, z * 2 + warpId / 2);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else if (direction == 1)
+        {
+          float2 c0[n_dofs_1d / 2];
+          float2 c1[n_dofs_1d / 2];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              if constexpr (add)
+                {
+                  const int c_idx0 =
+                    (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                     (z * 2 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 2 + warpId / 2);
+                  const int c_idx1 =
+                    ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                     (z * 2 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8,
+                                                     z * 2 + warpId / 2);
+
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx =
+                ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                 cycle * 8) ^
+                Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
+
+              auto smem_ptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[a_idx]));
+
+              asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                           "{%0, %1, %2, %3}, [%4]; "
+                           : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                           : "r"(smem_ptr));
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const int b_idx0 =
+                    ((col + cycle * 8) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (z * 2 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8,
+                                                     z * 2 + warpId / 2);
+                  const int b_idx1 =
+                    ((col + cycle * 8 + 4) * n_dofs_1d + row +
+                     (warpId & 1) * 8 + (z * 2 + warpId / 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col + cycle * 8 + 4,
+                                                     z * 2 + warpId / 2);
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 2 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, z * 2 + warpId / 2);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (z * 2 + warpId / 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, z * 2 + warpId / 2);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+      else
+        {
+          float2 c0[n_dofs_1d / 2];
+          float2 c1[n_dofs_1d / 2];
+
+          float a[4];
+          float b[2];
+
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              if constexpr (add)
+                {
+                  const int c_idx0 =
+                    ((z * 2 + warpId / 2) * n_dofs_1d + 2 * col +
+                     (warpId & 1) * 8 + row * offset) ^
+                    Util::get_base<n_dofs_1d, float>((z * 2 + warpId / 2), row);
+                  const int c_idx1 =
+                    ((z * 2 + warpId / 2) * n_dofs_1d + 2 * col +
+                     (warpId & 1) * 8 + (row + 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 2 + warpId / 2,
+                                                     row + 8);
+
+                  c0[z] = *((float2 *)(out + c_idx0));
+                  c1[z] = *((float2 *)(out + c_idx1));
+                }
+              else
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+            }
+
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              const int a_idx =
+                ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 4 +
+                 cycle * 8) ^
+                Util::get_base<n_dofs_1d, float>(colId + (rowId & 1) * 8);
+
+              auto smem_ptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[a_idx]));
+
+              asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                           "{%0, %1, %2, %3}, [%4]; "
+                           : "=f"(a[0]), "=f"(a[1]), "=f"(a[2]), "=f"(a[3])
+                           : "r"(smem_ptr));
+
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
+                {
+                  const int b_idx0 =
+                    ((z * 2 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (col + cycle * 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 2 + warpId / 2,
+                                                     col + cycle * 8);
+                  const int b_idx1 =
+                    ((z * 2 + warpId / 2) * n_dofs_1d + row + (warpId & 1) * 8 +
+                     (col + cycle * 8 + 4) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 2 + warpId / 2,
+                                                     col + cycle * 8 + 4);
+
+                  b[0] = in[b_idx0];
+                  b[1] = in[b_idx1];
+
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+            }
+
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
+            {
+              const int c_idx0 =
+                ((z * 2 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 row * offset) ^
+                Util::get_base<n_dofs_1d, float>((z * 2 + warpId / 2), row);
+              const int c_idx1 =
+                ((z * 2 + warpId / 2) * n_dofs_1d + 2 * col + (warpId & 1) * 8 +
+                 (row + 8) * offset) ^
+                Util::get_base<n_dofs_1d, float>(z * 2 + warpId / 2, row + 8);
+
+              *((float2 *)(out + c_idx0)) = c0[z];
+              *((float2 *)(out + c_idx1)) = c1[z];
+            }
+        }
+    }
+  };
+#endif
 
   template <typename T>
   struct TPEvaluatorBase<T, 8, double, LaplaceVariant::TensorCore, 2>
@@ -3694,13 +5501,12 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int n_dofs_1d   = 8;
-      constexpr unsigned int skew_double = Util::padding;
+      constexpr int n_dofs_1d   = 8;
+      constexpr int skew_double = Util::padding;
 
       if (direction == 0)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
 
           wmma::fragment<wmma::matrix_a, 8, 8, 4, double, wmma::row_major>
             a_frag;
@@ -3734,8 +5540,7 @@ namespace PSMF
         }
       else if (direction == 1)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
 
           wmma::fragment<wmma::matrix_a, 8, 8, 4, double, wmma::row_major>
             a_frag;
@@ -3807,13 +5612,12 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int n_dofs_1d   = 8;
-      constexpr unsigned int skew_double = Util::padding;
+      constexpr int n_dofs_1d   = 8;
+      constexpr int skew_double = Util::padding;
 
       if (direction == 0)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
           wmma::fragment<wmma::matrix_a, 8, 8, 4, double, wmma::row_major>
             a_frag;
           wmma::fragment<wmma::matrix_b, 8, 8, 4, double, wmma::row_major>
@@ -3821,7 +5625,7 @@ namespace PSMF
           wmma::fragment<wmma::accumulator, 8, 8, 4, double>
             c_frag[n_dofs_1d / 2];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             wmma::fill_fragment(c_frag[z], 0.0f);
 
           for (int i = 0; i < 2; ++i)
@@ -3841,7 +5645,7 @@ namespace PSMF
                   i,
                   elapsed);
 #endif
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
 #if TIMING == 1
                   start = clock64();
@@ -3878,7 +5682,7 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
 #if TIMING == 1
             {
               auto start = clock64();
@@ -3901,8 +5705,7 @@ namespace PSMF
         }
       else if (direction == 1)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
 
           wmma::fragment<wmma::matrix_a, 8, 8, 4, double, wmma::row_major>
             a_frag;
@@ -3911,7 +5714,7 @@ namespace PSMF
           wmma::fragment<wmma::accumulator, 8, 8, 4, double>
             c_frag[n_dofs_1d / 2];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             if (add)
               wmma::load_matrix_sync(
                 c_frag[z],
@@ -3930,7 +5733,7 @@ namespace PSMF
                                      &shape_data[i * 4],
                                      8 + skew_double);
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
                   wmma::load_matrix_sync(
                     b_frag,
@@ -3942,7 +5745,7 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             wmma::store_matrix_sync(
               &out[(z * 2 + warpId) * 8 * (8 + skew_double)],
               c_frag[z],
@@ -3960,23 +5763,23 @@ namespace PSMF
           double pval[n_dofs_1d];
 
           // kernel product: A kdot src, [N x N] * [N^dim, 1]
-          for (unsigned int z = 0; z < n_dofs_1d; ++z)
+          for (int z = 0; z < n_dofs_1d; ++z)
             {
               pval[z] = 0;
               // #pragma unroll
               for (int k = 0; k < n_dofs_1d; ++k)
                 {
-                  const unsigned int shape_idx = row * n_dofs_1d_padding + k;
-                  const unsigned int source_idx =
+                  const int shape_idx = row * n_dofs_1d_padding + k;
+                  const int source_idx =
                     z * n_dofs_1d_padding + col + k * stride;
 
                   pval[z] += shape_data[shape_idx] * in[source_idx];
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d; ++z)
+          for (int z = 0; z < n_dofs_1d; ++z)
             {
-              const unsigned int destination_idx =
+              const int destination_idx =
                 z * n_dofs_1d_padding + col + row * stride;
 
               if (add)
@@ -4018,14 +5821,13 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int n_dofs_1d   = 16;
-      constexpr unsigned int skew_double = Util::padding;
+      constexpr int n_dofs_1d   = 16;
+      constexpr int skew_double = Util::padding;
 
       if (direction == 0)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
-          const unsigned int subId = warpId % 4;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int subId  = warpId % 4;
 
           wmma::fragment<wmma::matrix_a, 8, 8, 4, double, wmma::row_major>
             a_frag;
@@ -4061,9 +5863,8 @@ namespace PSMF
         }
       else if (direction == 1)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
-          const unsigned int subId = warpId % 4;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int subId  = warpId % 4;
 
           wmma::fragment<wmma::matrix_a, 8, 8, 4, double, wmma::row_major>
             a_frag;
@@ -4138,15 +5939,14 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int n_dofs_1d   = 16;
-      constexpr unsigned int skew_double = Util::padding;
+      constexpr int n_dofs_1d   = 16;
+      constexpr int skew_double = Util::padding;
 
       if (direction == 0)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
           // sub matrix id
-          const unsigned int subId = warpId % 4;
+          const int subId = warpId % 4;
 
           wmma::fragment<wmma::matrix_a, 8, 8, 4, double, wmma::row_major>
             a_frag;
@@ -4155,7 +5955,7 @@ namespace PSMF
           wmma::fragment<wmma::accumulator, 8, 8, 4, double>
             c_frag[n_dofs_1d / 2];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             wmma::fill_fragment(c_frag[z], 0.0f);
 
           for (int i = 0; i < 4; ++i)
@@ -4165,7 +5965,7 @@ namespace PSMF
                 &shape_data[subId / 2 * 8 + i * 4 * (16 + skew_double)],
                 16 + skew_double);
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
                   wmma::load_matrix_sync(
                     a_frag,
@@ -4177,7 +5977,7 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             wmma::store_matrix_sync(
               &out[(z * 2 + warpId / 4) * (16 + skew_double) * 16 +
                    subId % 2 * (16 + skew_double) * 8 + subId / 2 * 8],
@@ -4187,10 +5987,9 @@ namespace PSMF
         }
       else if (direction == 1)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
           // sub matrix id
-          const unsigned int subId = warpId % 4;
+          const int subId = warpId % 4;
 
           wmma::fragment<wmma::matrix_a, 8, 8, 4, double, wmma::row_major>
             a_frag;
@@ -4199,7 +5998,7 @@ namespace PSMF
           wmma::fragment<wmma::accumulator, 8, 8, 4, double>
             c_frag[n_dofs_1d / 2];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             if (add)
               wmma::load_matrix_sync(
                 c_frag[z],
@@ -4220,7 +6019,7 @@ namespace PSMF
                 &shape_data[subId / 2 * (16 + skew_double) * 8 + i * 4],
                 16 + skew_double);
 
-              for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+              for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
                   wmma::load_matrix_sync(
                     b_frag,
@@ -4232,7 +6031,7 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
+          for (int z = 0; z < n_dofs_1d / 2; ++z)
             wmma::store_matrix_sync(
               &out[(z * 2 + warpId / 4) * (16 + skew_double) * 16 +
                    subId / 2 * (16 + skew_double) * 8 + subId % 2 * 8],
@@ -4251,23 +6050,23 @@ namespace PSMF
           double pval[n_dofs_1d];
 
           // kernel product: A kdot src, [N x N] * [N^dim, 1]
-          for (unsigned int z = 0; z < n_dofs_1d; ++z)
+          for (int z = 0; z < n_dofs_1d; ++z)
             {
               pval[z] = 0;
               // #pragma unroll
               for (int k = 0; k < n_dofs_1d; ++k)
                 {
-                  const unsigned int shape_idx = row * n_dofs_1d_padding + k;
-                  const unsigned int source_idx =
+                  const int shape_idx = row * n_dofs_1d_padding + k;
+                  const int source_idx =
                     z * n_dofs_1d_padding + col + k * stride;
 
                   pval[z] += shape_data[shape_idx] * in[source_idx];
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d; ++z)
+          for (int z = 0; z < n_dofs_1d; ++z)
             {
-              const unsigned int destination_idx =
+              const int destination_idx =
                 z * n_dofs_1d_padding + col + row * stride;
 
               if (add)
@@ -4311,13 +6110,12 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int n_dofs_1d   = 16;
-      constexpr unsigned int skew_double = Util::padding;
+      constexpr int n_dofs_1d   = 16;
+      constexpr int skew_double = Util::padding;
 
       if (direction == 0)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
 
           wmma::fragment<wmma::matrix_a,
                          16,
@@ -4373,8 +6171,7 @@ namespace PSMF
         }
       else if (direction == 1)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
 
           wmma::fragment<wmma::matrix_a,
                          16,
@@ -4467,13 +6264,12 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int n_dofs_1d   = 16;
-      constexpr unsigned int skew_double = Util::padding;
+      constexpr int n_dofs_1d   = 16;
+      constexpr int skew_double = Util::padding;
 
       if (direction == 0)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
 
           wmma::fragment<wmma::matrix_a,
                          16,
@@ -4492,7 +6288,7 @@ namespace PSMF
           wmma::fragment<wmma::accumulator, 16, 16, 8, float>
             c_frag[n_dofs_1d / 8];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 8; ++z)
+          for (int z = 0; z < n_dofs_1d / 8; ++z)
             wmma::fill_fragment(c_frag[z], 0.0f);
 
           for (int i = 0; i < 2; ++i)
@@ -4506,7 +6302,7 @@ namespace PSMF
               //                   a_frag.x[t] =
               //                   wmma::__float_to_tf32(a_frag.x[t]);
               //                 }
-              for (unsigned int z = 0; z < n_dofs_1d / 8; ++z)
+              for (int z = 0; z < n_dofs_1d / 8; ++z)
                 {
                   wmma::load_matrix_sync(
                     a_frag,
@@ -4524,7 +6320,7 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 8; ++z)
+          for (int z = 0; z < n_dofs_1d / 8; ++z)
             wmma::store_matrix_sync(
               &out[(z * 8 + warpId) * 16 * (16 + skew_double)],
               c_frag[z],
@@ -4533,8 +6329,7 @@ namespace PSMF
         }
       else if (direction == 1)
         {
-          const unsigned int warpId =
-            (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
+          const int warpId = (threadIdx.y * n_dofs_1d + threadIdx.x) / 32;
 
           wmma::fragment<wmma::matrix_a,
                          16,
@@ -4553,7 +6348,7 @@ namespace PSMF
           wmma::fragment<wmma::accumulator, 16, 16, 8, float>
             c_frag[n_dofs_1d / 8];
 
-          for (unsigned int z = 0; z < n_dofs_1d / 8; ++z)
+          for (int z = 0; z < n_dofs_1d / 8; ++z)
             if (add)
               wmma::load_matrix_sync(
                 c_frag[z],
@@ -4577,7 +6372,7 @@ namespace PSMF
               //                   a_frag.x[t] =
               //                   wmma::__float_to_tf32(a_frag.x[t]);
               //                 }
-              for (unsigned int z = 0; z < n_dofs_1d / 8; ++z)
+              for (int z = 0; z < n_dofs_1d / 8; ++z)
                 {
                   wmma::load_matrix_sync(
                     b_frag,
@@ -4595,7 +6390,7 @@ namespace PSMF
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d / 8; ++z)
+          for (int z = 0; z < n_dofs_1d / 8; ++z)
             wmma::store_matrix_sync(
               &out[(z * 8 + warpId) * 16 * (16 + skew_double)],
               c_frag[z],
@@ -4613,23 +6408,23 @@ namespace PSMF
           float pval[n_dofs_1d];
 
           // kernel product: A kdot src, [N x N] * [N^dim, 1]
-          for (unsigned int z = 0; z < n_dofs_1d; ++z)
+          for (int z = 0; z < n_dofs_1d; ++z)
             {
               pval[z] = 0;
               // #pragma unroll
               for (int k = 0; k < n_dofs_1d; ++k)
                 {
-                  const unsigned int shape_idx = row * n_dofs_1d_padding + k;
-                  const unsigned int source_idx =
+                  const int shape_idx = row * n_dofs_1d_padding + k;
+                  const int source_idx =
                     z * n_dofs_1d_padding + col + k * stride;
 
                   pval[z] += shape_data[shape_idx] * in[source_idx];
                 }
             }
 
-          for (unsigned int z = 0; z < n_dofs_1d; ++z)
+          for (int z = 0; z < n_dofs_1d; ++z)
             {
-              const unsigned int destination_idx =
+              const int destination_idx =
                 z * n_dofs_1d_padding + col + row * stride;
 
               if (add)
@@ -4692,7 +6487,7 @@ namespace PSMF
                const Number *derivative_matrix,
                Number       *tmp)
     {
-      constexpr unsigned int offset = n_dofs_1d * (n_dofs_1d + Util::padding);
+      constexpr int offset = n_dofs_1d * (n_dofs_1d + Util::padding);
 
       apply<0, false>(mass_matrix, src, tmp);
       __syncthreads();
@@ -4726,12 +6521,12 @@ namespace PSMF
                const Number *derivative_matrix,
                Number       *tmp)
     {
-      constexpr unsigned n_dofs_1d_p =
+      constexpr int n_dofs_1d_p =
         (laplace_type == LaplaceVariant::TensorCoreMMA) ?
           (n_dofs_1d <= 8 ? 8 : 16) :
           n_dofs_1d;
-      constexpr unsigned int local_dim = Util::pow(n_dofs_1d_p, 2) * n_dofs_1d;
-      constexpr unsigned int offset    = n_dofs_1d_p * n_dofs_1d_p;
+      constexpr int local_dim = Util::pow(n_dofs_1d_p, 2) * n_dofs_1d;
+      constexpr int offset    = n_dofs_1d_p * n_dofs_1d_p;
 
       apply<0, false>(mass_matrix, src, &tmp[local_dim]);
       __syncthreads();
@@ -4838,7 +6633,7 @@ namespace PSMF
                const Number *derivative_matrix,
                Number       *tmp)
     {
-      constexpr unsigned int local_dim = Util::pow(n_dofs_1d, 3);
+      constexpr int local_dim = Util::pow(n_dofs_1d, 3);
 
       apply<0, false>(mass_matrix, src, &tmp[local_dim]);
       __syncthreads();
@@ -4952,26 +6747,26 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int row = threadIdx.y;
-      const unsigned int col = threadIdx.x % n_dofs_1d;
+      const int row = threadIdx.y;
+      const int col = threadIdx.x % n_dofs_1d;
 
       Number pval = 0;
 
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       // #pragma unroll
-      for (unsigned int k = 0; k < n_dofs_1d; ++k)
+      for (int k = 0; k < n_dofs_1d; ++k)
         {
-          const unsigned int shape_idx =
+          const int shape_idx =
             contract_over_rows ? k * n_dofs_1d + row : row * n_dofs_1d + k;
 
-          const unsigned int source_idx =
+          const int source_idx =
             (direction == 0) ? (col * n_dofs_1d + k) : (k * n_dofs_1d + col);
 
           pval += shape_data[shape_idx] * in[source_idx];
         }
 
 
-      const unsigned int destination_idx =
+      const int destination_idx =
         (direction == 0) ? (col * n_dofs_1d + row) : (row * n_dofs_1d + col);
       if (add)
         out[destination_idx] += pval;
@@ -4990,7 +6785,7 @@ namespace PSMF
                   const Number *eigenvectors,
                   Number       *tmp)
     {
-      constexpr unsigned int local_dim = Util::pow(n_dofs_1d, 3);
+      constexpr int local_dim = Util::pow(n_dofs_1d, 3);
 
       apply<0, true>(eigenvectors, src, tmp);
       __syncthreads();
@@ -4998,7 +6793,7 @@ namespace PSMF
       __syncthreads();
       apply<2, true>(eigenvectors, &tmp[local_dim], tmp);
       __syncthreads();
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (int z = 0; z < n_dofs_1d; ++z)
         {
           tmp[z * n_dofs_1d * n_dofs_1d + threadIdx.y * n_dofs_1d +
               threadIdx.x % n_dofs_1d] /=
@@ -5017,24 +6812,24 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int stride = n_dofs_1d * n_dofs_1d;
+      constexpr int stride = n_dofs_1d * n_dofs_1d;
 
-      const unsigned int row = threadIdx.y;
-      const unsigned int col = threadIdx.x % n_dofs_1d;
+      const int row = threadIdx.y;
+      const int col = threadIdx.x % n_dofs_1d;
 
       Number pval[n_dofs_1d];
 
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (int z = 0; z < n_dofs_1d; ++z)
         {
           pval[z] = 0;
           // #pragma unroll
-          for (unsigned int k = 0; k < n_dofs_1d; ++k)
+          for (int k = 0; k < n_dofs_1d; ++k)
             {
-              const unsigned int shape_idx =
+              const int shape_idx =
                 contract_over_rows ? k * n_dofs_1d + row : row * n_dofs_1d + k;
 
-              const unsigned int source_idx =
+              const int source_idx =
                 (direction == 0) ? (col * n_dofs_1d + k + z * stride) :
                 (direction == 1) ? (k * n_dofs_1d + col + z * stride) :
                                    (z * n_dofs_1d + col + k * stride);
@@ -5043,9 +6838,9 @@ namespace PSMF
             }
         }
 
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (int z = 0; z < n_dofs_1d; ++z)
         {
-          const unsigned int destination_idx =
+          const int destination_idx =
             (direction == 0) ? (col * n_dofs_1d + row + z * stride) :
             (direction == 1) ? (row * n_dofs_1d + col + z * stride) :
                                (z * n_dofs_1d + col + row * stride);
@@ -5069,11 +6864,10 @@ namespace PSMF
                   const Number *eigenvectors,
                   Number       *tmp)
     {
-      const unsigned int linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      unsigned int row = linear_tid / (n_dofs_1d - 2) + 1;
-      unsigned int col = linear_tid % (n_dofs_1d - 2) + 1;
+      int row = linear_tid / (n_dofs_1d - 2) + 1;
+      int col = linear_tid % (n_dofs_1d - 2) + 1;
 
       apply<0, true>(eigenvectors, src, tmp);
       __syncthreads();
@@ -5091,11 +6885,10 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      const unsigned int linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      const unsigned int row = linear_tid / (n_dofs_1d - 2) + 1;
-      const unsigned int col = linear_tid % (n_dofs_1d - 2) + 1;
+      const int row = linear_tid / (n_dofs_1d - 2) + 1;
+      const int col = linear_tid % (n_dofs_1d - 2) + 1;
 
       Number pval;
 
@@ -5104,14 +6897,13 @@ namespace PSMF
         {
           pval = 0;
           // #pragma unroll
-          for (unsigned int k = 1; k < n_dofs_1d - 1; ++k)
+          for (int k = 1; k < n_dofs_1d - 1; ++k)
             {
-              const unsigned int shape_idx =
+              const int shape_idx =
                 contract_over_rows ? k * n_dofs_1d + row : row * n_dofs_1d + k;
 
-              const unsigned int source_idx = (direction == 0) ?
-                                                (col * n_dofs_1d + k) :
-                                                (k * n_dofs_1d + col);
+              const int source_idx = (direction == 0) ? (col * n_dofs_1d + k) :
+                                                        (k * n_dofs_1d + col);
 
               pval += shape_data[shape_idx] * in[source_idx];
             }
@@ -5119,9 +6911,9 @@ namespace PSMF
 
       if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
         {
-          const unsigned int destination_idx = (direction == 0) ?
-                                                 (col * n_dofs_1d + row) :
-                                                 (row * n_dofs_1d + col);
+          const int destination_idx = (direction == 0) ?
+                                        (col * n_dofs_1d + row) :
+                                        (row * n_dofs_1d + col);
           if (add)
             out[destination_idx] += pval;
           else
@@ -5140,12 +6932,11 @@ namespace PSMF
                   const Number *eigenvectors,
                   Number       *tmp)
     {
-      constexpr unsigned int local_dim = Util::pow(n_dofs_1d, 3);
-      const unsigned int     linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      constexpr int local_dim = Util::pow(n_dofs_1d, 3);
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      unsigned int row = linear_tid / (n_dofs_1d - 2) + 1;
-      unsigned int col = linear_tid % (n_dofs_1d - 2) + 1;
+      int row = linear_tid / (n_dofs_1d - 2) + 1;
+      int col = linear_tid % (n_dofs_1d - 2) + 1;
 
       apply<0, true>(eigenvectors, src, tmp);
       __syncthreads();
@@ -5154,7 +6945,7 @@ namespace PSMF
       apply<2, true>(eigenvectors, &tmp[local_dim], tmp);
       __syncthreads();
       if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
-        for (unsigned int z = 1; z < n_dofs_1d - 1; ++z)
+        for (int z = 1; z < n_dofs_1d - 1; ++z)
           {
             tmp[z * n_dofs_1d * n_dofs_1d + row * n_dofs_1d + col] /=
               (eigenvalues[z] + eigenvalues[row] + eigenvalues[col]);
@@ -5171,28 +6962,26 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int stride = n_dofs_1d * n_dofs_1d;
-      const unsigned int     linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      constexpr int stride = n_dofs_1d * n_dofs_1d;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      const unsigned int row = linear_tid / (n_dofs_1d - 2) + 1;
-      const unsigned int col = linear_tid % (n_dofs_1d - 2) + 1;
+      const int row = linear_tid / (n_dofs_1d - 2) + 1;
+      const int col = linear_tid % (n_dofs_1d - 2) + 1;
 
       Number pval[n_dofs_1d - 2];
 
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
-        for (unsigned int z = 1; z < n_dofs_1d - 1; ++z)
+        for (int z = 1; z < n_dofs_1d - 1; ++z)
           {
             pval[z - 1] = 0;
             // #pragma unroll
-            for (unsigned int k = 1; k < n_dofs_1d - 1; ++k)
+            for (int k = 1; k < n_dofs_1d - 1; ++k)
               {
-                const unsigned int shape_idx = contract_over_rows ?
-                                                 k * n_dofs_1d + row :
-                                                 row * n_dofs_1d + k;
+                const int shape_idx = contract_over_rows ? k * n_dofs_1d + row :
+                                                           row * n_dofs_1d + k;
 
-                const unsigned int source_idx =
+                const int source_idx =
                   (direction == 0) ? (col * n_dofs_1d + k + z * stride) :
                   (direction == 1) ? (k * n_dofs_1d + col + z * stride) :
                                      (z * n_dofs_1d + col + k * stride);
@@ -5202,9 +6991,9 @@ namespace PSMF
           }
 
       if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
-        for (unsigned int z = 1; z < n_dofs_1d - 1; ++z)
+        for (int z = 1; z < n_dofs_1d - 1; ++z)
           {
-            const unsigned int destination_idx =
+            const int destination_idx =
               (direction == 0) ? (col * n_dofs_1d + row + z * stride) :
               (direction == 1) ? (row * n_dofs_1d + col + z * stride) :
                                  (z * n_dofs_1d + col + row * stride);
@@ -5231,11 +7020,10 @@ namespace PSMF
                   const Number *eigenvectors,
                   Number       *tmp)
     {
-      const unsigned int linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      unsigned int row = linear_tid / (n_dofs_1d - 2);
-      unsigned int col = linear_tid % (n_dofs_1d - 2);
+      int row = linear_tid / (n_dofs_1d - 2);
+      int col = linear_tid % (n_dofs_1d - 2);
 
       apply<0, true>(eigenvectors, src, tmp);
       __syncthreads();
@@ -5254,12 +7042,11 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int n_dofs_1d_i = n_dofs_1d - 2;
-      const unsigned int     linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      constexpr int n_dofs_1d_i = n_dofs_1d - 2;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      const unsigned int row = linear_tid / n_dofs_1d_i;
-      const unsigned int col = linear_tid % n_dofs_1d_i;
+      const int row = linear_tid / n_dofs_1d_i;
+      const int col = linear_tid % n_dofs_1d_i;
 
       Number pval;
 
@@ -5268,18 +7055,18 @@ namespace PSMF
         {
           pval = 0;
           // #pragma unroll
-          for (unsigned int k = 0; k < n_dofs_1d_i; ++k)
+          for (int k = 0; k < n_dofs_1d_i; ++k)
             {
-              const unsigned int shape_idx =
+              const int shape_idx =
                 contract_over_rows ?
                   ((direction == 0) ? k * n_dofs_1d_i + col :
                                       k * n_dofs_1d_i + row) :
                   ((direction == 0) ? col * n_dofs_1d_i + k :
                                       row * n_dofs_1d_i + k);
 
-              const unsigned int source_idx = (direction == 0) ?
-                                                (row * n_dofs_1d_i + k) :
-                                                (k * n_dofs_1d_i + col);
+              const int source_idx = (direction == 0) ?
+                                       (row * n_dofs_1d_i + k) :
+                                       (k * n_dofs_1d_i + col);
 
               pval += shape_data[shape_idx] * in[source_idx];
             }
@@ -5287,7 +7074,7 @@ namespace PSMF
 
       if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
         {
-          const unsigned int destination_idx = row * n_dofs_1d_i + col;
+          const int destination_idx = row * n_dofs_1d_i + col;
 
           if (add)
             out[destination_idx] += pval;
@@ -5310,11 +7097,10 @@ namespace PSMF
                   const Number *eigenvectors,
                   Number       *tmp)
     {
-      const unsigned int linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      unsigned int row = linear_tid / (n_dofs_1d - 2);
-      unsigned int col = linear_tid % (n_dofs_1d - 2);
+      int row = linear_tid / (n_dofs_1d - 2);
+      int col = linear_tid % (n_dofs_1d - 2);
 
       apply<0, true>(eigenvectors, src, tmp);
       __syncthreads();
@@ -5323,7 +7109,7 @@ namespace PSMF
       apply<2, true>(eigenvectors, src, tmp);
       __syncthreads();
       if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
-        for (unsigned int z = 0; z < n_dofs_1d - 2; ++z)
+        for (int z = 0; z < n_dofs_1d - 2; ++z)
           {
             tmp[z * n_dofs_1d * n_dofs_1d + row * (n_dofs_1d - 2) + col] /=
               (eigenvalues[z] + eigenvalues[row] + eigenvalues[col]);
@@ -5340,25 +7126,24 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int stride      = n_dofs_1d * n_dofs_1d;
-      constexpr unsigned int n_dofs_1d_i = n_dofs_1d - 2;
-      const unsigned int     linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      constexpr int stride      = n_dofs_1d * n_dofs_1d;
+      constexpr int n_dofs_1d_i = n_dofs_1d - 2;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      const unsigned int row = linear_tid / n_dofs_1d_i;
-      const unsigned int col = linear_tid % n_dofs_1d_i;
+      const int row = linear_tid / n_dofs_1d_i;
+      const int col = linear_tid % n_dofs_1d_i;
 
       Number pval[n_dofs_1d_i];
 
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
-        for (unsigned int z = 0; z < n_dofs_1d_i; ++z)
+        for (int z = 0; z < n_dofs_1d_i; ++z)
           {
             pval[z] = 0;
             // #pragma unroll
-            for (unsigned int k = 0; k < n_dofs_1d_i; ++k)
+            for (int k = 0; k < n_dofs_1d_i; ++k)
               {
-                const unsigned int shape_idx =
+                const int shape_idx =
                   contract_over_rows ?
                     ((direction == 0) ? k * n_dofs_1d_i + col :
                      (direction == 1) ? k * n_dofs_1d_i + row :
@@ -5367,7 +7152,7 @@ namespace PSMF
                      (direction == 1) ? row * n_dofs_1d_i + k :
                                         z * n_dofs_1d_i + k);
 
-                const unsigned int source_idx =
+                const int source_idx =
                   (direction == 0) ? (row * n_dofs_1d_i + k + z * stride) :
                   (direction == 1) ? (k * n_dofs_1d_i + col + z * stride) :
                                      (row * n_dofs_1d_i + col + k * stride);
@@ -5377,10 +7162,9 @@ namespace PSMF
           }
 
       if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
-        for (unsigned int z = 0; z < n_dofs_1d_i; ++z)
+        for (int z = 0; z < n_dofs_1d_i; ++z)
           {
-            const unsigned int destination_idx =
-              row * n_dofs_1d_i + col + z * stride;
+            const int destination_idx = row * n_dofs_1d_i + col + z * stride;
 
             if (add)
               out[destination_idx] += pval[z];
@@ -5400,11 +7184,10 @@ namespace PSMF
                   const Number *eigenvectors,
                   Number       *tmp)
     {
-      const unsigned int linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      unsigned int row = linear_tid / (n_dofs_1d - 4);
-      unsigned int col = linear_tid % (n_dofs_1d - 4);
+      int row = linear_tid / (n_dofs_1d - 4);
+      int col = linear_tid % (n_dofs_1d - 4);
 
       apply<0, true>(eigenvectors, src, tmp);
       __syncthreads();
@@ -5423,12 +7206,11 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int n_dofs_1d_i = n_dofs_1d - 4;
-      const unsigned int     linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      constexpr int n_dofs_1d_i = n_dofs_1d - 4;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      const unsigned int row = linear_tid / n_dofs_1d_i;
-      const unsigned int col = linear_tid % n_dofs_1d_i;
+      const int row = linear_tid / n_dofs_1d_i;
+      const int col = linear_tid % n_dofs_1d_i;
 
       Number pval;
 
@@ -5437,18 +7219,18 @@ namespace PSMF
         {
           pval = 0;
           // #pragma unroll
-          for (unsigned int k = 0; k < n_dofs_1d_i; ++k)
+          for (int k = 0; k < n_dofs_1d_i; ++k)
             {
-              const unsigned int shape_idx =
+              const int shape_idx =
                 contract_over_rows ?
                   ((direction == 0) ? k * n_dofs_1d_i + col :
                                       k * n_dofs_1d_i + row) :
                   ((direction == 0) ? col * n_dofs_1d_i + k :
                                       row * n_dofs_1d_i + k);
 
-              const unsigned int source_idx = (direction == 0) ?
-                                                (row * n_dofs_1d_i + k) :
-                                                (k * n_dofs_1d_i + col);
+              const int source_idx = (direction == 0) ?
+                                       (row * n_dofs_1d_i + k) :
+                                       (k * n_dofs_1d_i + col);
 
               pval += shape_data[shape_idx] * in[source_idx];
             }
@@ -5456,7 +7238,7 @@ namespace PSMF
 
       if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
         {
-          const unsigned int destination_idx = row * n_dofs_1d_i + col;
+          const int destination_idx = row * n_dofs_1d_i + col;
 
           if (add)
             out[destination_idx] += pval;
@@ -5476,11 +7258,10 @@ namespace PSMF
                   const Number *eigenvectors,
                   Number       *tmp)
     {
-      const unsigned int linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      unsigned int row = linear_tid / (n_dofs_1d - 4);
-      unsigned int col = linear_tid % (n_dofs_1d - 4);
+      int row = linear_tid / (n_dofs_1d - 4);
+      int col = linear_tid % (n_dofs_1d - 4);
 
       apply<0, true>(eigenvectors, src, tmp);
       __syncthreads();
@@ -5489,7 +7270,7 @@ namespace PSMF
       apply<2, true>(eigenvectors, src, tmp);
       __syncthreads();
       if (linear_tid < (n_dofs_1d - 4) * (n_dofs_1d - 4))
-        for (unsigned int z = 0; z < n_dofs_1d - 4; ++z)
+        for (int z = 0; z < n_dofs_1d - 4; ++z)
           {
             tmp[z * n_dofs_1d * n_dofs_1d + row * (n_dofs_1d - 4) + col] /=
               (eigenvalues[z] + eigenvalues[row] + eigenvalues[col]);
@@ -5506,25 +7287,24 @@ namespace PSMF
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
     {
-      constexpr unsigned int stride      = n_dofs_1d * n_dofs_1d;
-      constexpr unsigned int n_dofs_1d_i = n_dofs_1d - 4;
-      const unsigned int     linear_tid =
-        threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+      constexpr int stride      = n_dofs_1d * n_dofs_1d;
+      constexpr int n_dofs_1d_i = n_dofs_1d - 4;
+      const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-      const unsigned int row = linear_tid / n_dofs_1d_i;
-      const unsigned int col = linear_tid % n_dofs_1d_i;
+      const int row = linear_tid / n_dofs_1d_i;
+      const int col = linear_tid % n_dofs_1d_i;
 
       Number pval[n_dofs_1d_i];
 
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
-        for (unsigned int z = 0; z < n_dofs_1d_i; ++z)
+        for (int z = 0; z < n_dofs_1d_i; ++z)
           {
             pval[z] = 0;
             // #pragma unroll
-            for (unsigned int k = 0; k < n_dofs_1d_i; ++k)
+            for (int k = 0; k < n_dofs_1d_i; ++k)
               {
-                const unsigned int shape_idx =
+                const int shape_idx =
                   contract_over_rows ?
                     ((direction == 0) ? k * n_dofs_1d_i + col :
                      (direction == 1) ? k * n_dofs_1d_i + row :
@@ -5533,7 +7313,7 @@ namespace PSMF
                      (direction == 1) ? row * n_dofs_1d_i + k :
                                         z * n_dofs_1d_i + k);
 
-                const unsigned int source_idx =
+                const int source_idx =
                   (direction == 0) ? (row * n_dofs_1d_i + k + z * stride) :
                   (direction == 1) ? (k * n_dofs_1d_i + col + z * stride) :
                                      (row * n_dofs_1d_i + col + k * stride);
@@ -5543,10 +7323,9 @@ namespace PSMF
           }
 
       if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
-        for (unsigned int z = 0; z < n_dofs_1d_i; ++z)
+        for (int z = 0; z < n_dofs_1d_i; ++z)
           {
-            const unsigned int destination_idx =
-              row * n_dofs_1d_i + col + z * stride;
+            const int destination_idx = row * n_dofs_1d_i + col + z * stride;
 
             if (add)
               out[destination_idx] += pval[z];
@@ -5563,10 +7342,10 @@ namespace PSMF
 
   template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
   __device__ void
-  evaluate_laplace(const unsigned int                local_patch,
+  evaluate_laplace(const int                         local_patch,
                    SharedMemData<dim, Number, true> *shared_data)
   {
-    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    constexpr int n_dofs_1d = 2 * fe_degree + 2;
 
     TPEvaluatorLaplace<laplace, Number, n_dofs_1d, dim> eval;
     __syncthreads();
@@ -5586,12 +7365,12 @@ namespace PSMF
             SmootherVariant smooth>
   __device__ void
   evaluate_smooth(
-    const unsigned int                                             local_patch,
+    const int                                                      local_patch,
     SharedMemData<dim, Number, false>                             *shared_data,
     const typename LevelVertexPatch<dim, fe_degree, Number>::Data *gpu_data)
   {
-    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
-    constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+    constexpr int n_dofs_1d = 2 * fe_degree + 2;
+    constexpr int local_dim = Util::pow(n_dofs_1d, dim);
 
     TPEvaluatorSmootherVmult<Number, n_dofs_1d, laplace, dim> eval_vmult;
     TPEvaluatorSmootherInv<Number, n_dofs_1d, smooth, dim>    eval_inverse;
@@ -5604,13 +7383,12 @@ namespace PSMF
                      &shared_data->tmp[local_patch * local_dim * (dim - 1)]);
     __syncthreads();
 
-    const unsigned int linear_tid =
-      threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+    const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
     if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
       {
-        const unsigned int row = linear_tid / (n_dofs_1d - 2);
-        const unsigned int col = linear_tid % (n_dofs_1d - 2);
+        const int row = linear_tid / (n_dofs_1d - 2);
+        const int col = linear_tid % (n_dofs_1d - 2);
 
         shared_data->local_mass[col + 1] = gpu_data->eigenvalues[col];
         shared_data->local_derivative[(row + 1) * n_dofs_1d + col + 1] =
@@ -5635,13 +7413,13 @@ namespace PSMF
             SmootherVariant smooth>
   __device__ void
   evaluate_smooth_cf(
-    const unsigned int                                             local_patch,
+    const int                                                      local_patch,
     SharedMemData<dim, Number, false>                             *shared_data,
     const typename LevelVertexPatch<dim, fe_degree, Number>::Data *gpu_data)
   {
-    constexpr unsigned int n_dofs_1d   = 2 * fe_degree + 2;
-    constexpr unsigned int n_dofs_1d_z = dim == 2 ? 1 : n_dofs_1d - 2;
-    constexpr unsigned int local_dim   = Util::pow(n_dofs_1d, dim);
+    constexpr int n_dofs_1d   = 2 * fe_degree + 2;
+    constexpr int n_dofs_1d_z = dim == 2 ? 1 : n_dofs_1d - 2;
+    constexpr int local_dim   = Util::pow(n_dofs_1d, dim);
 
     TPEvaluatorSmootherVmult<Number, n_dofs_1d, laplace, dim> eval_vmult;
     TPEvaluatorSmootherInv<Number, n_dofs_1d, smooth, dim>    eval_inverse;
@@ -5654,13 +7432,12 @@ namespace PSMF
                      &shared_data->tmp[local_patch * local_dim * (dim - 1)]);
     __syncthreads();
 
-    const unsigned int linear_tid =
-      threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+    const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
     if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
       {
-        unsigned int row = linear_tid / (n_dofs_1d - 2);
-        unsigned int col = linear_tid % (n_dofs_1d - 2);
+        int row = linear_tid / (n_dofs_1d - 2);
+        int col = linear_tid % (n_dofs_1d - 2);
 
         shared_data->local_mass[col] = gpu_data->eigenvalues[col];
         shared_data->local_derivative[row * (n_dofs_1d - 2) + col] =
@@ -5671,10 +7448,10 @@ namespace PSMF
 
     if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
       {
-        unsigned int row = linear_tid / (n_dofs_1d - 2) + 1;
-        unsigned int col = linear_tid % (n_dofs_1d - 2) + 1;
+        int row = linear_tid / (n_dofs_1d - 2) + 1;
+        int col = linear_tid % (n_dofs_1d - 2) + 1;
 
-        for (unsigned int z = 0; z < n_dofs_1d_z; ++z)
+        for (int z = 0; z < n_dofs_1d_z; ++z)
           {
             shared_data
               ->tmp[2 * local_patch * local_dim + z * n_dofs_1d * n_dofs_1d +
@@ -5705,11 +7482,11 @@ namespace PSMF
 
   template <int dim, int fe_degree, typename Number, SmootherVariant smooth>
   __device__ void
-  evaluate_smooth_inv(const unsigned int                 local_patch,
+  evaluate_smooth_inv(const int                          local_patch,
                       SharedMemData<dim, Number, false> *shared_data)
   {
-    constexpr unsigned int n_dofs_1d = 2 * fe_degree;
-    constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
+    constexpr int n_dofs_1d = 2 * fe_degree;
+    constexpr int local_dim = Util::pow(n_dofs_1d, dim);
 
     TPEvaluatorSmootherInv<Number, n_dofs_1d, smooth, dim> eval;
     __syncthreads();
@@ -5729,13 +7506,13 @@ namespace PSMF
             SmootherVariant smooth>
   __device__ void
   evaluate_smooth_exact(
-    const unsigned int                                             local_patch,
+    const int                                                      local_patch,
     SharedMemData<dim, Number, false>                             *shared_data,
     const typename LevelVertexPatch<dim, fe_degree, Number>::Data *gpu_data)
   {
-    constexpr unsigned int n_dofs_1d   = 2 * fe_degree + 2;
-    constexpr unsigned int local_dim   = Util::pow(n_dofs_1d, dim);
-    constexpr unsigned int n_dofs_1d_z = dim == 2 ? 1 : n_dofs_1d - 4;
+    constexpr int n_dofs_1d   = 2 * fe_degree + 2;
+    constexpr int local_dim   = Util::pow(n_dofs_1d, dim);
+    constexpr int n_dofs_1d_z = dim == 2 ? 1 : n_dofs_1d - 4;
 
     TPEvaluatorSmootherVmult<Number, n_dofs_1d, laplace, dim> eval_vmult;
     TPEvaluatorSmootherInv<Number, n_dofs_1d, smooth, dim>    eval_inverse;
@@ -5748,13 +7525,12 @@ namespace PSMF
                      &shared_data->tmp[local_patch * local_dim * (dim - 1)]);
     __syncthreads();
 
-    const unsigned int linear_tid =
-      threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
+    const int linear_tid = threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
     if (linear_tid < (n_dofs_1d - 4) * (n_dofs_1d - 4))
       {
-        const unsigned int row = linear_tid / (n_dofs_1d - 4);
-        const unsigned int col = linear_tid % (n_dofs_1d - 4);
+        const int row = linear_tid / (n_dofs_1d - 4);
+        const int col = linear_tid % (n_dofs_1d - 4);
 
         shared_data->local_mass[col] = gpu_data->eigenvalues[col + n_dofs_1d];
         shared_data->local_derivative[row * (n_dofs_1d - 4) + col] =
@@ -5765,10 +7541,10 @@ namespace PSMF
 
     if (linear_tid < (n_dofs_1d - 4) * (n_dofs_1d - 4))
       {
-        unsigned int row = linear_tid / (n_dofs_1d - 4) + 2;
-        unsigned int col = linear_tid % (n_dofs_1d - 4) + 2;
+        int row = linear_tid / (n_dofs_1d - 4) + 2;
+        int col = linear_tid % (n_dofs_1d - 4) + 2;
 
-        for (unsigned int z = 0; z < n_dofs_1d_z; ++z)
+        for (int z = 0; z < n_dofs_1d_z; ++z)
           {
             shared_data
               ->tmp[2 * local_patch * local_dim + z * n_dofs_1d * n_dofs_1d +

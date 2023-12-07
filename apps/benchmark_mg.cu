@@ -265,6 +265,7 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
     }
 
   std::cout << min_cycles << " " << max_cycles << std::endl;
+  std::cout << solution_dp.l2_norm() << std::endl;
 
 #if TIMING != 0
   for (unsigned int i = 0; i < n_patches; ++i)
