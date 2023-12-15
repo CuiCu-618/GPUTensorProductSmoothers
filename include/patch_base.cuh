@@ -17,6 +17,40 @@
 #include "tensor_product.h"
 #include "utilities.cuh"
 
+#define GACCESS 1
+// 0 - no global memory access
+// 1 - load/store global memeory
+// 2 - ideal global memeory access
+
+#define TIMING 0
+// 0 - No timing
+// 1 - Instruction level
+// 2 - Component level, e.g. load, store, vmult.
+#define MMAKERNEL 8
+// mma.m8n8k4.f64
+// 0 - Basic, without permutation_d
+// 1 - Conflict Free, 2 warps ILP = 1
+// 2 - Conflict Free, 2 warps ILP = 2
+// 3 - 4 warps ILP = 1
+// 4 - 4 warps ILP = 2
+// 5 - Conflict Free, 1 warps ILP = 1
+// mma.m16n8k8.tf32
+// 0 - Basic, without permutation_d, tbd
+// 1 - Conflict Free, 8 warps ILP = 1
+// 2 - 8 warps ILP = 1, ld
+// 3 - Conflict Free, 8 warps ILP = 2
+// 4 - Conflict Free, 16 warps ILP = 1
+// 5 - Conflict Free, 4 warps ILP = 1
+// mma.m16n8k16.f16
+// 0 - Basic, without permutation_d, WIP
+// 6 - Conflict Free, 8 warps ILP = 1, ld
+// 7 - Conflict Free, 8 warps ILP = 1
+// 8 - Conflict Free, 16 warps ILP = 1
+
+#define ERRCOR 1
+// 0 - basic
+// 1 - error correction
+
 using namespace dealii;
 
 /**
@@ -70,6 +104,8 @@ namespace PSMF
    */
   enum class SmootherVariant
   {
+    AllPatch,
+
     /**
      * Compute the residual globally, i.e.
      * r = b - Ax, where A is the system matrix.
@@ -588,12 +624,26 @@ namespace PSMF
     {
       constexpr unsigned int n = is_laplace ? 3 : 1;
 
-      local_src = data;
-      local_dst = local_src + n_buff * local_dim;
+      if constexpr (n == 1 || std::is_same_v<Number, double> ||
+                    (MMAKERNEL != 7 && MMAKERNEL != 8))
+        {
+          local_src = data;
+          local_dst = local_src + n_buff * local_dim;
 
-      local_mass       = local_dst + n_buff * local_dim;
-      local_derivative = local_mass + n_buff * n_dofs_1d * n_dofs_1d * n;
-      tmp              = local_derivative + n_buff * n_dofs_1d * n_dofs_1d * n;
+          local_mass       = local_dst + n_buff * local_dim;
+          local_derivative = local_mass + n_buff * n_dofs_1d * n_dofs_1d * n;
+          tmp = local_derivative + n_buff * n_dofs_1d * n_dofs_1d * n;
+        }
+      else
+        {
+          local_src = data;
+          local_dst = local_src + n_buff * local_dim;
+
+          tmp = local_dst + n_buff * local_dim;
+
+          mass_half = (half *)(tmp + n_buff * local_dim * 2);
+          der_half  = mass_half + 2 * n_buff * n_dofs_1d * n_dofs_1d * n;
+        }
     }
 
 
@@ -608,11 +658,6 @@ namespace PSMF
     Number *local_dst;
 
     /**
-     * Shared memory for local and interior residual.
-     */
-    Number *local_residual;
-
-    /**
      * Shared memory for computed 1D mass matrix.
      */
     Number *local_mass;
@@ -623,19 +668,12 @@ namespace PSMF
     Number *local_derivative;
 
     /**
-     * Shared memory for computed 1D eigenvalues.
-     */
-    Number *local_eigenvalues;
-
-    /**
-     * Shared memory for computed 1D eigenvectors.
-     */
-    Number *local_eigenvectors;
-
-    /**
      * Shared memory for internal buffer.
      */
     Number *tmp;
+
+    half *mass_half;
+    half *der_half;
   };
 
   /**

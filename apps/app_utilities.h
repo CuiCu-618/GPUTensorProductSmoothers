@@ -70,7 +70,7 @@ LA_MACRO(Laplace,
          ConflictFreeMem,
          TensorCore,
          TensorCoreMMA);
-SMO_MACRO(Smoother, GLOBAL, FUSED_L, ConflictFree, TensorCore, ExactRes);
+LA_MACRO(Smoother, AllPatch, GLOBAL, FUSED_L, ConflictFree, TensorCore, ExactRes);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);
 ENUM_MACRO(Granularity, none, user_define, multiple);
 
@@ -121,6 +121,8 @@ namespace Util
     oss << str_smooth_inv_variant;
     oss << str_granularity;
     oss << "_" << value_type;
+    oss << "_K" << MMAKERNEL;
+    oss << "_E" << ERRCOR;
 
     return oss.str();
   }
@@ -182,7 +184,9 @@ namespace Util
     oss << "Granularity Scheme:             "
         << GranularityToString(CT::GRANULARITY_) << std::endl
         << "Maximum size:                   " << CT::MAX_SIZES_ << std::endl
-        << "Number of MG cycles in V-cycle: " << 1 << std::endl
+        << "Number of MG cycles in V-cycle  " << 1 << std::endl
+        << "MMAKERNEL                       " << MMAKERNEL << std::endl
+        << "Error Correction                " << ERRCOR << std::endl
         << std::endl;
 
 

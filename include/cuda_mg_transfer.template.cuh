@@ -585,7 +585,7 @@ namespace PSMF
 
     LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> src_with_bc(
       src);
-    set_mg_constrained_dofs(src_with_bc, to_level - 1, 0);
+    // set_mg_constrained_dofs(src_with_bc, to_level - 1, 0);
 
     if (fe_degree == 1)
       coarse_cell_loop<MGProlongateHelper, 1>(to_level, dst, src_with_bc);
@@ -651,7 +651,7 @@ namespace PSMF
       AssertThrow(false,
                   ExcNotImplemented("Only degrees 1 through 10 implemented."));
 
-    set_mg_constrained_dofs(increment, from_level - 1, 0);
+    // set_mg_constrained_dofs(increment, from_level - 1, 0);
 
     dst.add(1., increment);
   }

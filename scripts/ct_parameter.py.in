@@ -86,7 +86,7 @@ def parse_args():
     parser.add_argument('-SMV','--smooth_vmult',
                         default='B',
                         nargs='+',
-                        choices=['Basic','ConflictFree','TensorCore'],
+                        choices=['Basic','ConflictFree','TensorCore', 'TensorCoreMMA'],
                         help="variant of the Schwarz smoother vmult operator"
     )
     parser.add_argument('-SMI','--smooth_inv',
@@ -184,6 +184,9 @@ class Parameter:
             elif kernel.endswith('Core'):
                 kernel_str += r'PSMF::LaplaceVariant::TensorCore, '
                 count += 1    
+            elif kernel.endswith('MMA'):
+                kernel_str += r'PSMF::LaplaceVariant::TensorCoreMMA, '
+                count += 1   
         self.smooth_vmult = ('constexpr std::array<PSMF::LaplaceVariant, ' + str(count) + '>', kernel_str + '}')
 
     def smooth_inv_prm(self,variant):

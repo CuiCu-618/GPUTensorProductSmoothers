@@ -47,7 +47,171 @@ namespace Step64
 {
   using namespace dealii;
 
-  template <int dim, typename Number>
+  // template <int dim>
+  // class SolutionBase
+  // {
+  // protected:
+  //   static constexpr std::size_t n_source_centers = 3;
+  //   static const Point<dim>      source_centers[n_source_centers];
+  //   static const double          width;
+  // };
+
+  // template <>
+  // const Point<1>
+  //   SolutionBase<1>::source_centers[SolutionBase<1>::n_source_centers] =
+  //     {Point<1>(0.0), Point<1>(0.25), Point<1>(0.6)};
+
+  // template <>
+  // const Point<2>
+  //   SolutionBase<2>::source_centers[SolutionBase<2>::n_source_centers] =
+  //     {Point<2>(0.0, +0.0), Point<2>(0.25, 0.85), Point<2>(+0.6, 0.4)};
+
+  // template <>
+  // const Point<3>
+  //   SolutionBase<3>::source_centers[SolutionBase<3>::n_source_centers] = {
+  //     Point<3>(0.0, 0.0, 0.0),
+  //     Point<3>(0.25, 0.85, 0.85),
+  //     Point<3>(0.6, 0.4, 0.4)};
+
+  // template <int dim>
+  // const double SolutionBase<dim>::width = 1. / 3.;
+
+  // using dealii::numbers::PI;
+
+  // template <int dim>
+  // class Solution : public Function<dim>, protected SolutionBase<dim>
+  // {
+  // public:
+  //   using SolutionBase<dim>::width;
+  //   using SolutionBase<dim>::n_source_centers;
+
+  //   virtual double
+  //   value(const Point<dim> &p, const unsigned int = 0) const override final
+  //   {
+  //     double val = 0;
+  //     for (unsigned int i = 0; i < n_source_centers; ++i)
+  //       val += value_impl(p, i);
+  //     return -val;
+  //   }
+
+  //   virtual Tensor<1, dim>
+  //   gradient(const Point<dim> &p, const unsigned int = 0) const override
+  //   final
+  //   {
+  //     dealii::Tensor<1, dim> grad;
+  //     for (unsigned int i = 0; i < n_source_centers; ++i)
+  //       grad += gradient_impl(p, i);
+  //     return grad;
+  //   }
+
+  //   virtual double
+  //   laplacian(const dealii::Point<dim> &p,
+  //             const unsigned int = 0) const override final
+  //   {
+  //     double lapl = 0;
+  //     for (unsigned int i = 0; i < n_source_centers; ++i)
+  //       lapl += laplacian_impl(p, i);
+  //     return lapl;
+  //   }
+
+  // private:
+  //   constexpr double
+  //   u0() const
+  //   {
+  //     return 1. / std::pow(std::sqrt(2 * PI) * width, dim);
+  //   }
+
+  //   constexpr double
+  //   v0() const
+  //   {
+  //     return -1. / (width * width);
+  //   }
+
+  //   double
+  //   bell(const Point<dim> &p, const unsigned int i) const
+  //   {
+  //     AssertIndexRange(i, n_source_centers);
+  //     const dealii::Tensor<1, dim> x_minus_xi =
+  //       p - SolutionBase<dim>::source_centers[i];
+  //     return std::exp(v0() * x_minus_xi.norm_square());
+  //   }
+
+  //   double
+  //   value_impl(const Point<dim> &p, const unsigned int i) const
+  //   {
+  //     return u0() * bell(p, i);
+  //   }
+
+  //   Tensor<1, dim>
+  //   gradient_impl(const Point<dim> &p, const unsigned int i) const
+  //   {
+  //     const dealii::Tensor<1, dim> x_minus_xi =
+  //       p - SolutionBase<dim>::source_centers[i];
+  //     return u0() * 2. * v0() * bell(p, i) * x_minus_xi;
+  //   }
+
+  //   double
+  //   laplacian_impl(const dealii::Point<dim> &p, const unsigned int i) const
+  //   {
+  //     double     lapl       = 0;
+  //     const auto x_minus_xi = p - SolutionBase<dim>::source_centers[i];
+  //     lapl += bell(p, i) *
+  //             (static_cast<double>(dim) + 2. * v0() *
+  //             x_minus_xi.norm_square());
+  //     lapl *= u0() * 2. * v0();
+  //     return lapl;
+  //   }
+
+  //   SymmetricTensor<2, dim>
+  //   hessian_impl(const Point<dim> &p, const unsigned int i) const
+  //   {
+  //     const auto x_minus_xi = p - SolutionBase<dim>::source_centers[i];
+  //     SymmetricTensor<2, dim> hess;
+  //     for (auto d = 0U; d < dim; ++d)
+  //       hess[d][d] = 2. * u0() * v0() * bell(p, i) *
+  //                    (1. + 2. * v0() * x_minus_xi[d] * x_minus_xi[d]);
+  //     for (auto d1 = 0U; d1 < dim; ++d1)
+  //       for (auto d2 = d1 + 1; d2 < dim; ++d2)
+  //         hess[d1][d2] = 2. * 2. * u0() * v0() * v0() * bell(p, i) *
+  //                        x_minus_xi[d1] * x_minus_xi[d2];
+  //     return hess;
+  //   }
+
+  //   double
+  //   bilaplacian_impl(const dealii::Point<dim> &p, const unsigned int i) const
+  //   {
+  //     double           bilapl     = 0;
+  //     constexpr double d          = dim;
+  //     const auto       x_minus_xi = p - SolutionBase<dim>::source_centers[i];
+  //     bilapl += d + 2. + v0() * x_minus_xi.norm_square();
+  //     bilapl *= 2. * 2. * v0() * x_minus_xi.norm_square();
+  //     bilapl += d * d + 2. * d;
+  //     bilapl *= 2. * 2. * v0() * v0() * u0() * bell(p, i);
+  //     return bilapl;
+  //   }
+  // };
+
+  // template <int dim>
+  // class RightHandSide : public Function<dim>
+  // {
+  // public:
+  //   // ManufacturedLoad(
+  //   //   const std::shared_ptr<const Function<dim>> solution_function_in)
+  //   //   : Function<dim>()
+  //   //   , solution_function(solution_function_in)
+  //   // {}
+
+  //   virtual double
+  //   value(const Point<dim> &p, const unsigned int = 0) const override final
+  //   {
+  //     return solution_function.laplacian(p);
+  //   }
+
+  // private:
+  //   Solution<dim> solution_function;
+  // };
+
+  template <int dim, typename Number = double>
   class Solution : public Function<dim, Number>
   {
   public:
@@ -57,7 +221,7 @@ namespace Step64
       Number val = 1.;
       for (unsigned int d = 0; d < dim; ++d)
         val *= std::sin(numbers::PI * p[d]);
-      return val;
+      return -val;
     }
 
     virtual Tensor<1, dim, Number>
@@ -77,7 +241,7 @@ namespace Step64
     }
   };
 
-  template <int dim, typename Number>
+  template <int dim, typename Number = double>
   class RightHandSide : public Function<dim, Number>
   {
   public:
@@ -88,7 +252,7 @@ namespace Step64
       Number       val = 1.;
       for (unsigned int d = 0; d < dim; ++d)
         val *= std::sin(arg * p[d]);
-      return dim * arg * arg * val;
+      return -dim * arg * arg * val;
     }
   };
 
@@ -113,6 +277,8 @@ namespace Step64
     assemble_mg();
     void
     solve_mg(unsigned int n_mg_cycles);
+    std::pair<double, double>
+    compute_error();
 
     template <PSMF::LaplaceVariant  laplace,
               PSMF::LaplaceVariant  smooth_vmult,
@@ -129,6 +295,9 @@ namespace Step64
     MappingQ1<dim>                      mapping;
     double                              setup_time;
 
+    std::shared_ptr<Function<dim>> analytical_solution;
+    std::shared_ptr<Function<dim>> load_function;
+
     std::vector<ConvergenceTable> info_table;
 
     std::fstream                        fout;
@@ -137,8 +306,12 @@ namespace Step64
     MGLevelObject<std::shared_ptr<MatrixFreeDP>> mfdata_dp;
     MGLevelObject<std::shared_ptr<MatrixFreeSP>> mfdata_sp;
     MGConstrainedDoFs                            mg_constrained_dofs;
+    AffineConstraints<double>                    constraints;
 
     PSMF::MGTransferCUDA<dim, vcycle_number> transfer;
+
+    LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+      ghost_solution_host;
   };
 
   template <int dim, int fe_degree>
@@ -184,6 +357,9 @@ namespace Step64
            << (1 << (nlevels - 1)) << " x (" << fe->degree << " + 1))^" << dim
            << std::endl;
 
+    constraints.clear();
+    constraints.close();
+
     setup_time += time.wall_time();
 
     *pcout << "DoF setup time:         " << setup_time << "s" << std::endl;
@@ -196,8 +372,8 @@ namespace Step64
     std::set<types::boundary_id> dirichlet_boundary;
     dirichlet_boundary.insert(0);
     mg_constrained_dofs.initialize(dof_handler);
-    mg_constrained_dofs.make_zero_boundary_constraints(dof_handler,
-                                                       dirichlet_boundary);
+    // mg_constrained_dofs.make_zero_boundary_constraints(dof_handler,
+    //                                                    dirichlet_boundary);
 
     // set up a mapping for the geometry representation
     MappingQ1<dim> mapping;
@@ -289,8 +465,8 @@ namespace Step64
              mfdata_dp,
              mfdata_sp,
              transfer,
-             Functions::ZeroFunction<dim, full_number>(),
-             Functions::ConstantFunction<dim, full_number>(1.),
+             Solution<dim>(),
+             RightHandSide<dim>(),
              pcout,
              1);
 
@@ -359,6 +535,72 @@ namespace Step64
             info_table[index].add_column_to_supercolumn(mem, data.solver_name);
           }
       }
+
+    if (CT::SETS_ == "error_analysis")
+      {
+        auto solution = solver.get_solution();
+
+        LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+                                               solution_host(solution.size());
+        LinearAlgebra::ReadWriteVector<double> rw_vector(solution.size());
+        rw_vector.import(solution, VectorOperation::insert);
+        solution_host.import(rw_vector, VectorOperation::insert);
+        ghost_solution_host = solution_host;
+        constraints.distribute(ghost_solution_host);
+
+        const auto [l2_error, H1_error] = compute_error();
+
+        *pcout << "L2 error: " << l2_error << std::endl
+               << "H1 error: " << H1_error << std::endl
+               << std::endl;
+
+        // ghost_solution_host.print(std::cout);
+
+        info_table[index].add_value("L2_error", l2_error);
+        info_table[index].set_scientific("L2_error", true);
+        info_table[index].set_precision("L2_error", 3);
+
+        info_table[index].evaluate_convergence_rates(
+          "L2_error", "dofs", ConvergenceTable::reduction_rate_log2, dim);
+
+        info_table[index].add_value("H1_error", H1_error);
+        info_table[index].set_scientific("H1_error", true);
+        info_table[index].set_precision("H1_error", 3);
+
+        info_table[index].evaluate_convergence_rates(
+          "H1_error", "dofs", ConvergenceTable::reduction_rate_log2, dim);
+      }
+  }
+
+  template <int dim, int fe_degree>
+  std::pair<double, double>
+  LaplaceProblem<dim, fe_degree>::compute_error()
+  {
+    Vector<double> cellwise_norm(triangulation.n_active_cells());
+    VectorTools::integrate_difference(dof_handler,
+                                      ghost_solution_host,
+                                      Solution<dim>(),
+                                      cellwise_norm,
+                                      QGauss<dim>(fe->degree + 1),
+                                      VectorTools::L2_norm);
+    const double global_norm =
+      VectorTools::compute_global_error(triangulation,
+                                        cellwise_norm,
+                                        VectorTools::L2_norm);
+
+    Vector<double> cellwise_h1norm(triangulation.n_active_cells());
+    VectorTools::integrate_difference(dof_handler,
+                                      ghost_solution_host,
+                                      Solution<dim>(),
+                                      cellwise_h1norm,
+                                      QGauss<dim>(fe->degree + 1),
+                                      VectorTools::H1_seminorm);
+    const double global_h1norm =
+      VectorTools::compute_global_error(triangulation,
+                                        cellwise_h1norm,
+                                        VectorTools::H1_seminorm);
+
+    return std::make_pair(global_norm, global_h1norm);
   }
 
   template <int dim, int fe_degree>
@@ -427,6 +669,13 @@ namespace Step64
         {
           switch (CT::SMOOTH_INV_[k])
             {
+              case SM::AllPatch:
+                {
+                  do_solve<CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           SM::AllPatch>(0, 0, k, call_count);
+                  break;
+                }
               case SM::GLOBAL:
                 {
                   do_solve<CT::LAPLACE_TYPE_[0],

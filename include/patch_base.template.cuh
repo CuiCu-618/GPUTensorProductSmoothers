@@ -434,8 +434,8 @@ namespace PSMF
 
     constexpr unsigned n_dofs_2d = n_dofs_1d * n_dofs_1d;
 
-    alloc_arrays(&eigenvalues, n_dofs_1d * 2);
-    alloc_arrays(&eigenvectors, n_dofs_2d * 2);
+    alloc_arrays(&eigenvalues, n_dofs_1d * 3);
+    alloc_arrays(&eigenvectors, n_dofs_2d * 3);
     alloc_arrays(&smooth_mass_1d, n_dofs_2d);
     alloc_arrays(&smooth_stiff_1d, n_dofs_2d);
     alloc_arrays(&laplace_mass_1d, n_dofs_2d * 3);
@@ -741,6 +741,9 @@ namespace PSMF
     TensorProductData<dim, fe_degree, Number> tensor_product_2;
     tensor_product_2.reinit(patch_mass_inv_2, patch_laplace_inv_2);
 
+    TensorProductData<dim, fe_degree, Number> tensor_product_3;
+    tensor_product_3.reinit(patch_mass, patch_laplace);
+
     std::array<AlignedVector<Number>, dim> eigenval;
     std::array<Table<2, Number>, dim>      eigenvec;
     tensor_product.get_eigenvalues(eigenval);
@@ -750,6 +753,11 @@ namespace PSMF
     std::array<Table<2, Number>, dim>      eigenvec_2;
     tensor_product_2.get_eigenvalues(eigenval_2);
     tensor_product_2.get_eigenvectors(eigenvec_2);
+
+    std::array<AlignedVector<Number>, dim> eigenval_3;
+    std::array<Table<2, Number>, dim>      eigenvec_3;
+    tensor_product_3.get_eigenvalues(eigenval_3);
+    tensor_product_3.get_eigenvectors(eigenvec_3);
 
     constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
 
@@ -791,15 +799,25 @@ namespace PSMF
                    &vectors[n_dofs_1d * n_dofs_1d],
                    [](const Number m) -> Number { return m; });
 
+    std::transform(eigenval_3[0].begin(),
+                   eigenval_3[0].end(),
+                   &values[n_dofs_1d * 2],
+                   [](const Number m) -> Number { return m; });
+
+    std::transform(eigenvec_3[0].begin(),
+                   eigenvec_3[0].end(),
+                   &vectors[n_dofs_1d * n_dofs_1d * 2],
+                   [](const Number m) -> Number { return m; });
+
     cudaError_t error_code = cudaMemcpy(eigenvalues,
                                         values,
-                                        2 * n_dofs_1d * sizeof(Number),
+                                        3 * n_dofs_1d * sizeof(Number),
                                         cudaMemcpyHostToDevice);
     AssertCuda(error_code);
 
     error_code = cudaMemcpy(eigenvectors,
                             vectors,
-                            2 * n_dofs_1d * n_dofs_1d * sizeof(Number),
+                            3 * n_dofs_1d * n_dofs_1d * sizeof(Number),
                             cudaMemcpyHostToDevice);
     AssertCuda(error_code);
 

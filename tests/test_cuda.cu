@@ -1,4 +1,8 @@
+#include <mma.h>
+
+#include <iomanip>
 #include <iostream>
+using namespace nvcuda;
 
 __device__ void
 device_func()
@@ -40,13 +44,12 @@ test_wmmaload()
 {
   __shared__ double buf[64];
 
-  int tid = threadIdx.x;
-  int warpid = tid / 32;
-  buf[tid] = 100.1 + tid;
+  int tid       = threadIdx.x;
+  int warpid    = tid / 32;
+  buf[tid]      = 100.1 + tid;
   buf[tid + 32] = 100.1 + tid + 32;
 
-  for (uint32_t i = tid, c = 0; i < 2048;
-       i += 256, c++)
+  for (uint32_t i = tid, c = 0; i < 2048; i += 256, c++)
     printf("%d: %d\n", c, (warpid + c * 8 + 1) * 32 % 2048);
 
   __syncthreads();
@@ -55,7 +58,8 @@ test_wmmaload()
   // unsigned smem_ptr =
   //   static_cast<unsigned>(__cvta_generic_to_shared(buf));
 
-  // asm volatile("wmma.load.c.sync.aligned.row.m8n8k4.shared.f64 {%0,%1}, [%2];"
+  // asm volatile("wmma.load.c.sync.aligned.row.m8n8k4.shared.f64 {%0,%1},
+  // [%2];"
   //              : "=d"(reg[0]), "=d"(reg[1])
   //              : "r"(smem_ptr));
 
@@ -248,18 +252,323 @@ test_mma()
       }
 }
 
+
+
+__global__ void
+test_mmatf32(float *result)
+{
+  // {
+  //   __shared__ float shmem[128];
+
+  //   if (threadIdx.x == 0)
+  //     shmem[0] = 10001.925;
+  //   __syncthreads();
+
+  //   float fa = wmma::__float_to_tf32(shmem[0]);
+  //   half  ha = shmem[0];
+
+  //   if (threadIdx.x == 0)
+  //     {
+  //       printf("ld tf %.10f, %.10f, %.10f\n",
+  //              shmem[0],
+  //              wmma::__float_to_tf32(fa),
+  //              __half2float(ha));
+  //       printf("ld tf %.10f \n", (((shmem[0] - fa) * (1 << 11))));
+  //     }
+  // }
+
+  float a[4];
+  float b[2];
+  float c[4];
+
+  a[0] = 11.1;
+  a[1] = 11.1;
+  a[2] = 11.1;
+  a[3] = 11.1;
+
+  b[0] = 22.2;
+  b[1] = 22.2;
+
+  c[0] = 0;
+  c[1] = 0;
+  c[2] = 0;
+  c[3] = 0;
+
+  constexpr int scale = 1 << 0;
+
+  float da[4];
+  float db[2];
+
+  for (int i = 0; i < 4; ++i)
+    {
+      da[i] = (a[i] - wmma::__float_to_tf32(a[i])) * scale;
+    }
+  for (int i = 0; i < 2; ++i)
+    {
+      db[i] = (b[i] - wmma::__float_to_tf32(b[i])) * scale;
+    }
+
+  uint32_t const *pA = reinterpret_cast<uint32_t const *>(&a);
+  uint32_t const *pB = reinterpret_cast<uint32_t const *>(&b);
+
+  uint32_t const *dpA = reinterpret_cast<uint32_t const *>(&da);
+  uint32_t const *dpB = reinterpret_cast<uint32_t const *>(&db);
+
+  float buf[4];
+  buf[0] = 0;
+  buf[1] = 0;
+  buf[2] = 0;
+  buf[3] = 0;
+
+  asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+               : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+               : "r"(dpA[0]),
+                 "r"(dpA[1]),
+                 "r"(dpA[2]),
+                 "r"(dpA[3]),
+                 "r"(dpB[0]),
+                 "r"(dpB[1]),
+                 "f"(buf[0]),
+                 "f"(buf[1]),
+                 "f"(buf[2]),
+                 "f"(buf[3]));
+
+  asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+               : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+               : "r"(dpA[0]),
+                 "r"(dpA[1]),
+                 "r"(dpA[2]),
+                 "r"(dpA[3]),
+                 "r"(pB[0]),
+                 "r"(pB[1]),
+                 "f"(buf[0]),
+                 "f"(buf[1]),
+                 "f"(buf[2]),
+                 "f"(buf[3]));
+  asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+               : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+               : "r"(pA[0]),
+                 "r"(pA[1]),
+                 "r"(pA[2]),
+                 "r"(pA[3]),
+                 "r"(dpB[0]),
+                 "r"(dpB[1]),
+                 "f"(buf[0]),
+                 "f"(buf[1]),
+                 "f"(buf[2]),
+                 "f"(buf[3]));
+
+  asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+               : "=f"(c[0]), "=f"(c[1]), "=f"(c[2]), "=f"(c[3])
+               : "r"(pA[0]),
+                 "r"(pA[1]),
+                 "r"(pA[2]),
+                 "r"(pA[3]),
+                 "r"(pB[0]),
+                 "r"(pB[1]),
+                 "f"(c[0]),
+                 "f"(c[1]),
+                 "f"(c[2]),
+                 "f"(c[3]));
+  for (int i = 0; i < 4; ++i)
+    {
+      c[i] += buf[i] / scale;
+    }
+  __syncthreads();
+
+  if (threadIdx.x == 0)
+    {
+      printf(" %.10f, %.10f, %.10f\n", buf[0], da[0], db[0]);
+    }
+
+  result[threadIdx.x] = c[0];
+}
+
+__global__ void
+test_mmaf16(float *result)
+{
+  // __shared__ float shmem[128];
+  // __shared__ half  shmemhf[128];
+
+  // if (threadIdx.x == 0)
+  //   for (int i = 0; i < 128; ++i)
+  //     {
+  //       shmem[i]   = 1.1;
+  //       shmemhf[i] = i + 1.1;
+  //     }
+  // __syncthreads();
+
+  // half A[8];
+
+  // float *A_ptr = reinterpret_cast<float *>(&A);
+
+  // auto smem_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(&shmem[0]));
+  // auto smem_ptrhf =
+  //   static_cast<uint32_t>(__cvta_generic_to_shared(&shmemhf[threadIdx.x *
+  //   8]));
+
+  // asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+  //              "{%0, %1, %2, %3}, [%4]; "
+  //              : "=f"(A_ptr[0]), "=f"(A_ptr[1]), "=f"(A_ptr[2]),
+  //              "=f"(A_ptr[3]) : "r"(smem_ptrhf));
+  // __syncthreads();
+  // if (threadIdx.x == 0)
+  //   {
+  //     printf("ld %.10f, %.10f, %.10f\n",
+  //            shmem[0],
+  //            __half2float(A[0]),
+  //            __half2float(A[1]));
+  //   }
+
+  half  a[8];
+  half  b[4];
+  float c[4];
+
+  a[0] = 1.1;
+  a[1] = 1.1;
+  a[2] = 1.1;
+  a[3] = 1.1;
+  a[4] = 1.1;
+  a[5] = 1.1;
+  a[6] = 1.1;
+  a[7] = 1.1;
+
+  b[0] = 2.2;
+  b[1] = 2.2;
+  b[2] = 2.2;
+  b[3] = 2.2;
+
+  c[0] = 0;
+  c[1] = 0;
+  c[2] = 0;
+  c[3] = 0;
+
+  constexpr int scale = 1 << 11;
+
+  half da[8];
+  half db[4];
+
+  for (int i = 0; i < 8; ++i)
+    {
+      a[i]     = 11.1;
+      float ha = 11.1;
+      da[i]    = __float2half((ha - __half2float(a[i])) * scale);
+    }
+  for (int i = 0; i < 4; ++i)
+    {
+      b[i]     = 22.2;
+      float hb = 22.2;
+      db[i]    = __float2half((hb - __half2float(b[i])) * scale);
+    }
+
+  uint32_t const *pA = reinterpret_cast<uint32_t const *>(&a);
+  uint32_t const *pB = reinterpret_cast<uint32_t const *>(&b);
+
+  uint32_t const *dpA = reinterpret_cast<uint32_t const *>(&da);
+  uint32_t const *dpB = reinterpret_cast<uint32_t const *>(&db);
+
+  float buf[4];
+  buf[0] = 0;
+  buf[1] = 0;
+  buf[2] = 0;
+  buf[3] = 0;
+
+  // asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+  //              "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+  //              : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+  //              : "r"(dpA[0]),
+  //                "r"(dpA[1]),
+  //                "r"(dpA[2]),
+  //                "r"(dpA[3]),
+  //                "r"(dpB[0]),
+  //                "r"(dpB[1]),
+  //                "f"(buf[0]),
+  //                "f"(buf[1]),
+  //                "f"(buf[2]),
+  //                "f"(buf[3]));
+
+  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+               : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+               : "r"(dpA[0]),
+                 "r"(dpA[1]),
+                 "r"(dpA[2]),
+                 "r"(dpA[3]),
+                 "r"(pB[0]),
+                 "r"(pB[1]),
+                 "f"(buf[0]),
+                 "f"(buf[1]),
+                 "f"(buf[2]),
+                 "f"(buf[3]));
+  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+               : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+               : "r"(pA[0]),
+                 "r"(pA[1]),
+                 "r"(pA[2]),
+                 "r"(pA[3]),
+                 "r"(dpB[0]),
+                 "r"(dpB[1]),
+                 "f"(buf[0]),
+                 "f"(buf[1]),
+                 "f"(buf[2]),
+                 "f"(buf[3]));
+
+  for (int i = 0; i < 4; ++i)
+    {
+      c[i] += buf[i] / scale;
+    }
+
+  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+               : "=f"(c[0]), "=f"(c[1]), "=f"(c[2]), "=f"(c[3])
+               : "r"(pA[0]),
+                 "r"(pA[1]),
+                 "r"(pA[2]),
+                 "r"(pA[3]),
+                 "r"(pB[0]),
+                 "r"(pB[1]),
+                 "f"(c[0]),
+                 "f"(c[1]),
+                 "f"(c[2]),
+                 "f"(c[3]));
+
+
+  __syncthreads();
+
+  if (threadIdx.x == 0)
+    printf("%f\n", c[0]);
+
+  result[threadIdx.x] = c[0];
+}
+
 int
 main()
 {
   // global_func<<<1, 66>>>();
-  test_wmmaload<<<1, 256>>>();
+  // test_wmmaload<<<1, 256>>>();
   // test_ldmatrix<<<1, 32>>>();
   // test_wideload<<<1, 32>>>();
   // test_shfl<<<1, 32>>>();
   // test_mma<<<1, 32>>>();
+  float *res = (float *)malloc(128 * sizeof(float));
+
+  float *result;
+  cudaMalloc(&result, 128 * sizeof(float));
+
+  // test_mmatf32<<<1, 32>>>(result);
+  test_mmaf16<<<1, 32>>>(result);
 
   cudaDeviceSynchronize();
 
+  cudaMemcpy(res, result, 128 * sizeof(float), cudaMemcpyDeviceToHost);
+
+  for (int i = 0; i < 32; ++i)
+    std::cout << std::fixed << std::setprecision(10) << res[i] << " ";
   std::cout << std::endl;
   return 0;
 }

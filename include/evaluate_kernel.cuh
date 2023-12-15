@@ -18,30 +18,6 @@
 
 using namespace nvcuda;
 
-#define GACCESS 1
-// 0 - no global memory access
-// 1 - load/store global memeory
-// 2 - ideal global memeory access
-
-#define TIMING 0
-// 0 - No timing
-// 1 - Instruction level
-// 2 - Component level, e.g. load, store, vmult.
-#define MMAKERNEL 1
-// mma.m8n8k4.f64
-// 0 - Basic, without permutation_d
-// 1 - Conflict Free, 2 warps ILP = 1
-// 2 - Conflict Free, 2 warps ILP = 2
-// 3 - 4 warps ILP = 1
-// 4 - 4 warps ILP = 2
-// 5 - Conflict Free, 1 warps ILP = 1
-// mma.m16n8k8.tf32
-// 0 - Basic, without permutation_d
-// 1 - Conflict Free, 8 warps ILP = 1
-// 2 - 8 warps ILP = 1, ld
-// 3 - Conflict Free, 8 warps ILP = 2
-// 4 - Conflict Free, 16 warps ILP = 1
-// 5 - Conflict Free, 4 warps ILP = 1
 
 namespace PSMF
 {
@@ -69,18 +45,19 @@ namespace PSMF
             int n_dofs_1d,
             typename Number,
             LaplaceVariant laplace_type,
-            int            dim>
+            int            dim,
+            typename Number2 = Number>
   struct TPEvaluatorBase
   {
     __device__
     TPEvaluatorBase() = default;
 
     __device__ void
-    vmult(Number       *dst,
-          const Number *src,
-          const Number *mass_matrix,
-          const Number *derivative_matrix,
-          Number       *tmp)
+    vmult(Number        *dst,
+          const Number  *src,
+          const Number2 *mass_matrix,
+          const Number2 *derivative_matrix,
+          Number        *tmp)
     {}
 
     template <typename shapeA,
@@ -96,7 +73,7 @@ namespace PSMF
 
     template <int direction, bool add, bool sub = false>
     __device__ void
-    apply(const Number *shape_data, const Number *in, Number *out)
+    apply(const Number2 *shape_data, const Number *in, Number *out)
     {}
   };
 
@@ -3415,6 +3392,1722 @@ namespace PSMF
     }
   };
 
+
+
+#if MMAKERNEL == 6
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3>
+  {
+    using Number = float;
+
+    static constexpr int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number       *dst,
+          const Number *src,
+          const Number *mass_matrix,
+          const Number *derivative_matrix,
+          Number       *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = threadIdx.y / 2;
+
+      const int tid = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
+
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
+      constexpr int scale  = 1 << 11;
+
+      if constexpr (direction == 0)
+        {
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              float2 c0[2];
+              float2 c1[2];
+
+              half a[8];
+              half b[4];
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+
+              const int b_idx0 = (col * 2 * n_dofs_1d + row + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(col * 2);
+              const int b_idx1 = ((col * 2 + 1) * n_dofs_1d + row + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(col * 2 + 1);
+              const int b_idx2 = ((col * 2 + 8) * n_dofs_1d + row + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(col * 2 + 8);
+              const int b_idx3 = ((col * 2 + 9) * n_dofs_1d + row + cycle * 8) ^
+                                 Util::get_base<n_dofs_1d, float>(col * 2 + 9);
+#  if ERRCOR == 0
+              b[0] = __float2half(shape_data[b_idx0]);
+              b[1] = __float2half(shape_data[b_idx1]);
+              b[2] = __float2half(shape_data[b_idx2]);
+              b[3] = __float2half(shape_data[b_idx3]);
+#  elif ERRCOR == 1
+              float fb[4];
+              half  db[4];
+              fb[0] = shape_data[b_idx0];
+              fb[1] = shape_data[b_idx1];
+              fb[2] = shape_data[b_idx2];
+              fb[3] = shape_data[b_idx3];
+
+              for (int i = 0; i < 4; ++i)
+                {
+                  b[i]  = __float2half(fb[i]);
+                  db[i] = __float2half((fb[i] - __half2float(b[i])) * scale);
+                }
+#  endif
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+#  if ERRCOR == 1
+              uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int a_idx =
+                    (row * n_dofs_1d + col * 2 + (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                  const int a_idx1 =
+                    ((row + 8) * n_dofs_1d + col * 2 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId);
+                  const int a_idx2 =
+                    (row * n_dofs_1d + col * 2 + 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                  const int a_idx3 =
+                    ((row + 8) * n_dofs_1d + col * 2 + 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId);
+#  if ERRCOR == 0
+                  a[0] = __float2half(in[a_idx]);
+                  a[1] = __float2half(in[a_idx + 1]);
+                  a[2] = __float2half(in[a_idx1]);
+                  a[3] = __float2half(in[a_idx1 + 1]);
+                  a[4] = __float2half(in[a_idx2]);
+                  a[5] = __float2half(in[a_idx2 + 1]);
+                  a[6] = __float2half(in[a_idx3]);
+                  a[7] = __float2half(in[a_idx3 + 1]);
+#  elif ERRCOR == 1
+                  float fa[8];
+                  half  da[8];
+                  fa[0] = in[a_idx];
+                  fa[1] = in[a_idx + 1];
+                  fa[2] = in[a_idx1];
+                  fa[3] = in[a_idx1 + 1];
+                  fa[4] = in[a_idx2];
+                  fa[5] = in[a_idx2 + 1];
+                  fa[6] = in[a_idx3];
+                  fa[7] = in[a_idx3 + 1];
+
+                  for (int i = 0; i < 8; ++i)
+                    {
+                      a[i] = __float2half(fa[i]);
+                      da[i] =
+                        __float2half((fa[i] - __half2float(a[i])) * scale);
+                    }
+#  endif
+                  uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if ERRCOR == 1
+                  uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+#  if ERRCOR == 1
+                  float buf[4];
+                  buf[0] = 0;
+                  buf[1] = 0;
+                  buf[2] = 0;
+                  buf[3] = 0;
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(dA[0]),
+                      "r"(dA[1]),
+                      "r"(dA[2]),
+                      "r"(dA[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(dB[0]),
+                      "r"(dB[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  c0[z].x += buf[0] / scale;
+                  c0[z].y += buf[1] / scale;
+                  c1[z].x += buf[2] / scale;
+                  c1[z].y += buf[3] / scale;
+#  endif
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int c_idx0 =
+                    (row * n_dofs_1d + 2 * col + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                  const int c_idx1 =
+                    ((row + 8) * n_dofs_1d + 2 * col + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId);
+
+                  *((float2 *)(out + c_idx0)) = c0[z];
+                  *((float2 *)(out + c_idx1)) = c1[z];
+                }
+            }
+        }
+      else if (direction == 1)
+        {
+          half a[8];
+
+          const int a_idx =
+            (row * n_dofs_1d + col * 2) ^ Util::get_base<n_dofs_1d, float>(row);
+          const int a_idx1 = ((row + 8) * n_dofs_1d + col * 2) ^
+                             Util::get_base<n_dofs_1d, float>(row + 8);
+          const int a_idx2 = (row * n_dofs_1d + col * 2 + 8) ^
+                             Util::get_base<n_dofs_1d, float>(row);
+          const int a_idx3 = ((row + 8) * n_dofs_1d + col * 2 + 8) ^
+                             Util::get_base<n_dofs_1d, float>(row + 8);
+#  if ERRCOR == 0
+          a[0] = __float2half(shape_data[a_idx]);
+          a[1] = __float2half(shape_data[a_idx + 1]);
+          a[2] = __float2half(shape_data[a_idx1]);
+          a[3] = __float2half(shape_data[a_idx1 + 1]);
+          a[4] = __float2half(shape_data[a_idx2]);
+          a[5] = __float2half(shape_data[a_idx2 + 1]);
+          a[6] = __float2half(shape_data[a_idx3]);
+          a[7] = __float2half(shape_data[a_idx3 + 1]);
+#  elif ERRCOR == 1
+          float fa[8];
+          half  da[8];
+          fa[0] = shape_data[a_idx];
+          fa[1] = shape_data[a_idx + 1];
+          fa[2] = shape_data[a_idx1];
+          fa[3] = shape_data[a_idx1 + 1];
+          fa[4] = shape_data[a_idx2];
+          fa[5] = shape_data[a_idx2 + 1];
+          fa[6] = shape_data[a_idx3];
+          fa[7] = shape_data[a_idx3 + 1];
+
+          for (int i = 0; i < 8; ++i)
+            {
+              a[i]  = __float2half(fa[i]);
+              da[i] = __float2half((fa[i] - __half2float(a[i])) * scale);
+            }
+#  endif
+          uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if ERRCOR == 1
+          uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              float2 c0[2];
+              float2 c1[2];
+
+              half b[4];
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  if constexpr (add)
+                    {
+                      const int c_idx0 =
+                        (row * n_dofs_1d + 2 * col + cycle * 8 +
+                         (z * 8 + warpId) * offset) ^
+                        Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                      const int c_idx1 =
+                        ((row + 8) * n_dofs_1d + 2 * col + cycle * 8 +
+                         (z * 8 + warpId) * offset) ^
+                        Util::get_base<n_dofs_1d, float>(row + 8,
+                                                         z * 8 + warpId);
+
+                      c0[z] = *((float2 *)(out + c_idx0));
+                      c1[z] = *((float2 *)(out + c_idx1));
+                    }
+                  else
+                    {
+                      c0[z] = {0, 0};
+                      c1[z] = {0, 0};
+                    }
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int b_idx0 =
+                    ((col * 2) * n_dofs_1d + row + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col * 2, z * 8 + warpId);
+                  const int b_idx1 =
+                    ((col * 2 + 1) * n_dofs_1d + row + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col * 2 + 1,
+                                                     z * 8 + warpId);
+                  const int b_idx2 =
+                    ((col * 2 + 8) * n_dofs_1d + row + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col * 2 + 8,
+                                                     z * 8 + warpId);
+                  const int b_idx3 =
+                    ((col * 2 + 9) * n_dofs_1d + row + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col * 2 + 9,
+                                                     z * 8 + warpId);
+#  if ERRCOR == 0
+                  b[0] = __float2half(in[b_idx0]);
+                  b[1] = __float2half(in[b_idx1]);
+                  b[2] = __float2half(in[b_idx2]);
+                  b[3] = __float2half(in[b_idx3]);
+#  elif ERRCOR == 1
+                  float fb[4];
+                  half  db[4];
+                  fb[0] = in[b_idx0];
+                  fb[1] = in[b_idx1];
+                  fb[2] = in[b_idx2];
+                  fb[3] = in[b_idx3];
+
+                  for (int i = 0; i < 4; ++i)
+                    {
+                      b[i] = __float2half(fb[i]);
+                      db[i] =
+                        __float2half((fb[i] - __half2float(b[i])) * scale);
+                    }
+#  endif
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+#  if ERRCOR == 1
+                  uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+#  if ERRCOR == 1
+                  float buf[4];
+                  buf[0] = 0;
+                  buf[1] = 0;
+                  buf[2] = 0;
+                  buf[3] = 0;
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(dA[0]),
+                      "r"(dA[1]),
+                      "r"(dA[2]),
+                      "r"(dA[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(dB[0]),
+                      "r"(dB[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  c0[z].x += buf[0] / scale;
+                  c0[z].y += buf[1] / scale;
+                  c1[z].x += buf[2] / scale;
+                  c1[z].y += buf[3] / scale;
+#  endif
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int c_idx0 =
+                    (row * n_dofs_1d + 2 * col + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                  const int c_idx1 =
+                    ((row + 8) * n_dofs_1d + 2 * col + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId);
+
+                  *((float2 *)(out + c_idx0)) = c0[z];
+                  *((float2 *)(out + c_idx1)) = c1[z];
+                }
+            }
+        }
+      else
+        {
+          half a[8];
+
+          const int a_idx =
+            (row * n_dofs_1d + col * 2) ^ Util::get_base<n_dofs_1d, float>(row);
+          const int a_idx1 = ((row + 8) * n_dofs_1d + col * 2) ^
+                             Util::get_base<n_dofs_1d, float>(row + 8);
+          const int a_idx2 = (row * n_dofs_1d + col * 2 + 8) ^
+                             Util::get_base<n_dofs_1d, float>(row);
+          const int a_idx3 = ((row + 8) * n_dofs_1d + col * 2 + 8) ^
+                             Util::get_base<n_dofs_1d, float>(row + 8);
+
+#  if ERRCOR == 0
+          a[0] = __float2half(shape_data[a_idx]);
+          a[1] = __float2half(shape_data[a_idx + 1]);
+          a[2] = __float2half(shape_data[a_idx1]);
+          a[3] = __float2half(shape_data[a_idx1 + 1]);
+          a[4] = __float2half(shape_data[a_idx2]);
+          a[5] = __float2half(shape_data[a_idx2 + 1]);
+          a[6] = __float2half(shape_data[a_idx3]);
+          a[7] = __float2half(shape_data[a_idx3 + 1]);
+#  elif ERRCOR == 1
+          float fa[8];
+          half  da[8];
+          fa[0] = shape_data[a_idx];
+          fa[1] = shape_data[a_idx + 1];
+          fa[2] = shape_data[a_idx1];
+          fa[3] = shape_data[a_idx1 + 1];
+          fa[4] = shape_data[a_idx2];
+          fa[5] = shape_data[a_idx2 + 1];
+          fa[6] = shape_data[a_idx3];
+          fa[7] = shape_data[a_idx3 + 1];
+
+          for (int i = 0; i < 8; ++i)
+            {
+              a[i]  = __float2half(fa[i]);
+              da[i] = __float2half((fa[i] - __half2float(a[i])) * scale);
+            }
+#  endif
+          uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if ERRCOR == 1
+          uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              float2 c0[2];
+              float2 c1[2];
+
+              half b[4];
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  if constexpr (add)
+                    {
+                      const int c_idx0 =
+                        ((z * 8 + warpId) * n_dofs_1d + 2 * col + cycle * 8 +
+                         row * offset) ^
+                        Util::get_base<n_dofs_1d, float>((z * 8 + warpId), row);
+                      const int c_idx1 =
+                        ((z * 8 + warpId) * n_dofs_1d + 2 * col + cycle * 8 +
+                         (row + 8) * offset) ^
+                        Util::get_base<n_dofs_1d, float>(z * 8 + warpId,
+                                                         row + 8);
+
+                      c0[z] = *((float2 *)(out + c_idx0));
+                      c1[z] = *((float2 *)(out + c_idx1));
+                    }
+                  else
+                    {
+                      c0[z] = {0, 0};
+                      c1[z] = {0, 0};
+                    }
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int b_idx0 =
+                    ((z * 8 + warpId) * n_dofs_1d + row + cycle * 8 +
+                     (col * 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId, col * 2);
+                  const int b_idx1 =
+                    ((z * 8 + warpId) * n_dofs_1d + row + cycle * 8 +
+                     (col * 2 + 1) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId,
+                                                     col * 2 + 1);
+                  const int b_idx2 =
+                    ((z * 8 + warpId) * n_dofs_1d + row + cycle * 8 +
+                     (col * 2 + 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId,
+                                                     col * 2 + 8);
+                  const int b_idx3 =
+                    ((z * 8 + warpId) * n_dofs_1d + row + cycle * 8 +
+                     (col * 2 + 9) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId,
+                                                     col * 2 + 9);
+#  if ERRCOR == 0
+                  b[0] = __float2half(in[b_idx0]);
+                  b[1] = __float2half(in[b_idx1]);
+                  b[2] = __float2half(in[b_idx2]);
+                  b[3] = __float2half(in[b_idx3]);
+#  elif ERRCOR == 1
+                  float fb[4];
+                  half  db[4];
+                  fb[0] = in[b_idx0];
+                  fb[1] = in[b_idx1];
+                  fb[2] = in[b_idx2];
+                  fb[3] = in[b_idx3];
+
+                  for (int i = 0; i < 4; ++i)
+                    {
+                      b[i] = __float2half(fb[i]);
+                      db[i] =
+                        __float2half((fb[i] - __half2float(b[i])) * scale);
+                    }
+#  endif
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+#  if ERRCOR == 1
+                  uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+#  if ERRCOR == 1
+                  float buf[4];
+                  buf[0] = 0;
+                  buf[1] = 0;
+                  buf[2] = 0;
+                  buf[3] = 0;
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(dA[0]),
+                      "r"(dA[1]),
+                      "r"(dA[2]),
+                      "r"(dA[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(dB[0]),
+                      "r"(dB[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  c0[z].x += buf[0] / scale;
+                  c0[z].y += buf[1] / scale;
+                  c1[z].x += buf[2] / scale;
+                  c1[z].y += buf[3] / scale;
+#  endif
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int c_idx0 =
+                    ((z * 8 + warpId) * n_dofs_1d + 2 * col + cycle * 8 +
+                     row * offset) ^
+                    Util::get_base<n_dofs_1d, float>((z * 8 + warpId), row);
+                  const int c_idx1 =
+                    ((z * 8 + warpId) * n_dofs_1d + 2 * col + cycle * 8 +
+                     (row + 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId, row + 8);
+
+                  *((float2 *)(out + c_idx0)) = c0[z];
+                  *((float2 *)(out + c_idx1)) = c1[z];
+                }
+            }
+        }
+    }
+  };
+#endif
+
+
+#if MMAKERNEL == 7
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3, half>
+  {
+    using Number  = float;
+    using Number2 = half;
+
+    static constexpr int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number        *dst,
+          const Number  *src,
+          const Number2 *mass_matrix,
+          const Number2 *derivative_matrix,
+          Number        *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number2 *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = threadIdx.y / 2;
+
+      const int tid   = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
+      const int rowId = tid / 8;
+      const int colId = tid & 7;
+
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
+
+#  if ERRCOR == 1
+      constexpr int shift = n_dofs_1d * n_dofs_1d * 3;
+      constexpr int scale = 1 << 11;
+#  endif
+
+      if constexpr (direction == 0)
+        {
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              float2 c0[2];
+              float2 c1[2];
+
+              half a[8];
+              half b[4];
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  c0[z] = {0, 0};
+                  c1[z] = {0, 0};
+                }
+
+              const int bb_idx =
+                ((colId + cycle * 8) * n_dofs_1d + (rowId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, half>(colId + cycle * 8);
+
+              auto smem_ptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[bb_idx]));
+
+              float *B_ptr = reinterpret_cast<float *>(&b);
+              asm volatile("ldmatrix.sync.aligned.x2.m8n8.shared.b16 "
+                           "{%0, %1}, [%2]; "
+                           : "=f"(B_ptr[0]), "=f"(B_ptr[1])
+                           : "r"(smem_ptr));
+#  if ERRCOR == 1
+              half db[4];
+
+              auto smem_dptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[bb_idx + shift]));
+
+              float *dB_ptr = reinterpret_cast<float *>(&db);
+              asm volatile("ldmatrix.sync.aligned.x2.m8n8.shared.b16 "
+                           "{%0, %1}, [%2]; "
+                           : "=f"(dB_ptr[0]), "=f"(dB_ptr[1])
+                           : "r"(smem_dptr));
+#  endif
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+#  if ERRCOR == 1
+              uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int a_idx =
+                    (row * n_dofs_1d + col * 2 + (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                  const int a_idx1 =
+                    ((row + 8) * n_dofs_1d + col * 2 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId);
+                  const int a_idx2 =
+                    (row * n_dofs_1d + col * 2 + 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                  const int a_idx3 =
+                    ((row + 8) * n_dofs_1d + col * 2 + 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId);
+#  if ERRCOR == 0
+                  a[0] = __float2half(in[a_idx]);
+                  a[1] = __float2half(in[a_idx + 1]);
+                  a[2] = __float2half(in[a_idx1]);
+                  a[3] = __float2half(in[a_idx1 + 1]);
+                  a[4] = __float2half(in[a_idx2]);
+                  a[5] = __float2half(in[a_idx2 + 1]);
+                  a[6] = __float2half(in[a_idx3]);
+                  a[7] = __float2half(in[a_idx3 + 1]);
+#  elif ERRCOR == 1
+                  float2 fa[4];
+                  half   da[8];
+                  fa[0] = *((float2 *)(in + a_idx));
+                  fa[1] = *((float2 *)(in + a_idx1));
+                  fa[2] = *((float2 *)(in + a_idx2));
+                  fa[3] = *((float2 *)(in + a_idx3));
+
+                  for (int i = 0; i < 4; ++i)
+                    {
+                      a[i * 2]     = __float2half(fa[i].x);
+                      a[i * 2 + 1] = __float2half(fa[i].y);
+                      da[i * 2]    = __float2half(
+                        (fa[i].x - __half2float(a[i * 2])) * scale);
+                      da[i * 2 + 1] = __float2half(
+                        (fa[i].y - __half2float(a[i * 2 + 1])) * scale);
+                    }
+#  endif
+                  uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if ERRCOR == 1
+                  uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
+
+#  if ERRCOR == 1
+                  float buf[4];
+                  buf[0] = 0;
+                  buf[1] = 0;
+                  buf[2] = 0;
+                  buf[3] = 0;
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(dA[0]),
+                      "r"(dA[1]),
+                      "r"(dA[2]),
+                      "r"(dA[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(dB[0]),
+                      "r"(dB[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  c0[z].x += buf[0] / scale;
+                  c0[z].y += buf[1] / scale;
+                  c1[z].x += buf[2] / scale;
+                  c1[z].y += buf[3] / scale;
+#  endif
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int c_idx0 =
+                    (row * n_dofs_1d + 2 * col + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                  const int c_idx1 =
+                    ((row + 8) * n_dofs_1d + 2 * col + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId);
+
+                  *((float2 *)(out + c_idx0)) = c0[z];
+                  *((float2 *)(out + c_idx1)) = c1[z];
+                }
+            }
+        }
+      else if (direction == 1)
+        {
+          half a[8];
+
+          const int aa_idx =
+            ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 8) ^
+            Util::get_base<n_dofs_1d, half>(colId + (rowId & 1) * 8);
+
+          auto smem_ptr = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&shape_data[aa_idx]));
+
+          float *A_ptr = reinterpret_cast<float *>(&a);
+          asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                       "{%0, %1, %2, %3}, [%4]; "
+                       : "=f"(A_ptr[0]),
+                         "=f"(A_ptr[1]),
+                         "=f"(A_ptr[2]),
+                         "=f"(A_ptr[3])
+                       : "r"(smem_ptr));
+#  if ERRCOR == 1
+          half da[8];
+
+          auto smem_dptr = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&shape_data[aa_idx + shift]));
+
+          float *dA_ptr = reinterpret_cast<float *>(&da);
+          asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                       "{%0, %1, %2, %3}, [%4]; "
+                       : "=f"(dA_ptr[0]),
+                         "=f"(dA_ptr[1]),
+                         "=f"(dA_ptr[2]),
+                         "=f"(dA_ptr[3])
+                       : "r"(smem_dptr));
+#  endif
+          uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if ERRCOR == 1
+          uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              float2 c0[2];
+              float2 c1[2];
+
+              half b[4];
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  if constexpr (add)
+                    {
+                      const int c_idx0 =
+                        (row * n_dofs_1d + 2 * col + cycle * 8 +
+                         (z * 8 + warpId) * offset) ^
+                        Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                      const int c_idx1 =
+                        ((row + 8) * n_dofs_1d + 2 * col + cycle * 8 +
+                         (z * 8 + warpId) * offset) ^
+                        Util::get_base<n_dofs_1d, float>(row + 8,
+                                                         z * 8 + warpId);
+
+                      c0[z] = *((float2 *)(out + c_idx0));
+                      c1[z] = *((float2 *)(out + c_idx1));
+                    }
+                  else
+                    {
+                      c0[z] = {0, 0};
+                      c1[z] = {0, 0};
+                    }
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int b_idx0 =
+                    ((col * 2) * n_dofs_1d + row + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col * 2, z * 8 + warpId);
+                  const int b_idx1 =
+                    ((col * 2 + 1) * n_dofs_1d + row + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col * 2 + 1,
+                                                     z * 8 + warpId);
+                  const int b_idx2 =
+                    ((col * 2 + 8) * n_dofs_1d + row + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col * 2 + 8,
+                                                     z * 8 + warpId);
+                  const int b_idx3 =
+                    ((col * 2 + 9) * n_dofs_1d + row + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(col * 2 + 9,
+                                                     z * 8 + warpId);
+#  if ERRCOR == 0
+                  b[0] = __float2half(in[b_idx0]);
+                  b[1] = __float2half(in[b_idx1]);
+                  b[2] = __float2half(in[b_idx2]);
+                  b[3] = __float2half(in[b_idx3]);
+#  elif ERRCOR == 1
+                  float fb[4];
+                  half  db[4];
+                  fb[0] = in[b_idx0];
+                  fb[1] = in[b_idx1];
+                  fb[2] = in[b_idx2];
+                  fb[3] = in[b_idx3];
+
+                  for (int i = 0; i < 4; ++i)
+                    {
+                      b[i] = __float2half(fb[i]);
+                      db[i] =
+                        __float2half((fb[i] - __half2float(b[i])) * scale);
+                    }
+#  endif
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+#  if ERRCOR == 1
+                  uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
+
+#  if ERRCOR == 1
+                  float buf[4];
+                  buf[0] = 0;
+                  buf[1] = 0;
+                  buf[2] = 0;
+                  buf[3] = 0;
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(dA[0]),
+                      "r"(dA[1]),
+                      "r"(dA[2]),
+                      "r"(dA[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(dB[0]),
+                      "r"(dB[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  c0[z].x += buf[0] / scale;
+                  c0[z].y += buf[1] / scale;
+                  c1[z].x += buf[2] / scale;
+                  c1[z].y += buf[3] / scale;
+#  endif
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int c_idx0 =
+                    (row * n_dofs_1d + 2 * col + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, z * 8 + warpId);
+                  const int c_idx1 =
+                    ((row + 8) * n_dofs_1d + 2 * col + cycle * 8 +
+                     (z * 8 + warpId) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8, z * 8 + warpId);
+
+                  *((float2 *)(out + c_idx0)) = c0[z];
+                  *((float2 *)(out + c_idx1)) = c1[z];
+                }
+            }
+        }
+      else
+        {
+          half a[8];
+
+          const int aa_idx =
+            ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 8) ^
+            Util::get_base<n_dofs_1d, half>(colId + (rowId & 1) * 8);
+
+          auto smem_ptr = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&shape_data[aa_idx]));
+
+          float *A_ptr = reinterpret_cast<float *>(&a);
+          asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                       "{%0, %1, %2, %3}, [%4]; "
+                       : "=f"(A_ptr[0]),
+                         "=f"(A_ptr[1]),
+                         "=f"(A_ptr[2]),
+                         "=f"(A_ptr[3])
+                       : "r"(smem_ptr));
+#  if ERRCOR == 1
+          half da[8];
+
+          auto smem_dptr = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&shape_data[aa_idx + shift]));
+
+          float *dA_ptr = reinterpret_cast<float *>(&da);
+          asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                       "{%0, %1, %2, %3}, [%4]; "
+                       : "=f"(dA_ptr[0]),
+                         "=f"(dA_ptr[1]),
+                         "=f"(dA_ptr[2]),
+                         "=f"(dA_ptr[3])
+                       : "r"(smem_dptr));
+#  endif
+          uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if ERRCOR == 1
+          uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              float2 c0[2];
+              float2 c1[2];
+
+              half b[4];
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  if constexpr (add)
+                    {
+                      const int c_idx0 =
+                        ((z * 8 + warpId) * n_dofs_1d + 2 * col + cycle * 8 +
+                         row * offset) ^
+                        Util::get_base<n_dofs_1d, float>((z * 8 + warpId), row);
+                      const int c_idx1 =
+                        ((z * 8 + warpId) * n_dofs_1d + 2 * col + cycle * 8 +
+                         (row + 8) * offset) ^
+                        Util::get_base<n_dofs_1d, float>(z * 8 + warpId,
+                                                         row + 8);
+
+                      c0[z] = *((float2 *)(out + c_idx0));
+                      c1[z] = *((float2 *)(out + c_idx1));
+                    }
+                  else
+                    {
+                      c0[z] = {0, 0};
+                      c1[z] = {0, 0};
+                    }
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int b_idx0 =
+                    ((z * 8 + warpId) * n_dofs_1d + row + cycle * 8 +
+                     (col * 2) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId, col * 2);
+                  const int b_idx1 =
+                    ((z * 8 + warpId) * n_dofs_1d + row + cycle * 8 +
+                     (col * 2 + 1) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId,
+                                                     col * 2 + 1);
+                  const int b_idx2 =
+                    ((z * 8 + warpId) * n_dofs_1d + row + cycle * 8 +
+                     (col * 2 + 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId,
+                                                     col * 2 + 8);
+                  const int b_idx3 =
+                    ((z * 8 + warpId) * n_dofs_1d + row + cycle * 8 +
+                     (col * 2 + 9) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId,
+                                                     col * 2 + 9);
+#  if ERRCOR == 0
+                  b[0] = __float2half(in[b_idx0]);
+                  b[1] = __float2half(in[b_idx1]);
+                  b[2] = __float2half(in[b_idx2]);
+                  b[3] = __float2half(in[b_idx3]);
+#  elif ERRCOR == 1
+                  float fb[4];
+                  half  db[4];
+                  fb[0] = in[b_idx0];
+                  fb[1] = in[b_idx1];
+                  fb[2] = in[b_idx2];
+                  fb[3] = in[b_idx3];
+
+                  for (int i = 0; i < 4; ++i)
+                    {
+                      b[i] = __float2half(fb[i]);
+                      db[i] =
+                        __float2half((fb[i] - __half2float(b[i])) * scale);
+                    }
+#  endif
+                  uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+#  if ERRCOR == 1
+                  uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
+
+#  if ERRCOR == 1
+                  float buf[4];
+                  buf[0] = 0;
+                  buf[1] = 0;
+                  buf[2] = 0;
+                  buf[3] = 0;
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(dA[0]),
+                      "r"(dA[1]),
+                      "r"(dA[2]),
+                      "r"(dA[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(dB[0]),
+                      "r"(dB[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  c0[z].x += buf[0] / scale;
+                  c0[z].y += buf[1] / scale;
+                  c1[z].x += buf[2] / scale;
+                  c1[z].y += buf[3] / scale;
+#  endif
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(c0[z].x), "=f"(c0[z].y), "=f"(c1[z].x), "=f"(c1[z].y)
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(c0[z].x),
+                      "f"(c0[z].y),
+                      "f"(c1[z].x),
+                      "f"(c1[z].y));
+                }
+
+              for (int z = 0; z < 2; ++z)
+                {
+                  const int c_idx0 =
+                    ((z * 8 + warpId) * n_dofs_1d + 2 * col + cycle * 8 +
+                     row * offset) ^
+                    Util::get_base<n_dofs_1d, float>((z * 8 + warpId), row);
+                  const int c_idx1 =
+                    ((z * 8 + warpId) * n_dofs_1d + 2 * col + cycle * 8 +
+                     (row + 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(z * 8 + warpId, row + 8);
+
+                  *((float2 *)(out + c_idx0)) = c0[z];
+                  *((float2 *)(out + c_idx1)) = c1[z];
+                }
+            }
+        }
+    }
+  };
+#endif
+
+
+
+#if MMAKERNEL == 8
+  template <typename T>
+  struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3, half>
+  {
+    using Number  = float;
+    using Number2 = half;
+
+    static constexpr int n_dofs_1d = 16;
+
+    /**
+     * Default constructor.
+     */
+    __device__
+    TPEvaluatorBase() = default;
+
+    /**
+     * Implements a matrix-vector product for Laplacian.
+     */
+    __device__ void
+    vmult(Number        *dst,
+          const Number  *src,
+          const Number2 *mass_matrix,
+          const Number2 *derivative_matrix,
+          Number        *tmp)
+    {
+      static_cast<T *>(this)->vmult_impl(
+        dst, src, mass_matrix, derivative_matrix, tmp);
+    }
+
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number2 *shape_data, const Number *in, Number *out)
+    {
+      const int warpId = threadIdx.y / 2;
+
+      const int tid   = (threadIdx.y * n_dofs_1d + threadIdx.x) & 31;
+      const int rowId = tid / 8;
+      const int colId = tid & 7;
+
+      const int row = tid / 4;
+      const int col = tid & 3;
+
+      constexpr int offset = n_dofs_1d * n_dofs_1d;
+
+#  if ERRCOR == 1
+      constexpr int shift = n_dofs_1d * n_dofs_1d * 3;
+      constexpr int scale = 1 << 11;
+#  endif
+
+      if constexpr (direction == 0)
+        {
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              float2 c0 = {0, 0};
+              float2 c1 = {0, 0};
+
+              half a[8];
+              half b[4];
+
+              const int bb_idx =
+                ((colId + cycle * 8) * n_dofs_1d + (rowId & 1) * 8) ^
+                Util::get_base<n_dofs_1d, half>(colId + cycle * 8);
+
+              auto smem_ptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[bb_idx]));
+
+              float *B_ptr = reinterpret_cast<float *>(&b);
+              asm volatile("ldmatrix.sync.aligned.x2.m8n8.shared.b16 "
+                           "{%0, %1}, [%2]; "
+                           : "=f"(B_ptr[0]), "=f"(B_ptr[1])
+                           : "r"(smem_ptr));
+#  if ERRCOR == 1
+              half db[4];
+
+              auto smem_dptr = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&shape_data[bb_idx + shift]));
+
+              float *dB_ptr = reinterpret_cast<float *>(&db);
+              asm volatile("ldmatrix.sync.aligned.x2.m8n8.shared.b16 "
+                           "{%0, %1}, [%2]; "
+                           : "=f"(dB_ptr[0]), "=f"(dB_ptr[1])
+                           : "r"(smem_dptr));
+#  endif
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+#  if ERRCOR == 1
+              uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
+
+              const int a_idx = (row * n_dofs_1d + col * 2 + warpId * offset) ^
+                                Util::get_base<n_dofs_1d, float>(row, warpId);
+              const int a_idx1 =
+                ((row + 8) * n_dofs_1d + col * 2 + warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, warpId);
+              const int a_idx2 =
+                (row * n_dofs_1d + col * 2 + 8 + warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, warpId);
+              const int a_idx3 =
+                ((row + 8) * n_dofs_1d + col * 2 + 8 + warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, warpId);
+#  if ERRCOR == 0
+              a[0] = __float2half(in[a_idx]);
+              a[1] = __float2half(in[a_idx + 1]);
+              a[2] = __float2half(in[a_idx1]);
+              a[3] = __float2half(in[a_idx1 + 1]);
+              a[4] = __float2half(in[a_idx2]);
+              a[5] = __float2half(in[a_idx2 + 1]);
+              a[6] = __float2half(in[a_idx3]);
+              a[7] = __float2half(in[a_idx3 + 1]);
+#  elif ERRCOR == 1
+              float2 fa[4];
+              half   da[8];
+              fa[0] = *((float2 *)(in + a_idx));
+              fa[1] = *((float2 *)(in + a_idx1));
+              fa[2] = *((float2 *)(in + a_idx2));
+              fa[3] = *((float2 *)(in + a_idx3));
+
+              for (int i = 0; i < 4; ++i)
+                {
+                  a[i * 2]     = __float2half(fa[i].x);
+                  a[i * 2 + 1] = __float2half(fa[i].y);
+                  da[i * 2] =
+                    __float2half((fa[i].x - __half2float(a[i * 2])) * scale);
+                  da[i * 2 + 1] = __float2half(
+                    (fa[i].y - __half2float(a[i * 2 + 1])) * scale);
+                }
+#  endif
+              uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if ERRCOR == 1
+              uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
+
+#  if ERRCOR == 1
+              float buf[4];
+              buf[0] = 0;
+              buf[1] = 0;
+              buf[2] = 0;
+              buf[3] = 0;
+              asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                : "r"(dA[0]),
+                  "r"(dA[1]),
+                  "r"(dA[2]),
+                  "r"(dA[3]),
+                  "r"(B[0]),
+                  "r"(B[1]),
+                  "f"(buf[0]),
+                  "f"(buf[1]),
+                  "f"(buf[2]),
+                  "f"(buf[3]));
+              asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                : "r"(A[0]),
+                  "r"(A[1]),
+                  "r"(A[2]),
+                  "r"(A[3]),
+                  "r"(dB[0]),
+                  "r"(dB[1]),
+                  "f"(buf[0]),
+                  "f"(buf[1]),
+                  "f"(buf[2]),
+                  "f"(buf[3]));
+              c0.x += buf[0] / scale;
+              c0.y += buf[1] / scale;
+              c1.x += buf[2] / scale;
+              c1.y += buf[3] / scale;
+#  endif
+              asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                : "=f"(c0.x), "=f"(c0.y), "=f"(c1.x), "=f"(c1.y)
+                : "r"(A[0]),
+                  "r"(A[1]),
+                  "r"(A[2]),
+                  "r"(A[3]),
+                  "r"(B[0]),
+                  "r"(B[1]),
+                  "f"(c0.x),
+                  "f"(c0.y),
+                  "f"(c1.x),
+                  "f"(c1.y));
+
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + cycle * 8 + warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, warpId);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + cycle * 8 +
+                 warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, warpId);
+
+              *((float2 *)(out + c_idx0)) = c0;
+              *((float2 *)(out + c_idx1)) = c1;
+            }
+        }
+      else if (direction == 1)
+        {
+          half a[8];
+
+          const int aa_idx =
+            ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 8) ^
+            Util::get_base<n_dofs_1d, half>(colId + (rowId & 1) * 8);
+
+          auto smem_ptr = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&shape_data[aa_idx]));
+
+          float *A_ptr = reinterpret_cast<float *>(&a);
+          asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                       "{%0, %1, %2, %3}, [%4]; "
+                       : "=f"(A_ptr[0]),
+                         "=f"(A_ptr[1]),
+                         "=f"(A_ptr[2]),
+                         "=f"(A_ptr[3])
+                       : "r"(smem_ptr));
+#  if ERRCOR == 1
+          half da[8];
+
+          auto smem_dptr = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&shape_data[aa_idx + shift]));
+
+          float *dA_ptr = reinterpret_cast<float *>(&da);
+          asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                       "{%0, %1, %2, %3}, [%4]; "
+                       : "=f"(dA_ptr[0]),
+                         "=f"(dA_ptr[1]),
+                         "=f"(dA_ptr[2]),
+                         "=f"(dA_ptr[3])
+                       : "r"(smem_dptr));
+#  endif
+          uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if ERRCOR == 1
+          uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              float2 c0 = {0, 0};
+              float2 c1 = {0, 0};
+
+              half b[4];
+              if constexpr (add)
+                {
+                  const int c_idx0 =
+                    (row * n_dofs_1d + 2 * col + cycle * 8 + warpId * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row, warpId);
+                  const int c_idx1 =
+                    ((row + 8) * n_dofs_1d + 2 * col + cycle * 8 +
+                     warpId * offset) ^
+                    Util::get_base<n_dofs_1d, float>(row + 8, warpId);
+
+                  c0 = *((float2 *)(out + c_idx0));
+                  c1 = *((float2 *)(out + c_idx1));
+                }
+
+              const int b_idx0 =
+                ((col * 2) * n_dofs_1d + row + cycle * 8 + warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(col * 2, warpId);
+              const int b_idx1 =
+                ((col * 2 + 1) * n_dofs_1d + row + cycle * 8 +
+                 warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(col * 2 + 1, warpId);
+              const int b_idx2 =
+                ((col * 2 + 8) * n_dofs_1d + row + cycle * 8 +
+                 warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(col * 2 + 8, warpId);
+              const int b_idx3 =
+                ((col * 2 + 9) * n_dofs_1d + row + cycle * 8 +
+                 warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(col * 2 + 9, warpId);
+#  if ERRCOR == 0
+              b[0] = __float2half(in[b_idx0]);
+              b[1] = __float2half(in[b_idx1]);
+              b[2] = __float2half(in[b_idx2]);
+              b[3] = __float2half(in[b_idx3]);
+#  elif ERRCOR == 1
+              float fb[4];
+              half  db[4];
+              fb[0] = in[b_idx0];
+              fb[1] = in[b_idx1];
+              fb[2] = in[b_idx2];
+              fb[3] = in[b_idx3];
+
+              for (int i = 0; i < 4; ++i)
+                {
+                  b[i]  = __float2half(fb[i]);
+                  db[i] = __float2half((fb[i] - __half2float(b[i])) * scale);
+                }
+#  endif
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+#  if ERRCOR == 1
+              uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
+
+#  if ERRCOR == 1
+              float buf[4];
+              buf[0] = 0;
+              buf[1] = 0;
+              buf[2] = 0;
+              buf[3] = 0;
+              asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                : "r"(dA[0]),
+                  "r"(dA[1]),
+                  "r"(dA[2]),
+                  "r"(dA[3]),
+                  "r"(B[0]),
+                  "r"(B[1]),
+                  "f"(buf[0]),
+                  "f"(buf[1]),
+                  "f"(buf[2]),
+                  "f"(buf[3]));
+              asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                : "r"(A[0]),
+                  "r"(A[1]),
+                  "r"(A[2]),
+                  "r"(A[3]),
+                  "r"(dB[0]),
+                  "r"(dB[1]),
+                  "f"(buf[0]),
+                  "f"(buf[1]),
+                  "f"(buf[2]),
+                  "f"(buf[3]));
+              c0.x += buf[0] / scale;
+              c0.y += buf[1] / scale;
+              c1.x += buf[2] / scale;
+              c1.y += buf[3] / scale;
+#  endif
+              asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                : "=f"(c0.x), "=f"(c0.y), "=f"(c1.x), "=f"(c1.y)
+                : "r"(A[0]),
+                  "r"(A[1]),
+                  "r"(A[2]),
+                  "r"(A[3]),
+                  "r"(B[0]),
+                  "r"(B[1]),
+                  "f"(c0.x),
+                  "f"(c0.y),
+                  "f"(c1.x),
+                  "f"(c1.y));
+
+              const int c_idx0 =
+                (row * n_dofs_1d + 2 * col + cycle * 8 + warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(row, warpId);
+              const int c_idx1 =
+                ((row + 8) * n_dofs_1d + 2 * col + cycle * 8 +
+                 warpId * offset) ^
+                Util::get_base<n_dofs_1d, float>(row + 8, warpId);
+
+              *((float2 *)(out + c_idx0)) = c0;
+              *((float2 *)(out + c_idx1)) = c1;
+            }
+        }
+      else
+        {
+          half a[8];
+
+          const int aa_idx =
+            ((colId + (rowId & 1) * 8) * n_dofs_1d + (rowId / 2) * 8) ^
+            Util::get_base<n_dofs_1d, half>(colId + (rowId & 1) * 8);
+
+          auto smem_ptr = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&shape_data[aa_idx]));
+
+          float *A_ptr = reinterpret_cast<float *>(&a);
+          asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                       "{%0, %1, %2, %3}, [%4]; "
+                       : "=f"(A_ptr[0]),
+                         "=f"(A_ptr[1]),
+                         "=f"(A_ptr[2]),
+                         "=f"(A_ptr[3])
+                       : "r"(smem_ptr));
+#  if ERRCOR == 1
+          half da[8];
+
+          auto smem_dptr = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&shape_data[aa_idx + shift]));
+
+          float *dA_ptr = reinterpret_cast<float *>(&da);
+          asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 "
+                       "{%0, %1, %2, %3}, [%4]; "
+                       : "=f"(dA_ptr[0]),
+                         "=f"(dA_ptr[1]),
+                         "=f"(dA_ptr[2]),
+                         "=f"(dA_ptr[3])
+                       : "r"(smem_dptr));
+#  endif
+          uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
+#  if ERRCOR == 1
+          uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
+          for (int cycle = 0; cycle < 2; ++cycle)
+            {
+              float2 c0 = {0, 0};
+              float2 c1 = {0, 0};
+
+              half b[4];
+
+              if constexpr (add)
+                {
+                  const int c_idx0 =
+                    (warpId * n_dofs_1d + 2 * col + cycle * 8 + row * offset) ^
+                    Util::get_base<n_dofs_1d, float>(warpId, row);
+                  const int c_idx1 =
+                    (warpId * n_dofs_1d + 2 * col + cycle * 8 +
+                     (row + 8) * offset) ^
+                    Util::get_base<n_dofs_1d, float>(warpId, row + 8);
+
+                  c0 = *((float2 *)(out + c_idx0));
+                  c1 = *((float2 *)(out + c_idx1));
+                }
+
+              const int b_idx0 =
+                (warpId * n_dofs_1d + row + cycle * 8 + (col * 2) * offset) ^
+                Util::get_base<n_dofs_1d, float>(warpId, col * 2);
+              const int b_idx1 =
+                (warpId * n_dofs_1d + row + cycle * 8 +
+                 (col * 2 + 1) * offset) ^
+                Util::get_base<n_dofs_1d, float>(warpId, col * 2 + 1);
+              const int b_idx2 =
+                (warpId * n_dofs_1d + row + cycle * 8 +
+                 (col * 2 + 8) * offset) ^
+                Util::get_base<n_dofs_1d, float>(warpId, col * 2 + 8);
+              const int b_idx3 =
+                (warpId * n_dofs_1d + row + cycle * 8 +
+                 (col * 2 + 9) * offset) ^
+                Util::get_base<n_dofs_1d, float>(warpId, col * 2 + 9);
+#  if ERRCOR == 0
+              b[0] = __float2half(in[b_idx0]);
+              b[1] = __float2half(in[b_idx1]);
+              b[2] = __float2half(in[b_idx2]);
+              b[3] = __float2half(in[b_idx3]);
+#  elif ERRCOR == 1
+              float fb[4];
+              half  db[4];
+              fb[0] = in[b_idx0];
+              fb[1] = in[b_idx1];
+              fb[2] = in[b_idx2];
+              fb[3] = in[b_idx3];
+
+              for (int i = 0; i < 4; ++i)
+                {
+                  b[i]  = __float2half(fb[i]);
+                  db[i] = __float2half((fb[i] - __half2float(b[i])) * scale);
+                }
+#  endif
+              uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
+#  if ERRCOR == 1
+              uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
+
+#  if ERRCOR == 1
+              float buf[4];
+              buf[0] = 0;
+              buf[1] = 0;
+              buf[2] = 0;
+              buf[3] = 0;
+              asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                : "r"(dA[0]),
+                  "r"(dA[1]),
+                  "r"(dA[2]),
+                  "r"(dA[3]),
+                  "r"(B[0]),
+                  "r"(B[1]),
+                  "f"(buf[0]),
+                  "f"(buf[1]),
+                  "f"(buf[2]),
+                  "f"(buf[3]));
+              asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                : "r"(A[0]),
+                  "r"(A[1]),
+                  "r"(A[2]),
+                  "r"(A[3]),
+                  "r"(dB[0]),
+                  "r"(dB[1]),
+                  "f"(buf[0]),
+                  "f"(buf[1]),
+                  "f"(buf[2]),
+                  "f"(buf[3]));
+              c0.x += buf[0] / scale;
+              c0.y += buf[1] / scale;
+              c1.x += buf[2] / scale;
+              c1.y += buf[3] / scale;
+#  endif
+              asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                : "=f"(c0.x), "=f"(c0.y), "=f"(c1.x), "=f"(c1.y)
+                : "r"(A[0]),
+                  "r"(A[1]),
+                  "r"(A[2]),
+                  "r"(A[3]),
+                  "r"(B[0]),
+                  "r"(B[1]),
+                  "f"(c0.x),
+                  "f"(c0.y),
+                  "f"(c1.x),
+                  "f"(c1.y));
+
+              const int c_idx0 =
+                (warpId * n_dofs_1d + 2 * col + cycle * 8 + row * offset) ^
+                Util::get_base<n_dofs_1d, float>(warpId, row);
+              const int c_idx1 =
+                (warpId * n_dofs_1d + 2 * col + cycle * 8 +
+                 (row + 8) * offset) ^
+                Util::get_base<n_dofs_1d, float>(warpId, row + 8);
+
+              *((float2 *)(out + c_idx0)) = c0;
+              *((float2 *)(out + c_idx1)) = c1;
+            }
+        }
+    }
+  };
+#endif
+
 #if MMAKERNEL == 0
   template <typename T>
   struct TPEvaluatorBase<T, 16, float, LaplaceVariant::TensorCoreMMA, 3>
@@ -4088,6 +5781,7 @@ namespace PSMF
       const int col = tid & 3;
 
       constexpr int offset = n_dofs_1d * n_dofs_1d;
+      constexpr int scale  = 1 << 11;
 
       if constexpr (direction == 0)
         {
@@ -4117,6 +5811,14 @@ namespace PSMF
 
               uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
 
+#  if ERRCOR == 1
+              float db[2];
+              for (int i = 0; i < 2; ++i)
+                {
+                  db[i] = (b[i] - wmma::__float_to_tf32(b[i])) * scale;
+                }
+              uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
               for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
                   const int a_idx =
@@ -4143,7 +5845,15 @@ namespace PSMF
                   a[3] = in[a_idx3];
 
                   uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
-
+#  if ERRCOR == 1
+                  float fa[4];
+                  float da[4];
+                  for (int i = 0; i < 4; ++i)
+                    {
+                      da[i] = (a[i] - wmma::__float_to_tf32(a[i])) * scale;
+                    }
+                  uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
                   asm volatile(
                     "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
                     "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
@@ -4158,6 +5868,45 @@ namespace PSMF
                       "f"(c0[z].y),
                       "f"(c1[z].x),
                       "f"(c1[z].y));
+#  if ERRCOR == 1
+                  float buf[4];
+                  buf[0] = 0;
+                  buf[1] = 0;
+                  buf[2] = 0;
+                  buf[3] = 0;
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(dA[0]),
+                      "r"(dA[1]),
+                      "r"(dA[2]),
+                      "r"(dA[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(dB[0]),
+                      "r"(dB[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  c0[z].x += buf[0] / scale;
+                  c0[z].y += buf[1] / scale;
+                  c1[z].x += buf[2] / scale;
+                  c1[z].y += buf[3] / scale;
+#  endif
                 }
             }
 
@@ -4224,7 +5973,16 @@ namespace PSMF
               a[3] = shape_data[a_idx3];
 
               uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
-
+#  if ERRCOR == 1
+              float fa[4];
+              float da[4];
+              for (int i = 0; i < 4; ++i)
+                {
+                  fa[i] = wmma::__float_to_tf32(a[i]);
+                  da[i] = (a[i] - fa[i]) * scale;
+                }
+              uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
               for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
                   const int b_idx0 =
@@ -4242,7 +6000,16 @@ namespace PSMF
                   b[1] = in[b_idx1];
 
                   uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
-
+#  if ERRCOR == 1
+                  float fb[2];
+                  float db[2];
+                  for (int i = 0; i < 2; ++i)
+                    {
+                      fb[i] = wmma::__float_to_tf32(b[i]);
+                      db[i] = (b[i] - fb[i]) * scale;
+                    }
+                  uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
                   asm volatile(
                     "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
                     "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
@@ -4257,6 +6024,45 @@ namespace PSMF
                       "f"(c0[z].y),
                       "f"(c1[z].x),
                       "f"(c1[z].y));
+#  if ERRCOR == 1
+                  float buf[4];
+                  buf[0] = 0;
+                  buf[1] = 0;
+                  buf[2] = 0;
+                  buf[3] = 0;
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(dA[0]),
+                      "r"(dA[1]),
+                      "r"(dA[2]),
+                      "r"(dA[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(dB[0]),
+                      "r"(dB[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  c0[z].x += buf[0] / scale;
+                  c0[z].y += buf[1] / scale;
+                  c1[z].x += buf[2] / scale;
+                  c1[z].y += buf[3] / scale;
+#  endif
                 }
             }
 
@@ -4323,7 +6129,16 @@ namespace PSMF
               a[3] = shape_data[a_idx3];
 
               uint32_t const *A = reinterpret_cast<uint32_t const *>(&a);
-
+#  if ERRCOR == 1
+              float fa[4];
+              float da[4];
+              for (int i = 0; i < 4; ++i)
+                {
+                  fa[i] = wmma::__float_to_tf32(a[i]);
+                  da[i] = (a[i] - fa[i]) * scale;
+                }
+              uint32_t const *dA = reinterpret_cast<uint32_t const *>(&da);
+#  endif
               for (int z = 0; z < n_dofs_1d / 4; ++z)
                 {
                   const int b_idx0 =
@@ -4341,7 +6156,16 @@ namespace PSMF
                   b[1] = in[b_idx1];
 
                   uint32_t const *B = reinterpret_cast<uint32_t const *>(&b);
-
+#  if ERRCOR == 1
+                  float fb[2];
+                  float db[2];
+                  for (int i = 0; i < 2; ++i)
+                    {
+                      fb[i] = wmma::__float_to_tf32(b[i]);
+                      db[i] = (b[i] - fb[i]) * scale;
+                    }
+                  uint32_t const *dB = reinterpret_cast<uint32_t const *>(&db);
+#  endif
                   asm volatile(
                     "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
                     "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
@@ -4356,6 +6180,45 @@ namespace PSMF
                       "f"(c0[z].y),
                       "f"(c1[z].x),
                       "f"(c1[z].y));
+#  if ERRCOR == 1
+                  float buf[4];
+                  buf[0] = 0;
+                  buf[1] = 0;
+                  buf[2] = 0;
+                  buf[3] = 0;
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(dA[0]),
+                      "r"(dA[1]),
+                      "r"(dA[2]),
+                      "r"(dA[3]),
+                      "r"(B[0]),
+                      "r"(B[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  asm volatile(
+                    "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+                    : "=f"(buf[0]), "=f"(buf[1]), "=f"(buf[2]), "=f"(buf[3])
+                    : "r"(A[0]),
+                      "r"(A[1]),
+                      "r"(A[2]),
+                      "r"(A[3]),
+                      "r"(dB[0]),
+                      "r"(dB[1]),
+                      "f"(buf[0]),
+                      "f"(buf[1]),
+                      "f"(buf[2]),
+                      "f"(buf[3]));
+                  c0[z].x += buf[0] / scale;
+                  c0[z].y += buf[1] / scale;
+                  c1[z].x += buf[2] / scale;
+                  c1[z].y += buf[3] / scale;
+#  endif
                 }
             }
 
@@ -6445,47 +8308,57 @@ namespace PSMF
   ////////////////////////////////////////////////////////////////////
   template <LaplaceVariant laplace_type,
             typename Number,
+            typename Number2,
             int n_dofs_1d,
             int dim>
   struct TPEvaluatorLaplace
-    : TPEvaluatorBase<TPEvaluatorLaplace<laplace_type, Number, n_dofs_1d, dim>,
-                      n_dofs_1d,
-                      Number,
-                      laplace_type,
-                      dim>
+    : TPEvaluatorBase<
+        TPEvaluatorLaplace<laplace_type, Number, Number2, n_dofs_1d, dim>,
+        n_dofs_1d,
+        Number,
+        laplace_type,
+        dim,
+        Number2>
   {
     using TPEvaluatorBase<
-      TPEvaluatorLaplace<laplace_type, Number, n_dofs_1d, dim>,
+      TPEvaluatorLaplace<laplace_type, Number, Number2, n_dofs_1d, dim>,
       n_dofs_1d,
       Number,
       laplace_type,
-      dim>::apply;
+      dim,
+      Number2>::apply;
     __device__ void
     vmult()
     {}
   };
 
-  template <LaplaceVariant laplace_type, typename Number, int n_dofs_1d>
-  struct TPEvaluatorLaplace<laplace_type, Number, n_dofs_1d, 2>
-    : TPEvaluatorBase<TPEvaluatorLaplace<laplace_type, Number, n_dofs_1d, 2>,
-                      n_dofs_1d,
-                      Number,
-                      laplace_type,
-                      2>
+  template <LaplaceVariant laplace_type,
+            typename Number,
+            typename Number2,
+            int n_dofs_1d>
+  struct TPEvaluatorLaplace<laplace_type, Number, Number2, n_dofs_1d, 2>
+    : TPEvaluatorBase<
+        TPEvaluatorLaplace<laplace_type, Number, Number2, n_dofs_1d, 2>,
+        n_dofs_1d,
+        Number,
+        laplace_type,
+        2,
+        Number2>
   {
     using TPEvaluatorBase<
-      TPEvaluatorLaplace<laplace_type, Number, n_dofs_1d, 2>,
+      TPEvaluatorLaplace<laplace_type, Number, Number2, n_dofs_1d, 2>,
       n_dofs_1d,
       Number,
       laplace_type,
-      2>::apply;
+      2,
+      Number2>::apply;
 
     __device__ void
-    vmult_impl(Number       *dst,
-               const Number *src,
-               const Number *mass_matrix,
-               const Number *derivative_matrix,
-               Number       *tmp)
+    vmult_impl(Number        *dst,
+               const Number  *src,
+               const Number2 *mass_matrix,
+               const Number2 *derivative_matrix,
+               Number        *tmp)
     {
       constexpr int offset = n_dofs_1d * (n_dofs_1d + Util::padding);
 
@@ -6499,27 +8372,33 @@ namespace PSMF
     }
   };
 
-  template <LaplaceVariant laplace_type, typename Number, int n_dofs_1d>
-  struct TPEvaluatorLaplace<laplace_type, Number, n_dofs_1d, 3>
-    : TPEvaluatorBase<TPEvaluatorLaplace<laplace_type, Number, n_dofs_1d, 3>,
-                      n_dofs_1d,
-                      Number,
-                      laplace_type,
-                      3>
+  template <LaplaceVariant laplace_type,
+            typename Number,
+            typename Number2,
+            int n_dofs_1d>
+  struct TPEvaluatorLaplace<laplace_type, Number, Number2, n_dofs_1d, 3>
+    : TPEvaluatorBase<
+        TPEvaluatorLaplace<laplace_type, Number, Number2, n_dofs_1d, 3>,
+        n_dofs_1d,
+        Number,
+        laplace_type,
+        3,
+        Number2>
   {
     using TPEvaluatorBase<
-      TPEvaluatorLaplace<laplace_type, Number, n_dofs_1d, 3>,
+      TPEvaluatorLaplace<laplace_type, Number, Number2, n_dofs_1d, 3>,
       n_dofs_1d,
       Number,
       laplace_type,
-      3>::apply;
+      3,
+      Number2>::apply;
 
     __device__ void
-    vmult_impl(Number       *dst,
-               const Number *src,
-               const Number *mass_matrix,
-               const Number *derivative_matrix,
-               Number       *tmp)
+    vmult_impl(Number        *dst,
+               const Number  *src,
+               const Number2 *mass_matrix,
+               const Number2 *derivative_matrix,
+               Number        *tmp)
     {
       constexpr int n_dofs_1d_p =
         (laplace_type == LaplaceVariant::TensorCoreMMA) ?
@@ -7347,14 +9226,30 @@ namespace PSMF
   {
     constexpr int n_dofs_1d = 2 * fe_degree + 2;
 
-    TPEvaluatorLaplace<laplace, Number, n_dofs_1d, dim> eval;
-    __syncthreads();
+    if constexpr (std::is_same_v<Number, double> ||
+                  (MMAKERNEL != 7 && MMAKERNEL != 8))
+      {
+        TPEvaluatorLaplace<laplace, Number, Number, n_dofs_1d, dim> eval;
+        __syncthreads();
 
-    eval.vmult(shared_data->local_dst,
-               shared_data->local_src,
-               shared_data->local_mass,
-               shared_data->local_derivative,
-               shared_data->tmp);
+        eval.vmult(shared_data->local_dst,
+                   shared_data->local_src,
+                   shared_data->local_mass,
+                   shared_data->local_derivative,
+                   shared_data->tmp);
+        __syncthreads();
+      }
+    else
+      {
+        TPEvaluatorLaplace<laplace, Number, half, n_dofs_1d, dim> eval;
+        __syncthreads();
+
+        eval.vmult(shared_data->local_dst,
+                   shared_data->local_src,
+                   shared_data->mass_half,
+                   shared_data->der_half,
+                   shared_data->tmp);
+      }
     __syncthreads();
   }
 

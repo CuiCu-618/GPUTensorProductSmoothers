@@ -45,6 +45,7 @@
 #include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 
 #include "app_utilities.h"
@@ -221,10 +222,12 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   system_rhs_dp = 1.;
   solution_dp   = 0.;
 
-  // LinearAlgebra::ReadWriteVector<double> rw_vector(dof_handler.n_dofs());
-  // for (unsigned int i = 0; i < rw_vector.size(); ++i)
-  //   rw_vector[i] = i;
-  // system_rhs_dp.import(rw_vector, VectorOperation::insert);
+  {
+    LinearAlgebra::ReadWriteVector<double> rw_vector(dof_handler.n_dofs());
+    for (unsigned int i = 0; i < rw_vector.size(); ++i)
+      rw_vector[i] = (i & 63) * 0.1;
+    system_rhs_dp.import(rw_vector, VectorOperation::insert);
+  }
 
   Timer  time;
   double best_time = 1e10;
@@ -265,7 +268,8 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
     }
 
   std::cout << min_cycles << " " << max_cycles << std::endl;
-  std::cout << solution_dp.l2_norm() << std::endl;
+  std::cout << std::fixed << std::setprecision(10) << solution_dp.l2_norm()
+            << std::endl;
 
 #if TIMING != 0
   for (unsigned int i = 0; i < n_patches; ++i)
@@ -287,6 +291,13 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
 
   system_rhs_sp = 1.;
   solution_sp   = 0.;
+
+  {
+    LinearAlgebra::ReadWriteVector<float> rw_vector(dof_handler.n_dofs());
+    for (unsigned int i = 0; i < rw_vector.size(); ++i)
+      rw_vector[i] = (i & 63) * 0.1;
+    system_rhs_sp.import(rw_vector, VectorOperation::insert);
+  }
 
   LinearAlgebra::distributed::Vector<float, MemorySpace::Host> solution_hosts(
     solution_sp.size());
@@ -324,7 +335,8 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
     }
 
   std::cout << min_cycless << " " << max_cycless << std::endl;
-  std::cout << solution_sp.l2_norm() << std::endl;
+  std::cout << std::fixed << std::setprecision(10) << solution_sp.l2_norm()
+            << std::endl;
 
 #if TIMING != 0
   for (unsigned int i = 0; i < n_patches; ++i)
@@ -557,6 +569,24 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
                   break;
                 case PSMF::SmootherVariant::ConflictFree:
                   do_smooth<PSMF::LaplaceVariant::TensorCore,
+                            PSMF::SmootherVariant::ConflictFree>();
+                  break;
+              }
+          break;
+        case PSMF::LaplaceVariant::TensorCoreMMA:
+          for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
+            switch (CT::SMOOTH_INV_[j])
+              {
+                case PSMF::SmootherVariant::GLOBAL:
+                  do_smooth<PSMF::LaplaceVariant::TensorCoreMMA,
+                            PSMF::SmootherVariant::GLOBAL>();
+                  break;
+                case PSMF::SmootherVariant::FUSED_L:
+                  do_smooth<PSMF::LaplaceVariant::TensorCoreMMA,
+                            PSMF::SmootherVariant::FUSED_L>();
+                  break;
+                case PSMF::SmootherVariant::ConflictFree:
+                  do_smooth<PSMF::LaplaceVariant::TensorCoreMMA,
                             PSMF::SmootherVariant::ConflictFree>();
                   break;
               }
