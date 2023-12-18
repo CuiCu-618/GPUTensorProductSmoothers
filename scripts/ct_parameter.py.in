@@ -102,7 +102,7 @@ def parse_args():
                         help="variant of the Schwarz smoother inverse operator"
     )
     parser.add_argument('-SOL','--local_solver',
-                        default='K',
+                        default='B',
                         nargs='+',
                         choices=['Exact','Bila','KSVD','NN'],
                         help="variant of the local solver operator"
@@ -207,10 +207,10 @@ class Parameter:
             if kernel.startswith('Ex'):
                 kernel_str += r'PSMF::LocalSolverVariant::Exact, '
                 count += 1
-            elif kernel.endswith('la'):
+            elif kernel.startswith('B'):
                 kernel_str += r'PSMF::LocalSolverVariant::Bila, '
                 count += 1
-            elif kernel.startswith('K'):
+            elif kernel.endswith('KSVD'):
                 kernel_str += r'PSMF::LocalSolverVariant::KSVD, '
                 count += 1   
             elif kernel.endswith('NN'):
