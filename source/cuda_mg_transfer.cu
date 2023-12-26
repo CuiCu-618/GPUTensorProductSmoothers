@@ -34,12 +34,12 @@ namespace PSMF
       LinearAlgebra::distributed::Vector<number_type, MemorySpace::CUDA>> &, \
     const LinearAlgebra::distributed::Vector<vec_number_type,                \
                                              MemorySpace::CUDA> &) const
-  //                                                                             
-  // template void MGTransferCUDA<dim, number_type, DoFLayout::DGQ>::copy_to_mg( 
-  //   const DoFHandler<dim> &,                                                  
-  //   MGLevelObject<                                                            
-  //     LinearAlgebra::distributed::Vector<number_type, MemorySpace::CUDA>> &,  
-  //   const LinearAlgebra::distributed::Vector<vec_number_type,                 
+  //
+  // template void MGTransferCUDA<dim, number_type, DoFLayout::DGQ>::copy_to_mg(
+  //   const DoFHandler<dim> &,
+  //   MGLevelObject<
+  //     LinearAlgebra::distributed::Vector<number_type, MemorySpace::CUDA>> &,
+  //   const LinearAlgebra::distributed::Vector<vec_number_type,
   //                                            MemorySpace::CUDA> &) const
 
   INSTANTIATE_COPY_TO_MG(2, double, double);
@@ -59,12 +59,12 @@ namespace PSMF
       LinearAlgebra::distributed::Vector<number_type, MemorySpace::CUDA>> &)  \
     const
 
-  // template void                                                               
-  // MGTransferCUDA<dim, number_type, DoFLayout::DGQ>::copy_from_mg(             
-  //   const DoFHandler<dim> &,                                                  
-  //   LinearAlgebra::distributed::Vector<vec_number_type, MemorySpace::CUDA> &, 
-  //   const MGLevelObject<                                                      
-  //     LinearAlgebra::distributed::Vector<number_type, MemorySpace::CUDA>> &)  
+  // template void
+  // MGTransferCUDA<dim, number_type, DoFLayout::DGQ>::copy_from_mg(
+  //   const DoFHandler<dim> &,
+  //   LinearAlgebra::distributed::Vector<vec_number_type, MemorySpace::CUDA> &,
+  //   const MGLevelObject<
+  //     LinearAlgebra::distributed::Vector<number_type, MemorySpace::CUDA>> &)
   //   const
 
 
@@ -84,13 +84,13 @@ namespace PSMF
     const MGLevelObject<                                                      \
       LinearAlgebra::distributed::Vector<number_type, MemorySpace::CUDA>> &)  \
     const
-  //                                                                             
-  // template void                                                               
-  // MGTransferCUDA<dim, number_type, DoFLayout::DGQ>::copy_from_mg_add(         
-  //   const DoFHandler<dim> &,                                                  
-  //   LinearAlgebra::distributed::Vector<vec_number_type, MemorySpace::CUDA> &, 
-  //   const MGLevelObject<                                                      
-  //     LinearAlgebra::distributed::Vector<number_type, MemorySpace::CUDA>> &)  
+  //
+  // template void
+  // MGTransferCUDA<dim, number_type, DoFLayout::DGQ>::copy_from_mg_add(
+  //   const DoFHandler<dim> &,
+  //   LinearAlgebra::distributed::Vector<vec_number_type, MemorySpace::CUDA> &,
+  //   const MGLevelObject<
+  //     LinearAlgebra::distributed::Vector<number_type, MemorySpace::CUDA>> &)
   //   const
 
   INSTANTIATE_COPY_FROM_MG_ADD(2, double, double);
