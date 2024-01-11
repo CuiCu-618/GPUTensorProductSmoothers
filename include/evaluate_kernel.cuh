@@ -18,6 +18,7 @@
 
 using namespace nvcuda;
 
+// #define PRINT_INFO
 
 namespace PSMF
 {
@@ -118,7 +119,7 @@ namespace PSMF
           const Number *laplace_matrix,
           Number       *tmp)
     {
-      static_cast<T *>(this)->vmult_impl(
+      static_cast<T *>(this)->template vmult_impl<sub>(
         dst, src, mass_matrix, laplace_matrix, tmp);
     }
 
@@ -1806,6 +1807,10 @@ namespace PSMF
         else if (local_flag < 0 &&
                  (local_norm_act >= local_norm_min || fabs(*alpha) < 1e-10))
           {
+#ifdef PRINT_INFO
+            if (tid == 0 && blockIdx.x == 0)
+              printf("Converged 2. # it: %d, residual: %e\n", it, *norm_min);
+#endif
             VecSadd<n_patch_dofs_dg, Number, true>(
               tid,
               block_size,
@@ -1824,10 +1829,10 @@ namespace PSMF
 
         if (local_flag < 0 && *norm_min < 1e-15)
           {
-            // if (tid == 0 && blockIdx.x == 0)
-            //   printf("# it: %d, #it min: %f, residual: %e\n", it, *it_min,
-            //   *norm_min);
-
+#ifdef PRINT_INFO
+            if (tid == 0 && blockIdx.x == 0)
+              printf("Converged 1. # it: %d, residual: %e\n", it, *norm_min);
+#endif
             VecSadd<n_patch_dofs_dg, Number, true>(
               tid,
               block_size,
@@ -1854,6 +1859,10 @@ namespace PSMF
         if (tid == 0)
           *rsold = *rsnew;
       }
+#ifdef PRINT_INFO
+    if (tid == 0 && blockIdx.x == 0)
+      printf("Converged 0. # it: %d, residual: %e\n", MAX_IT, *norm_min);
+#endif
   }
 
   // template <int dim,

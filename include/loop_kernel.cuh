@@ -839,7 +839,8 @@ namespace PSMF
               // unsigned int global_dof_index =
               //   gpu_data
               //     .patch_dof_smooth[patch * n_patch_dofs_all +
-              //                       n_patch_dofs_rt_all + tid + i * block_size];
+              //                       n_patch_dofs_rt_all + tid + i *
+              //                       block_size];
 
               unsigned int global_dof_index =
                 gpu_data

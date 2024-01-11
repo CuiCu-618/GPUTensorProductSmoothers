@@ -237,7 +237,7 @@ namespace PSMF
       // L M
       shared_mem += dim * patch_per_block * (dim + 1) *
                     Util::pow(2 * fe_degree + 3, 2) * sizeof(Number);
-      // M D
+      // D
       shared_mem +=
         patch_per_block * Util::pow(2 * fe_degree + 3, 2) * 1 * sizeof(Number);
 

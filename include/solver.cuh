@@ -154,14 +154,15 @@ namespace PSMF
                                        local_solver,
                                        smooth_vmult,
                                        smooth_inverse>;
-    using SmootherTypeCoarse = PatchSmoother<MatrixType2,
-                                             dim,
-                                             fe_degree,
-                                             LocalSolverVariant::Direct,
-                                             smooth_vmult,
-                                             smooth_inverse>;
-    using MatrixFreeType     = LevelVertexPatch<dim, fe_degree, Number>;
-    using MatrixFreeType2    = LevelVertexPatch<dim, fe_degree, Number2>;
+    using SmootherTypeCoarse = SmootherType;
+    // using SmootherTypeCoarse = PatchSmoother<MatrixType2,
+    //                                          dim,
+    //                                          fe_degree,
+    //                                          LocalSolverVariant::Direct,
+    //                                          smooth_vmult,
+    //                                          smooth_inverse>;
+    using MatrixFreeType  = LevelVertexPatch<dim, fe_degree, Number>;
+    using MatrixFreeType2 = LevelVertexPatch<dim, fe_degree, Number2>;
 
     MultigridSolver(
       const DoFHandler<dim>                                 &dof_handler,
@@ -596,19 +597,19 @@ namespace PSMF
     using VectorType =
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>;
     using MatrixType = LaplaceOperator<dim, fe_degree, Number, lapalace_kernel>;
-    using SmootherType = PatchSmoother<MatrixType,
+    using SmootherType       = PatchSmoother<MatrixType,
                                        dim,
                                        fe_degree,
                                        local_solver,
                                        smooth_vmult,
                                        smooth_inverse>;
-    using SmootherTypeCoarse =
-      PatchSmoother<MatrixType,
-                    dim,
-                    fe_degree,
-                    local_solver, // LocalSolverVariant::Direct,
-                    smooth_vmult,
-                    smooth_inverse>;
+    using SmootherTypeCoarse = SmootherType;
+    // using SmootherTypeCoarse = PatchSmoother<MatrixType,
+    //                                          dim,
+    //                                          fe_degree,
+    //                                          LocalSolverVariant::Direct,
+    //                                          smooth_vmult,
+    //                                          SmootherVariant::GLOBAL>;
     using MatrixFreeType = LevelVertexPatch<dim, fe_degree, Number>;
 
     MultigridSolver(
@@ -654,10 +655,10 @@ namespace PSMF
           {
             smoother_data[level].data         = mfdata_dp[level];
             smoother_data[level].n_iterations = CT::N_SMOOTH_STEPS_;
-
-            smoother_data_coarse[level].data         = mfdata_dp[level];
-            smoother_data_coarse[level].n_iterations = CT::N_SMOOTH_STEPS_;
           }
+
+        smoother_data_coarse[minlevel].data         = mfdata_dp[minlevel];
+        smoother_data_coarse[minlevel].n_iterations = CT::N_SMOOTH_STEPS_;
 
         mg_smoother.initialize(matrix, smoother_data);
         mg_smoother_coarse.initialize(matrix, smoother_data_coarse);

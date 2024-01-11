@@ -1014,7 +1014,8 @@ namespace PSMF
       local_laplace = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim;
       local_mix_mass =
         local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
-      local_mix_der = local_mix_mass;
+      local_mix_der =
+        local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * (dim - 1);
 
       tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * 1;
 

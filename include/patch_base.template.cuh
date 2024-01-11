@@ -411,7 +411,8 @@ namespace PSMF
           get_patch_data(*patch_v, *patch_p, p_id);
 
         alloc_arrays(&patch_type_smooth[i], n_patches * dim);
-        // alloc_arrays(&patch_dof_smooth[i], n_patches * n_patch_dofs);
+        if (level == 1 && 0)
+          alloc_arrays(&patch_dof_smooth[i], n_patches * n_patch_dofs);
         alloc_arrays(&first_dof_rt_smooth[i],
                      n_patches * n_first_dofs_rt<dim>());
         alloc_arrays(&first_dof_dg_smooth[i], n_patches * regular_vpatch_size);
@@ -423,11 +424,15 @@ namespace PSMF
                      cudaMemcpyHostToDevice);
         AssertCuda(error_code);
 
-        // error_code = cudaMemcpy(patch_dof_smooth[i],
-        //                         patch_dofs_host.data(),
-        //                         n_patch_dofs * n_patches * sizeof(unsigned
-        //                         int), cudaMemcpyHostToDevice);
-        // AssertCuda(error_code);
+        if (level == 1 && 0)
+          {
+            error_code =
+              cudaMemcpy(patch_dof_smooth[i],
+                         patch_dofs_host.data(),
+                         n_patch_dofs * n_patches * sizeof(unsigned int),
+                         cudaMemcpyHostToDevice);
+            AssertCuda(error_code);
+          }
 
         error_code =
           cudaMemcpy(first_dof_rt_smooth[i],
@@ -606,8 +611,9 @@ namespace PSMF
       dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 3) +
       Util::pow(2 * fe_degree + 2, dim);
 
-    // alloc_arrays(&eigenvalues[0],
-    //              Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
+    if (level == 1 && 0)
+      alloc_arrays(&eigenvalues[0],
+                   Util::pow(n_patch_dofs_inv, 2) * Util::pow(3, dim));
 
     for (unsigned int d = 0; d < dim; ++d)
       {
@@ -891,235 +897,239 @@ namespace PSMF
       for (unsigned int j = 0; j < 3; ++j)
         for (unsigned int k = 0; k < 3; ++k)
           {
-            // Exact
             {
-              /*
-              std::array<FullMatrix<double>, dim> A;
-              if constexpr (dim == 2)
+              // Exact
+              if (level == 1 && 0)
                 {
-                  {
-                    FullMatrix<double> t0 =
-                      Tensors::kronecker_product_(RT_mass[1][2],
-                                                  RT_laplace[0][3 + k]);
-                    FullMatrix<double> t1 =
-                      Tensors::kronecker_product_(RT_laplace[1][3 + j],
-                                                  RT_mass[0][2]);
-                    t0.add(1., t1);
-                    A[0].copy_from(t0);
-                  }
+                  std::array<FullMatrix<double>, dim> A;
+                  if constexpr (dim == 2)
+                    {
+                      {
+                        FullMatrix<double> t0 =
+                          Tensors::kronecker_product_(RT_mass[1][2],
+                                                      RT_laplace[0][3 + k]);
+                        FullMatrix<double> t1 =
+                          Tensors::kronecker_product_(RT_laplace[1][3 + j],
+                                                      RT_mass[0][2]);
+                        t0.add(1., t1);
+                        A[0].copy_from(t0);
+                      }
 
-                  {
-                    FullMatrix<double> t0 =
-                      Tensors::kronecker_product_(RT_mass[1][2],
-                                                  RT_laplace[0][3 + j]);
-                    FullMatrix<double> t1 =
-                      Tensors::kronecker_product_(RT_laplace[1][3 + k],
-                                                  RT_mass[0][2]);
-                    t0.add(1., t1);
-                    A[1].copy_from(t0);
-                  }
-                }
-              else if constexpr (dim == 3)
-                {
-                  {
-                    FullMatrix<double> t0 =
-                      Tensors::kronecker_product_(RT_mass[2][2],
-                                                  RT_mass[1][2],
-                                                  RT_laplace[0][3 + k]);
-                    FullMatrix<double> t1 =
-                      Tensors::kronecker_product_(RT_mass[2][2],
-                                                  RT_laplace[1][3 + j],
-                                                  RT_mass[0][2]);
-                    FullMatrix<double> t2 =
-                      Tensors::kronecker_product_(RT_laplace[2][3 + z],
-                                                  RT_mass[1][2],
-                                                  RT_mass[0][2]);
-                    t0.add(1., t1);
-                    t2.add(1., t0);
-                    A[0].copy_from(t2);
-                  }
+                      {
+                        FullMatrix<double> t0 =
+                          Tensors::kronecker_product_(RT_mass[1][2],
+                                                      RT_laplace[0][3 + j]);
+                        FullMatrix<double> t1 =
+                          Tensors::kronecker_product_(RT_laplace[1][3 + k],
+                                                      RT_mass[0][2]);
+                        t0.add(1., t1);
+                        A[1].copy_from(t0);
+                      }
+                    }
+                  else if constexpr (dim == 3)
+                    {
+                      {
+                        FullMatrix<double> t0 =
+                          Tensors::kronecker_product_(RT_mass[2][2],
+                                                      RT_mass[1][2],
+                                                      RT_laplace[0][3 + k]);
+                        FullMatrix<double> t1 =
+                          Tensors::kronecker_product_(RT_mass[2][2],
+                                                      RT_laplace[1][3 + j],
+                                                      RT_mass[0][2]);
+                        FullMatrix<double> t2 =
+                          Tensors::kronecker_product_(RT_laplace[2][3 + z],
+                                                      RT_mass[1][2],
+                                                      RT_mass[0][2]);
+                        t0.add(1., t1);
+                        t2.add(1., t0);
+                        A[0].copy_from(t2);
+                      }
 
-                  {
-                    FullMatrix<double> t0 =
-                      Tensors::kronecker_product_(RT_mass[2][2],
-                                                  RT_mass[1][2],
-                                                  RT_laplace[0][3 + j]);
-                    FullMatrix<double> t1 =
-                      Tensors::kronecker_product_(RT_mass[2][2],
-                                                  RT_laplace[1][3 + k],
-                                                  RT_mass[0][2]);
-                    FullMatrix<double> t2 =
-                      Tensors::kronecker_product_(RT_laplace[2][3 + z],
-                                                  RT_mass[1][2],
-                                                  RT_mass[0][2]);
-                    t0.add(1., t1);
-                    t2.add(1., t0);
-                    A[1].copy_from(t2);
-                  }
+                      {
+                        FullMatrix<double> t0 =
+                          Tensors::kronecker_product_(RT_mass[2][2],
+                                                      RT_mass[1][2],
+                                                      RT_laplace[0][3 + j]);
+                        FullMatrix<double> t1 =
+                          Tensors::kronecker_product_(RT_mass[2][2],
+                                                      RT_laplace[1][3 + k],
+                                                      RT_mass[0][2]);
+                        FullMatrix<double> t2 =
+                          Tensors::kronecker_product_(RT_laplace[2][3 + z],
+                                                      RT_mass[1][2],
+                                                      RT_mass[0][2]);
+                        t0.add(1., t1);
+                        t2.add(1., t0);
+                        A[1].copy_from(t2);
+                      }
 
-                  {
-                    FullMatrix<double> t0 =
-                      Tensors::kronecker_product_(RT_mass[2][2],
-                                                  RT_mass[1][2],
-                                                  RT_laplace[0][3 + z]);
-                    FullMatrix<double> t1 =
-                      Tensors::kronecker_product_(RT_mass[2][2],
-                                                  RT_laplace[1][3 + k],
-                                                  RT_mass[0][2]);
-                    FullMatrix<double> t2 =
-                      Tensors::kronecker_product_(RT_laplace[2][3 + j],
-                                                  RT_mass[1][2],
-                                                  RT_mass[0][2]);
-                    t0.add(1., t1);
-                    t2.add(1., t0);
-                    A[2].copy_from(t2);
-                  }
-                }
+                      {
+                        FullMatrix<double> t0 =
+                          Tensors::kronecker_product_(RT_mass[2][2],
+                                                      RT_mass[1][2],
+                                                      RT_laplace[0][3 + z]);
+                        FullMatrix<double> t1 =
+                          Tensors::kronecker_product_(RT_mass[2][2],
+                                                      RT_laplace[1][3 + k],
+                                                      RT_mass[0][2]);
+                        FullMatrix<double> t2 =
+                          Tensors::kronecker_product_(RT_laplace[2][3 + j],
+                                                      RT_mass[1][2],
+                                                      RT_mass[0][2]);
+                        t0.add(1., t1);
+                        t2.add(1., t0);
+                        A[2].copy_from(t2);
+                      }
+                    }
 
-              FullMatrix<double> B =
-                dim == 2 ?
-                  Tensors::kronecker_product_(Mix_mass[1][2], Mix_der[0][2]) :
-                  Tensors::kronecker_product_(Mix_mass[2][2],
-                                              Mix_mass[1][2],
-                                              Mix_der[0][2]);
+                  FullMatrix<double> B =
+                    dim == 2 ? Tensors::kronecker_product_(Mix_mass[1][2],
+                                                           Mix_der[0][2]) :
+                               Tensors::kronecker_product_(Mix_mass[2][2],
+                                                           Mix_mass[1][2],
+                                                           Mix_der[0][2]);
 
-              B /= -1;
+                  B /= -1;
 
-              FullMatrix<double> Bt;
-              Bt.copy_transposed(B);
+                  FullMatrix<double> Bt;
+                  Bt.copy_transposed(B);
 
-              const unsigned int n_patch_dofs_inv =
-                dim * Util::pow(2 * fe_degree + 2, dim - 1) *
-                  (2 * (fe_degree + 2) - 3) +
-                Util::pow(2 * fe_degree + 2, dim);
+                  const unsigned int n_patch_dofs_inv =
+                    dim * Util::pow(2 * fe_degree + 2, dim - 1) *
+                      (2 * (fe_degree + 2) - 3) +
+                    Util::pow(2 * fe_degree + 2, dim);
 
-              AssertDimension(A[0].n() * dim + B.n(), n_patch_dofs);
+                  AssertDimension(A[0].n() * dim + B.n(), n_patch_dofs);
 
-              FullMatrix<double> PatchMatrix(n_patch_dofs, n_patch_dofs);
+                  FullMatrix<double> PatchMatrix(n_patch_dofs, n_patch_dofs);
 
-              for (unsigned int d = 0; d < dim; ++d)
-                {
-                  PatchMatrix.fill(A[d], d * A[0].m(), d * A[0].n(), 0, 0);
-                  PatchMatrix.fill(B, d * A[0].m(), dim * A[0].n(), 0, 0);
-                  PatchMatrix.fill(Bt, dim * A[0].m(), d * A[0].n(), 0, 0);
-                }
+                  for (unsigned int d = 0; d < dim; ++d)
+                    {
+                      PatchMatrix.fill(A[d], d * A[0].m(), d * A[0].n(), 0, 0);
+                      PatchMatrix.fill(B, d * A[0].m(), dim * A[0].n(), 0, 0);
+                      PatchMatrix.fill(Bt, dim * A[0].m(), d * A[0].n(), 0, 0);
+                    }
 
-              // PatchMatrix.fill(A[0], 0, 0, 0, 0);
-              // PatchMatrix.fill(A[1], A[0].m(), A[0].n(), 0, 0);
-              // PatchMatrix.fill(B, 0, dim * A[0].n(), 0, 0);
-              // PatchMatrix.fill(B, A[0].m(), dim * A[0].n(), 0, 0);
-              // PatchMatrix.fill(Bt, dim * A[0].m(), 0, 0, 0);
-              // PatchMatrix.fill(Bt, dim * A[0].m(), A[0].n(), 0, 0);
+                  // PatchMatrix.fill(A[0], 0, 0, 0, 0);
+                  // PatchMatrix.fill(A[1], A[0].m(), A[0].n(), 0, 0);
+                  // PatchMatrix.fill(B, 0, dim * A[0].n(), 0, 0);
+                  // PatchMatrix.fill(B, A[0].m(), dim * A[0].n(), 0, 0);
+                  // PatchMatrix.fill(Bt, dim * A[0].m(), 0, 0, 0);
+                  // PatchMatrix.fill(Bt, dim * A[0].m(), A[0].n(), 0, 0);
 
-              DoFMapping<dim, fe_degree> dm;
+                  DoFMapping<dim, fe_degree> dm;
 
-              auto ind_v_b  = dm.get_l_to_h_rt();
-              auto ind_p1   = dm.get_h_to_l_dg_normal();
-              auto ind_p1_b = dm.get_l_to_h_dg_normal();
-              auto ind_p2_b = dm.get_l_to_h_dg_tangent();
-              auto ind_p3_b = dm.get_l_to_h_dg_z();
+                  auto ind_v_b  = dm.get_l_to_h_rt();
+                  auto ind_p1   = dm.get_h_to_l_dg_normal();
+                  auto ind_p1_b = dm.get_l_to_h_dg_normal();
+                  auto ind_p2_b = dm.get_l_to_h_dg_tangent();
+                  auto ind_p3_b = dm.get_l_to_h_dg_z();
 
-              FullMatrix<double> AA(PatchMatrix.m(), PatchMatrix.n());
+                  FullMatrix<double> AA(PatchMatrix.m(), PatchMatrix.n());
 
-              for (auto i = 0U; i < ind_v_b.size(); ++i)
-                for (auto j = 0U; j < ind_v_b.size(); ++j)
-                  AA(i, j) = PatchMatrix(ind_v_b[i], ind_v_b[j]);
+                  for (auto i = 0U; i < ind_v_b.size(); ++i)
+                    for (auto j = 0U; j < ind_v_b.size(); ++j)
+                      AA(i, j) = PatchMatrix(ind_v_b[i], ind_v_b[j]);
 
-              for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
-                for (auto j = 0U; j < ind_p2_b.size(); ++j)
-                  Bt(j, i) = B(i, ind_p2_b[j]);
-
-              for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
-                for (auto j = 0U; j < ind_p1.size(); ++j)
-                  PatchMatrix(i + ind_v_b.size() / dim, j + ind_v_b.size()) =
-                    Bt(ind_p1[j], i);
-
-              if constexpr (dim == 3)
-                {
                   for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
-                    for (auto j = 0U; j < ind_p3_b.size(); ++j)
-                      Bt(j, i) = B(i, ind_p3_b[j]);
+                    for (auto j = 0U; j < ind_p2_b.size(); ++j)
+                      Bt(j, i) = B(i, ind_p2_b[j]);
 
                   for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
                     for (auto j = 0U; j < ind_p1.size(); ++j)
-                      PatchMatrix(i + 2 * ind_v_b.size() / dim,
+                      PatchMatrix(i + ind_v_b.size() / dim,
                                   j + ind_v_b.size()) = Bt(ind_p1[j], i);
-                }
 
-              for (auto i = 0U; i < ind_v_b.size(); ++i)
-                for (auto j = 0U; j < ind_p1_b.size(); ++j)
+                  if constexpr (dim == 3)
+                    {
+                      for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+                        for (auto j = 0U; j < ind_p3_b.size(); ++j)
+                          Bt(j, i) = B(i, ind_p3_b[j]);
+
+                      for (auto i = 0U; i < ind_v_b.size() / dim; ++i)
+                        for (auto j = 0U; j < ind_p1.size(); ++j)
+                          PatchMatrix(i + 2 * ind_v_b.size() / dim,
+                                      j + ind_v_b.size()) = Bt(ind_p1[j], i);
+                    }
+
+                  for (auto i = 0U; i < ind_v_b.size(); ++i)
+                    for (auto j = 0U; j < ind_p1_b.size(); ++j)
+                      {
+                        AA(i, j + ind_v_b.size()) =
+                          PatchMatrix(ind_v_b[i], ind_p1_b[j] + ind_v_b.size());
+                        AA(j + ind_v_b.size(), i) = AA(i, j + ind_v_b.size());
+                      }
+
+                  auto h_interior_host_rt = dm.get_h_to_l_rt_interior();
+                  auto h_interior_host_dg = dm.get_h_to_l_dg_normal();
+
+                  std::sort(h_interior_host_rt.begin(),
+                            h_interior_host_rt.end());
+                  std::sort(h_interior_host_dg.begin(),
+                            h_interior_host_dg.end());
+
+                  for (auto &i : h_interior_host_dg)
+                    i += n_patch_dofs_rt;
+
+                  h_interior_host_rt.insert(h_interior_host_rt.end(),
+                                            h_interior_host_dg.begin(),
+                                            h_interior_host_dg.end());
+
+                  FullMatrix<double> AA_inv(n_patch_dofs_inv, n_patch_dofs_inv);
+
+                  AA_inv.extract_submatrix_from(AA,
+                                                h_interior_host_rt,
+                                                h_interior_host_rt);
+
+                  // if (k == 2 && j == 2)
+                  //   {
+                  //     std::ofstream out;
+                  //     out.open("AA_" + std::to_string(level));
+                  //     AA.print_formatted(out, 3, true, 0, "0");
+                  //     out.close();
+                  //   }
+
+                  LAPACKFullMatrix<double> exact_inverse(AA_inv.m(),
+                                                         AA_inv.n());
+                  exact_inverse = AA_inv;
+                  // Timer time;
+                  exact_inverse.compute_inverse_svd_with_kernel(1);
+                  // std::cout << k + j * 3 + z * 9 << " " << time.wall_time()
+                  // << std::endl;
+                  Vector<double> tmp(AA_inv.m());
+                  Vector<double> dst(AA_inv.m());
+                  for (unsigned int col = 0; col < exact_inverse.n(); ++col)
+                    {
+                      tmp[col] = 1;
+                      exact_inverse.vmult(dst, tmp);
+                      for (unsigned int row = 0; row < exact_inverse.n(); ++row)
+                        AA_inv(row, col) = dst[row];
+                      tmp[col] = 0;
+                    }
+
+                  // direct
                   {
-                    AA(i, j + ind_v_b.size()) =
-                      PatchMatrix(ind_v_b[i], ind_p1_b[j] + ind_v_b.size());
-                    AA(j + ind_v_b.size(), i) = AA(i, j + ind_v_b.size());
+                    auto *vals = new Number[AA_inv.m() * AA_inv.n()];
+
+                    for (unsigned int r = 0; r < AA_inv.m(); ++r)
+                      std::transform(AA_inv.begin(r),
+                                     AA_inv.end(r),
+                                     &vals[r * AA_inv.n()],
+                                     [](auto m) -> Number { return m; });
+
+                    cudaError_t error_code =
+                      cudaMemcpy(eigenvalues[0] +
+                                   (k + j * 3 + z * 9) * AA_inv.n_elements(),
+                                 vals,
+                                 AA_inv.n_elements() * sizeof(Number),
+                                 cudaMemcpyHostToDevice);
+                    AssertCuda(error_code);
+
+                    delete[] vals;
                   }
-
-              auto h_interior_host_rt = dm.get_h_to_l_rt_interior();
-              auto h_interior_host_dg = dm.get_h_to_l_dg_normal();
-
-              std::sort(h_interior_host_rt.begin(), h_interior_host_rt.end());
-              std::sort(h_interior_host_dg.begin(), h_interior_host_dg.end());
-
-              for (auto &i : h_interior_host_dg)
-                i += n_patch_dofs_rt;
-
-              h_interior_host_rt.insert(h_interior_host_rt.end(),
-                                        h_interior_host_dg.begin(),
-                                        h_interior_host_dg.end());
-
-              FullMatrix<double> AA_inv(n_patch_dofs_inv, n_patch_dofs_inv);
-
-              AA_inv.extract_submatrix_from(AA,
-                                            h_interior_host_rt,
-                                            h_interior_host_rt);
-
-              // if (k == 2 && j == 2)
-              //   {
-              //     std::ofstream out;
-              //     out.open("AA_" + std::to_string(level));
-              //     AA.print_formatted(out, 3, true, 0, "0");
-              //     out.close();
-              //   }
-
-              LAPACKFullMatrix<double> exact_inverse(AA_inv.m(), AA_inv.n());
-              exact_inverse = AA_inv;
-              // Timer time;
-              // exact_inverse.compute_inverse_svd_with_kernel(1);
-              // std::cout << k + j * 3 + z * 9 << " " << time.wall_time() <<
-              // std::endl;
-              Vector<double> tmp(AA_inv.m());
-              Vector<double> dst(AA_inv.m());
-              for (unsigned int col = 0; col < exact_inverse.n(); ++col)
-                {
-                  tmp[col] = 1;
-                  exact_inverse.vmult(dst, tmp);
-                  for (unsigned int row = 0; row < exact_inverse.n(); ++row)
-                    AA_inv(row, col) = dst[row];
-                  tmp[col] = 0;
                 }
-
-              // direct
-              {
-                auto *vals = new Number[AA_inv.m() * AA_inv.n()];
-
-                for (unsigned int r = 0; r < AA_inv.m(); ++r)
-                  std::transform(AA_inv.begin(r),
-                                 AA_inv.end(r),
-                                 &vals[r * AA_inv.n()],
-                                 [](auto m) -> Number { return m; });
-
-                cudaError_t error_code =
-                  cudaMemcpy(eigenvalues[0] +
-                               (k + j * 3 + z * 9) * AA_inv.n_elements(),
-                             vals,
-                             AA_inv.n_elements() * sizeof(Number),
-                             cudaMemcpyHostToDevice);
-                AssertCuda(error_code);
-
-                delete[] vals;
-              }
-
-
+              /*
               // Schur direct
               {
                 auto h_interior_rt = dm.get_h_to_l_rt_interior();
