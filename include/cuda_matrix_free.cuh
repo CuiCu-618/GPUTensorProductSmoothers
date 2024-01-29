@@ -235,7 +235,7 @@ namespace PSMF
       /**
        * Pointer to the face direction.
        */
-      unsigned int *face_direction;
+      unsigned int *face_number;
 
       /**
        * ID of the associated MatrixFree object.
@@ -655,7 +655,7 @@ namespace PSMF
     /**
      * Vector of pointer to the face direction.
      */
-    std::vector<unsigned int *> face_direction;
+    std::vector<unsigned int *> face_number;
 
     /**
      * Pointer to the constrained degrees of freedom.
@@ -929,7 +929,7 @@ namespace PSMF
     /**
      * Pointer to the face direction.
      */
-    std::vector<unsigned int> face_direction;
+    std::vector<unsigned int> face_number;
 
     /**
      * ID of the associated MatrixFree object.

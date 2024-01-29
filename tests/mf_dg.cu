@@ -57,7 +57,7 @@ public:
 
 
 template <int dim, int fe_degree, typename Number>
-class LocalLaplaceFaceOperator
+class LocalLaplaceBDOperator
 {
 public:
   static const unsigned int n_dofs_1d    = fe_degree + 1;
@@ -67,7 +67,7 @@ public:
   static const unsigned int cells_per_block = 1;
 
 
-  LocalLaplaceFaceOperator()
+  LocalLaplaceBDOperator()
   {}
 
   __device__ Number
@@ -88,8 +88,71 @@ public:
     fe_eval.read_dof_values(src);
     fe_eval.evaluate(true, true);
 
-
     auto hi    = fabs(fe_eval.inverse_length_normal_to_face());
+    auto sigma = hi * get_penalty_factor();
+
+    auto u_inner                 = fe_eval.get_value();
+    auto normal_derivative_inner = fe_eval.get_normal_derivative();
+    auto test_by_value = 2 * u_inner * sigma - normal_derivative_inner;
+
+    fe_eval.submit_value(test_by_value);
+    fe_eval.submit_normal_derivative(-u_inner);
+
+    fe_eval.integrate(true, true);
+    fe_eval.distribute_local_to_global(dst);
+  }
+};
+
+
+
+template <int dim, int fe_degree, typename Number>
+class LocalLaplaceFaceOperator
+{
+public:
+  static const unsigned int n_dofs_1d = fe_degree + 1;
+  static const unsigned int n_local_dofs =
+    Utilities::pow(fe_degree + 1, dim) * 2;
+  static const unsigned int n_q_points = Utilities::pow(fe_degree + 1, dim) * 2;
+
+  static const unsigned int cells_per_block = 1;
+
+
+  LocalLaplaceFaceOperator()
+  {}
+
+  __device__ Number
+  get_penalty_factor() const
+  {
+    return 1.0 * fe_degree * (fe_degree + 1);
+  }
+
+  __device__ void
+  operator()(const unsigned int                                  face,
+             const typename PSMF::MatrixFree<dim, Number>::Data *gpu_data,
+             PSMF::SharedData<dim, Number>                      *shared_data,
+             const Number                                       *src,
+             Number                                             *dst) const
+  {
+    PSMF::FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi_inner(
+      face, gpu_data, shared_data, true);
+    PSMF::FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi_outer(
+      face, gpu_data, shared_data, false);
+
+    phi_inner.read_dof_values(src);
+    phi_inner.evaluate(true, true);
+
+    phi_outer.read_dof_values(src);
+    phi_outer.evaluate(true, true);
+
+    // if (blockIdx.x == 2)
+    //   {
+    //     auto val = phi_outer.get_dof_value();
+    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
+    //     printf("%d: %.2f\n", idx, val);
+    //   }
+
+    auto hi    = 0.5 * (fabs(phi_inner.inverse_length_normal_to_face()) +
+                     fabs(phi_outer.inverse_length_normal_to_face()));
     auto sigma = hi * get_penalty_factor();
 
     // if (blockIdx.x == 1)
@@ -98,41 +161,58 @@ public:
     //     printf("%d: %.2f, %.2f\n", idx, hi, sigma);
     //   }
 
-    auto u_inner                 = fe_eval.get_value();
-    auto normal_derivative_inner = fe_eval.get_normal_derivative();
-    auto test_by_value = 2 * u_inner * sigma - normal_derivative_inner;
+    auto solution_jump = phi_inner.get_value() - phi_outer.get_value();
+    auto average_normal_derivative = 0.5 * (phi_inner.get_normal_derivative() +
+                                            phi_outer.get_normal_derivative());
+    auto test_by_value = solution_jump * sigma - average_normal_derivative;
+
 
     // if (blockIdx.x == 1)
     //   {
-    //     __syncthreads();
-
-    //     auto der = fe_eval.get_gradient();
-    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
-    //     printf("%d: %.2f, %.2f, %.2f |  %.2f, %.2f\n",
-    //            idx,
-    //            u_inner,
-    //            normal_derivative_inner,
-    //            test_by_value,
-    //            der[0],
-    //            der[1]);
-    //   }
-
-    fe_eval.submit_normal_derivative(-u_inner);
-    fe_eval.submit_value(test_by_value);
-
-    // if (blockIdx.x == 1)
-    //   {
-    //     auto val = fe_eval.get_value();
-    //     auto der = fe_eval.get_gradient();
-    //     auto nor = fe_eval.get_normal_derivative();
+    //     auto val = phi_inner.get_value();
+    //     auto der = phi_inner.get_gradient();
+    //     auto nor = phi_inner.get_normal_derivative();
     //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
     //     printf("%d: %.2f, %.2f |  %.2f, %.2f\n", idx, val, nor, der[0], der[1]);
+    //     // printf("%d: %.2f, %.2f, %.2f\n", idx, solution_jump,
+    //     // average_normal_derivative, test_by_value);
     //   }
 
-    fe_eval.integrate(true, true);
-    fe_eval.distribute_local_to_global(dst);
+    phi_inner.submit_value(test_by_value);
+    phi_outer.submit_value(-test_by_value);
+
+    phi_inner.submit_normal_derivative(-solution_jump * 0.5);
+    phi_outer.submit_normal_derivative(-solution_jump * 0.5);
+
+    // if (blockIdx.x == 1)
+    //   {
+    //     auto val = phi_inner.get_value();
+    //     auto der = phi_inner.get_gradient();
+    //     auto nor = phi_inner.get_normal_derivative();
+    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
+    //     printf("%d: %.2f, %.2f |  %.2f, %.2f\n", idx, val, nor, der[0], der[1]);
+    //     // printf("%d: %.2f, %.2f, %.2f\n", idx, solution_jump,
+    //     // average_normal_derivative, test_by_value);
+    //   }
+
+    phi_inner.integrate(true, true);
+    phi_inner.distribute_local_to_global(dst);
+
+    phi_outer.integrate(true, true);
+    phi_outer.distribute_local_to_global(dst);
+
+    // if (blockIdx.x == 1)
+    //   {
+    //     auto val  = phi_inner.get_value();
+    //     auto val1 = phi_outer.get_value();
+    //     auto idx  = PSMF::compute_index<dim, fe_degree + 1>();
+    //     printf("%d: %.2f, %.2f\n", idx, val, val1);
+    //     // printf("%d: %.2f, %.2f, %.2f\n", idx, solution_jump,
+    //     // average_normal_derivative, test_by_value);
+    //   }
   }
 };
+
 
 
 template <int dim, int fe_degree>
@@ -189,11 +269,14 @@ LaplaceOperator<dim, fe_degree>::vmult(
   const
 {
   dst = 0.;
-  // LocalLaplaceOperator<dim, fe_degree, double> laplace_operator;
-  // mf_data.cell_loop(laplace_operator, src, dst);
+  LocalLaplaceOperator<dim, fe_degree, double> laplace_operator;
+  mf_data.cell_loop(laplace_operator, src, dst);
+
+  LocalLaplaceBDOperator<dim, fe_degree, double> laplace_bd_operator;
+  mf_data.boundary_face_loop(laplace_bd_operator, src, dst);
 
   LocalLaplaceFaceOperator<dim, fe_degree, double> laplace_face_operator;
-  mf_data.boundary_face_loop(laplace_face_operator, src, dst);
+  mf_data.inner_face_loop(laplace_face_operator, src, dst);
 
   // mf_data.copy_constrained_values(src, dst);
 }
@@ -243,11 +326,15 @@ test()
     {
       LinearAlgebra::ReadWriteVector<double> rw_vector(system_rhs_dev.size());
       rw_vector[i] = 1.;
+
       system_rhs_dev.import(rw_vector, VectorOperation::insert);
 
       laplace_operator.vmult(solution_dev, system_rhs_dev);
 
       solution_dev.print(std::cout);
+
+      // if (i == 0)
+      //   break;
     }
   // std::cout << solution_dev.l2_norm() << std::endl;
 }

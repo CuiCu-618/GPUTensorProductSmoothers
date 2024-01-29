@@ -55,16 +55,16 @@ namespace PSMF
    */
   template <int dim, int n_points_1d>
   __device__ inline unsigned int
-  compute_face_index(unsigned int face_direction)
+  compute_face_index(unsigned int face_number)
   {
     return (
       dim == 1 ?
         0 :
       dim == 2 ?
-        (face_direction == 0 ? threadIdx.y : threadIdx.x % n_points_1d) :
-        (face_direction == 0 ?
+        (face_number == 0 ? threadIdx.y : threadIdx.x % n_points_1d) :
+        (face_number == 0 ?
            n_points_1d * (threadIdx.y + n_points_1d * threadIdx.z) :
-         face_direction == 1 ?
+         face_number == 1 ?
            threadIdx.x % n_points_1d + n_points_1d * n_points_1d * threadIdx.z :
            threadIdx.x % n_points_1d + n_points_1d * threadIdx.y));
   }
@@ -470,9 +470,6 @@ namespace PSMF
     __device__ void
     apply_for_each_quad_point(const Functor &func);
 
-    Number *inv_jac;
-    Number *normal_vec;
-
   private:
     dealii::types::global_dof_index *local_to_global;
     dealii::types::global_dof_index *face_to_cell;
@@ -481,13 +478,15 @@ namespace PSMF
     unsigned int                     n_cells;
     unsigned int                     padding_length;
     unsigned int                     face_padding_length;
-    unsigned int                     face_direction;
+    unsigned int                     face_number;
     const unsigned int               mf_object_id;
 
     const bool use_coloring;
     const bool is_interior_face;
 
     Number *JxW;
+    Number *inv_jac;
+    Number *normal_vec;
 
     // Internal buffer
     Number *values;
@@ -809,29 +808,37 @@ namespace PSMF
     , use_coloring(data->use_coloring)
     , is_interior_face(is_interior_face)
   {
-    cell_id = is_interior_face ? data->face2cell_id[face_id] :
-                                 data->face2cell_id[face_id + n_faces];
+    auto face_no = is_interior_face ? face_id : face_id + n_faces;
 
-    // printf("faceid-cellid:[%d,%d]\n", face_id, cell_id);
+    cell_id = data->face2cell_id[face_no];
 
     local_to_global = data->local_to_global + padding_length * cell_id;
-    inv_jac         = data->face_inv_jacobian + face_padding_length * face_id;
-    JxW             = data->face_JxW + face_padding_length * face_id;
-    normal_vec      = data->normal_vector + face_padding_length * face_id;
-    face_direction  = *(data->face_direction + face_id);
+    inv_jac         = data->face_inv_jacobian + face_padding_length * face_no;
+    JxW             = data->face_JxW + face_padding_length * face_no;
+    normal_vec      = data->normal_vector + face_padding_length * face_no;
+    face_number     = data->face_number[face_no];
+
+    // if (threadIdx.x == 0 && threadIdx.y == 0)
+    //   printf("%d: is %d faceid-faceno:[%d,%d]\n",
+    //          blockIdx.x,
+    //          is_interior_face,
+    //          face_no,
+    //          face_number);
 
     // if (threadIdx.x == 0 && threadIdx.y == 0)
     //   printf("jac n:[%.2f, %.2f]\n", normal_vec[0], normal_vec[n_cells *
     //   face_padding_length]);
 
     // if (threadIdx.x == 0 && threadIdx.y == 0)
-    //   printf("facedir: %d %.2f %.2f %.2f\n", face_id, JxW[0], JxW[1], JxW[2]);
+    //   printf("facedir: %d %.2f %.2f %.2f\n", face_id, JxW[0], JxW[1],
+    //   JxW[2]);
 
-    values =
-      is_interior_face ? shdata->values : shdata->values + tensor_dofs_per_cell;
+    unsigned int shift = is_interior_face ? 0 : tensor_dofs_per_cell;
+
+    values = &shdata->values[shift];
 
     for (unsigned int i = 0; i < dim; ++i)
-      gradients[i] = shdata->gradients[i];
+      gradients[i] = &shdata->gradients[i][shift];
   }
 
   template <int dim,
@@ -897,7 +904,7 @@ namespace PSMF
                            fe_degree,
                            n_q_points_1d,
                            Number>
-      evaluator_tensor_product(mf_object_id, face_direction);
+      evaluator_tensor_product(mf_object_id, face_number);
     if (evaluate_val == true && evaluate_grad == true)
       {
         // todo:
@@ -941,7 +948,7 @@ namespace PSMF
                            fe_degree,
                            n_q_points_1d,
                            Number>
-      evaluator_tensor_product(mf_object_id, face_direction);
+      evaluator_tensor_product(mf_object_id, face_number);
     if (integrate_val == true && integrate_grad == true)
       {
         // todo
@@ -950,10 +957,9 @@ namespace PSMF
 
         evaluator_tensor_product.integrate_value(values);
         __syncthreads();
-        
+
         evaluator_tensor_product.integrate_gradient<true>(values, gradients);
         __syncthreads();
-
       }
     else if (integrate_val == true)
       {
@@ -1016,7 +1022,7 @@ namespace PSMF
   {
     const unsigned int q_point = compute_index<dim, n_q_points_1d>();
     const unsigned int q_point_face =
-      compute_face_index<dim, n_q_points_1d>(face_direction / 2);
+      compute_face_index<dim, n_q_points_1d>(face_number / 2);
 
     values[q_point] = val_in * JxW[q_point_face];
   }
@@ -1057,7 +1063,7 @@ namespace PSMF
     // TODO optimize if the mesh is uniform
     const unsigned int q_point = compute_index<dim, n_q_points_1d>();
     const unsigned int q_point_face =
-      compute_face_index<dim, n_q_points_1d>(face_direction / 2);
+      compute_face_index<dim, n_q_points_1d>(face_number / 2);
     const Number *inv_jacobian = &inv_jac[q_point_face];
     gradient_type grad;
     for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
@@ -1087,7 +1093,7 @@ namespace PSMF
     // TODO optimize if the mesh is uniform
     const unsigned int q_point = compute_index<dim, n_q_points_1d>();
     const unsigned int q_point_face =
-      compute_face_index<dim, n_q_points_1d>(face_direction / 2);
+      compute_face_index<dim, n_q_points_1d>(face_number / 2);
     const Number *inv_jacobian = &inv_jac[q_point_face];
     for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
       {
@@ -1120,7 +1126,7 @@ namespace PSMF
 
     // TODO optimize if the mesh is uniform
     const unsigned int q_point_face =
-      compute_face_index<dim, n_q_points_1d>(face_direction / 2);
+      compute_face_index<dim, n_q_points_1d>(face_number / 2);
     const Number *normal_vector = &normal_vec[q_point_face];
 
     gradient_type grad              = get_gradient();
@@ -1147,7 +1153,7 @@ namespace PSMF
     // TODO optimize if the mesh is uniform
     const unsigned int q_point = compute_index<dim, n_q_points_1d>();
     const unsigned int q_point_face =
-      compute_face_index<dim, n_q_points_1d>(face_direction / 2);
+      compute_face_index<dim, n_q_points_1d>(face_number / 2);
     const Number *normal_vector = &normal_vec[q_point_face];
     const Number *inv_jacobian  = &inv_jac[q_point_face];
 
@@ -1186,9 +1192,9 @@ namespace PSMF
   {
     Number tmp = 0.;
     for (unsigned int d = 0; d < dim; ++d)
-      tmp += inv_jac[n_cells * face_padding_length *
-                     (dim * (face_direction / 2) + d)] *
-             normal_vec[n_cells * face_padding_length * d];
+      tmp +=
+        inv_jac[n_cells * face_padding_length * (dim * (face_number / 2) + d)] *
+        normal_vec[n_cells * face_padding_length * d];
 
     return tmp;
   }

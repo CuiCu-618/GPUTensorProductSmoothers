@@ -708,7 +708,7 @@ namespace PSMF
       dealii::Utilities::pow(fe_degree + 1, dim);
 
     __device__
-    EvaluatorTensorProduct(int mf_object_id, int face_direction);
+    EvaluatorTensorProduct(int mf_object_id, int face_number);
 
     /**
      * Evaluate the values of a finite element function at the quadrature
@@ -775,16 +775,16 @@ namespace PSMF
     integrate_value_and_gradient(Number *u, Number *grad_u[dim]);
 
     const int mf_object_id;
-    const int face_direction;
+    const int face_number;
   };
 
 
   template <int dim, int fe_degree, int n_q_points_1d, typename Number>
   __device__
   EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    EvaluatorTensorProduct(int object_id, int face_direction)
+    EvaluatorTensorProduct(int object_id, int face_number)
     : mf_object_id(object_id)
-    , face_direction(face_direction)
+    , face_number(face_number)
   {}
 
   template <int dim, int fe_degree, int n_q_points_1d, typename Number>
@@ -858,20 +858,20 @@ namespace PSMF
     value_at_quad_pts(Number *u)
   {
     const unsigned int shift =
-      (face_direction & 1) * n_q_points_1d * n_q_points_1d;
+      (face_number & 1) * n_q_points_1d * n_q_points_1d;
 
     Number *shape_value_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
@@ -921,20 +921,20 @@ namespace PSMF
     integrate_value(Number *u)
   {
     const unsigned int shift =
-      (face_direction & 1) * n_q_points_1d * n_q_points_1d;
+      (face_number & 1) * n_q_points_1d * n_q_points_1d;
 
     Number *shape_value_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
@@ -984,35 +984,35 @@ namespace PSMF
     gradient_at_quad_pts(const Number *const u, Number *grad_u[dim])
   {
     const unsigned int shift =
-      (face_direction & 1) * n_q_points_1d * n_q_points_1d;
+      (face_number & 1) * n_q_points_1d * n_q_points_1d;
 
     Number *shape_value_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_gradient_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_shape_gradients<Number>(mf_object_id);
 
     Number *shape_gradient_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_shape_gradients<Number>(mf_object_id);
 
     Number *shape_gradient_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_shape_gradients<Number>(mf_object_id);
 
@@ -1092,35 +1092,35 @@ namespace PSMF
     value_and_gradient_at_quad_pts(Number *const u, Number *grad_u[dim])
   {
     const unsigned int shift =
-      (face_direction & 1) * n_q_points_1d * n_q_points_1d;
+      (face_number & 1) * n_q_points_1d * n_q_points_1d;
 
     Number *shape_value_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *co_shape_gradient_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_co_shape_gradients<Number>(mf_object_id);
 
     Number *co_shape_gradient_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_co_shape_gradients<Number>(mf_object_id);
 
     Number *co_shape_gradient_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_co_shape_gradients<Number>(mf_object_id);
 
@@ -1195,35 +1195,35 @@ namespace PSMF
     integrate_gradient(Number *u, Number *grad_u[dim])
   {
     const unsigned int shift =
-      (face_direction & 1) * n_q_points_1d * n_q_points_1d;
+      (face_number & 1) * n_q_points_1d * n_q_points_1d;
 
     Number *shape_value_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_gradient_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_shape_gradients<Number>(mf_object_id);
 
     Number *shape_gradient_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_shape_gradients<Number>(mf_object_id);
 
     Number *shape_gradient_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_shape_gradients<Number>(mf_object_id);
 
@@ -1308,35 +1308,35 @@ namespace PSMF
     integrate_value_and_gradient(Number *u, Number *grad_u[dim])
   {
     const unsigned int shift =
-      (face_direction & 1) * n_q_points_1d * n_q_points_1d;
+      (face_number & 1) * n_q_points_1d * n_q_points_1d;
 
     Number *shape_value_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *shape_value_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
         get_cell_shape_values<Number>(mf_object_id);
 
     Number *co_shape_gradient_dir0 =
-      face_direction / 2 == 0 ?
+      face_number / 2 == 0 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_co_shape_gradients<Number>(mf_object_id);
 
     Number *co_shape_gradient_dir1 =
-      face_direction / 2 == 1 ?
+      face_number / 2 == 1 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_co_shape_gradients<Number>(mf_object_id);
 
     Number *co_shape_gradient_dir2 =
-      face_direction / 2 == 2 ?
+      face_number / 2 == 2 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
         get_cell_co_shape_gradients<Number>(mf_object_id);
 
