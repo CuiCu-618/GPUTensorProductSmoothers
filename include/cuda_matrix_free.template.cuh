@@ -1207,8 +1207,8 @@ namespace PSMF
   template <typename Functor, typename VectorType>
   void
   MatrixFree<dim, Number>::inner_face_loop(const Functor    &func,
-                                              const VectorType &src,
-                                              VectorType       &dst) const
+                                           const VectorType &src,
+                                           VectorType       &dst) const
   {
     // Execute the loop on the boundary faces
     for (unsigned int i = 0; i < n_colors; ++i)
@@ -1216,7 +1216,10 @@ namespace PSMF
         {
           apply_kernel_shmem<dim, Number, Functor>
             <<<grid_dim_inner_face[i], block_dim_inner_face[i]>>>(
-              func, get_face_data<false>(i), src.get_values(), dst.get_values());
+              func,
+              get_face_data<false>(i),
+              src.get_values(),
+              dst.get_values());
           AssertCudaKernel();
         }
   }
