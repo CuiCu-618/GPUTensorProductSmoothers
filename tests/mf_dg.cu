@@ -110,7 +110,7 @@ public:
     //     auto val = fe_eval.get_dof_value();
     //     auto der = fe_eval.get_gradient();
     //     auto nor = fe_eval.get_normal_derivative();
-    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>(); 
+    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
     //     auto fidx = PSMF::compute_face_index<dim, fe_degree + 1>(1);
     //     auto jxw = fe_eval.JxW[fidx];
     //     printf("%d: %.2f, %.2f |  %.2f, %.2f\n", idx, val, nor, der[0], der[1]);
@@ -124,17 +124,17 @@ public:
     fe_eval.integrate(true, true);
     fe_eval.distribute_local_to_global(dst);
 
-      // if (blockIdx.x == 4)
-      // {
-      //   auto val = fe_eval.get_dof_value();
-      //   auto der = fe_eval.get_gradient();
-      //   auto nor = fe_eval.get_normal_derivative();
-      //   auto idx = PSMF::compute_index<dim, fe_degree + 1>();
-      //   // printf("%d: %.2f, %.2f |  %.2f, %.2f\n", idx, val, nor, der[0], der[1]);
-      //   // printf("%d: %.2f, %.2f, %.2f\n", idx, u_inner,
-      //   // normal_derivative_inner, test_by_value);
-      //   printf("%d: %f\n", idx, val);
-      // }
+    // if (blockIdx.x == 4)
+    // {
+    //   auto val = fe_eval.get_dof_value();
+    //   auto der = fe_eval.get_gradient();
+    //   auto nor = fe_eval.get_normal_derivative();
+    //   auto idx = PSMF::compute_index<dim, fe_degree + 1>();
+    //   // printf("%d: %.2f, %.2f |  %.2f, %.2f\n", idx, val, nor, der[0], der[1]);
+    //   // printf("%d: %.2f, %.2f, %.2f\n", idx, u_inner,
+    //   // normal_derivative_inner, test_by_value);
+    //   printf("%d: %f\n", idx, val);
+    // }
   }
 };
 
@@ -393,9 +393,8 @@ test()
   // laplace_operator.vmult(solution_dev, system_rhs_dev);
 
   {
-
     LinearAlgebra::ReadWriteVector<double> rw_vector(system_rhs_dev.size());
-        for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
+    for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
       rw_vector[i] = 1. + i;
 
     system_rhs_dev.import(rw_vector, VectorOperation::insert);
@@ -405,7 +404,7 @@ test()
     solution_dev.print(std::cout);
     std::cout << solution_dev.l2_norm() << std::endl;
     // if (i == 0)
-      // break;
+    // break;
   }
   // std::cout << solution_dev.l2_norm() << std::endl;
 }

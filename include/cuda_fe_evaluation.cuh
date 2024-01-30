@@ -822,16 +822,19 @@ namespace PSMF
 
     // auto q_point = compute_face_index<dim, fe_degree + 1>(face_number / 2);
 
-    // if (blockIdx.x == 4 && threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0)
+    // if (blockIdx.x == 4 && threadIdx.x == 0 && threadIdx.y == 0 &&
+    // threadIdx.z == 0)
     //   printf("%2d: %2d | %d, %d\n",
     //          blockIdx.x,
     //          is_interior_face,
     //          face_number,
     //          cell_id);
 
-    // if (blockIdx.x == 4 && threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0)
-    //   printf("n:[%.2f, %.2f, %.2f]\n", normal_vec[q_point], normal_vec[q_point + n_cells * face_padding_length]
-    //   , normal_vec[q_point + n_cells * face_padding_length * 2]); 
+    // if (blockIdx.x == 4 && threadIdx.x == 0 && threadIdx.y == 0 &&
+    // threadIdx.z == 0)
+    //   printf("n:[%.2f, %.2f, %.2f]\n", normal_vec[q_point],
+    //   normal_vec[q_point + n_cells * face_padding_length] ,
+    //   normal_vec[q_point + n_cells * face_padding_length * 2]);
 
     // if (threadIdx.x == 0 && threadIdx.y == 0)
     //   printf("facedir: %d %.2f %.2f %.2f\n", face_id, JxW[0], JxW[1],
