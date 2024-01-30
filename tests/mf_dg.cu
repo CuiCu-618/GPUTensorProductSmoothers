@@ -8,9 +8,13 @@
 
 #include <deal.II/grid/filtered_iterator.h>
 #include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_out.h>
+#include <deal.II/grid/grid_tools.h>
 #include <deal.II/grid/tria.h>
 
 #include <deal.II/lac/affine_constraints.h>
+
+#include <deal.II/numerics/data_out.h>
 
 #include <helper_cuda.h>
 
@@ -91,15 +95,46 @@ public:
     auto hi    = fabs(fe_eval.inverse_length_normal_to_face());
     auto sigma = hi * get_penalty_factor();
 
+    // if (blockIdx.x == 4)
+    //   {
+    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
+    //     printf("%d: %f, %f\n", blockIdx.x, hi, sigma);
+    //   }
+
     auto u_inner                 = fe_eval.get_value();
     auto normal_derivative_inner = fe_eval.get_normal_derivative();
     auto test_by_value = 2 * u_inner * sigma - normal_derivative_inner;
+
+    // if (blockIdx.x == 4)
+    //   {
+    //     auto val = fe_eval.get_dof_value();
+    //     auto der = fe_eval.get_gradient();
+    //     auto nor = fe_eval.get_normal_derivative();
+    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>(); 
+    //     auto fidx = PSMF::compute_face_index<dim, fe_degree + 1>(1);
+    //     auto jxw = fe_eval.JxW[fidx];
+    //     printf("%d: %.2f, %.2f |  %.2f, %.2f\n", idx, val, nor, der[0], der[1]);
+    //     // printf("%d: %.2f, %.2f, %.2f | %f\n", idx, u_inner, normal_derivative_inner, test_by_value, jxw);
+    //     // printf("%d: %f\n", idx, val);
+    //   }
 
     fe_eval.submit_value(test_by_value);
     fe_eval.submit_normal_derivative(-u_inner);
 
     fe_eval.integrate(true, true);
     fe_eval.distribute_local_to_global(dst);
+
+      // if (blockIdx.x == 4)
+      // {
+      //   auto val = fe_eval.get_dof_value();
+      //   auto der = fe_eval.get_gradient();
+      //   auto nor = fe_eval.get_normal_derivative();
+      //   auto idx = PSMF::compute_index<dim, fe_degree + 1>();
+      //   // printf("%d: %.2f, %.2f |  %.2f, %.2f\n", idx, val, nor, der[0], der[1]);
+      //   // printf("%d: %.2f, %.2f, %.2f\n", idx, u_inner,
+      //   // normal_derivative_inner, test_by_value);
+      //   printf("%d: %f\n", idx, val);
+      // }
   }
 };
 
@@ -158,7 +193,7 @@ public:
     // if (blockIdx.x == 1)
     //   {
     //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
-    //     printf("%d: %.2f, %.2f\n", idx, hi, sigma);
+    //     printf("%d: %.5f, %.5f\n", idx, hi, sigma);
     //   }
 
     auto solution_jump = phi_inner.get_value() - phi_outer.get_value();
@@ -249,14 +284,14 @@ LaplaceOperator<dim, fe_degree>::LaplaceOperator(
   additional_data.mapping_update_flags_inner_faces =
     update_values | update_gradients | update_JxW_values |
     update_normal_vectors;
-  additional_data.mg_level = 1;
+  // additional_data.mg_level = 2;
 
   const QGauss<1> quad(fe_degree + 1);
   mf_data.reinit(mapping,
                  dof_handler,
                  constraints,
                  quad,
-                 IteratorFilters::LocallyOwnedLevelCell(),
+                 IteratorFilters::LocallyOwnedCell(),
                  additional_data);
 }
 
@@ -291,6 +326,36 @@ LaplaceOperator<dim, fe_degree>::initialize_dof_vector(
   mf_data.initialize_dof_vector(vec);
 }
 
+template <typename Tri, typename Dof>
+void
+output_mesh(Tri &tri, Dof &dof)
+{
+  // int               degree = 2;
+  // const std::string filename_grid =
+  //   "./grid_2D_Q" + std::to_string(degree) + ".gnuplot";
+  // std::ofstream out(filename_grid);
+  // out << "set terminal png" << std::endl
+  //     << "set output 'grid_2D_Q" << std::to_string(degree) << ".png'"
+  //     << std::endl
+  //     << "plot '-' using 1:2 with lines, "
+  //     << "'-' with labels point pt 2 offset 1,1" << std::endl;
+  // GridOut().write_gnuplot(tri, out);
+  // out << "e" << std::endl;
+
+  // std::map<types::global_dof_index, Point<2>> support_points;
+  // DoFTools::map_dofs_to_support_points(MappingQ1<2>(), dof, support_points);
+  // DoFTools::write_gnuplot_dof_support_point_info(out, support_points);
+  // out << "e" << std::endl;
+
+  std::ofstream out("mesh.vtu");
+
+  DataOut<3> data_out;
+  data_out.attach_dof_handler(dof);
+  data_out.build_patches();
+  data_out.write_vtu(out);
+}
+
+
 template <int dim, int fe_degree>
 void
 test()
@@ -298,14 +363,19 @@ test()
   Triangulation<dim> triangulation(
     Triangulation<dim>::limit_level_difference_at_vertices);
   GridGenerator::hyper_cube(triangulation, 0., 1.);
-  triangulation.refine_global(3);
+  triangulation.refine_global(1);
 
   FE_DGQ<dim>     fe(fe_degree);
   DoFHandler<dim> dof_handler(triangulation);
   MappingQ1<dim>  mapping;
 
+  GridTools::distort_random(0.2, triangulation, true, 1);
+
   dof_handler.distribute_dofs(fe);
   dof_handler.distribute_mg_dofs();
+
+
+  output_mesh(triangulation, dof_handler);
 
   AffineConstraints<double> level_constraints;
   level_constraints.close();
@@ -322,20 +392,21 @@ test()
   // system_rhs_dev = 1.;
   // laplace_operator.vmult(solution_dev, system_rhs_dev);
 
-  for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
-    {
-      LinearAlgebra::ReadWriteVector<double> rw_vector(system_rhs_dev.size());
-      rw_vector[i] = 1.;
+  {
 
-      system_rhs_dev.import(rw_vector, VectorOperation::insert);
+    LinearAlgebra::ReadWriteVector<double> rw_vector(system_rhs_dev.size());
+        for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
+      rw_vector[i] = 1. + i;
 
-      laplace_operator.vmult(solution_dev, system_rhs_dev);
+    system_rhs_dev.import(rw_vector, VectorOperation::insert);
 
-      solution_dev.print(std::cout);
+    laplace_operator.vmult(solution_dev, system_rhs_dev);
 
-      // if (i == 0)
-      //   break;
-    }
+    solution_dev.print(std::cout);
+    std::cout << solution_dev.l2_norm() << std::endl;
+    // if (i == 0)
+      // break;
+  }
   // std::cout << solution_dev.l2_norm() << std::endl;
 }
 
@@ -345,7 +416,7 @@ main(int argc, char *argv[])
   int device_id = findCudaDevice(argc, (const char **)argv);
   AssertCuda(cudaSetDevice(device_id));
 
-  test<2, 2>();
+  test<3, 2>();
 
   return 0;
 }

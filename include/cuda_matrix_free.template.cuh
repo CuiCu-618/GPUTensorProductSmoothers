@@ -1409,14 +1409,14 @@ namespace PSMF
         // point 0
         auto shape_value_on_face0 =
           shape_info.data.front().shape_data_on_face[0];
-        for (unsigned int i = 0; i < q_points_per_face; ++i)
-          face_shape_value[i * q_points_per_face + 1] = shape_value_on_face0[i];
+        for (unsigned int i = 0; i < n_q_points_1d; ++i)
+          face_shape_value[i * n_q_points_1d] = shape_value_on_face0[i];
         // point 1
         auto shape_value_on_face1 =
           shape_info.data.front().shape_data_on_face[1];
-        for (unsigned int i = 0; i < q_points_per_face; ++i)
-          face_shape_value[(i + q_points_per_face) * q_points_per_face +
-                           q_points_per_face - 2] = shape_value_on_face1[i];
+        for (unsigned int i = 0; i < n_q_points_1d; ++i)
+          face_shape_value[(i + n_q_points_1d) * n_q_points_1d] =
+            shape_value_on_face1[i];
 
 
         cuda_error =
@@ -1435,16 +1435,15 @@ namespace PSMF
         // point 0
         auto shape_gradients_on_face0 =
           shape_info.data.front().shape_data_on_face[0];
-        for (unsigned int i = 0; i < q_points_per_face; ++i)
-          face_shape_gradients[i * q_points_per_face + 1] =
-            shape_gradients_on_face0[i + q_points_per_face];
+        for (unsigned int i = 0; i < n_q_points_1d; ++i)
+          face_shape_gradients[i * n_q_points_1d] =
+            shape_gradients_on_face0[i + n_q_points_1d];
         // point 1
         auto shape_gradients_on_face1 =
           shape_info.data.front().shape_data_on_face[1].data();
-        for (unsigned int i = 0; i < q_points_per_face; ++i)
-          face_shape_gradients[(i + q_points_per_face) * q_points_per_face +
-                               q_points_per_face - 2] =
-            shape_gradients_on_face1[i + q_points_per_face];
+        for (unsigned int i = 0; i < n_q_points_1d; ++i)
+          face_shape_gradients[(i + n_q_points_1d) * n_q_points_1d] =
+            shape_gradients_on_face1[i + n_q_points_1d];
 
         cuda_error =
           cudaMemcpyToSymbol(get_face_shape_gradients<Number>(0),
@@ -1460,16 +1459,15 @@ namespace PSMF
         // point 0
         auto co_shape_gradients_on_face0 =
           shape_info_co.data.front().shape_data_on_face[0].data();
-        for (unsigned int i = 0; i < q_points_per_face; ++i)
-          face_co_shape_gradients[i * q_points_per_face] =
-            co_shape_gradients_on_face0[i + q_points_per_face];
+        for (unsigned int i = 0; i < n_q_points_1d; ++i)
+          face_co_shape_gradients[i * n_q_points_1d] =
+            co_shape_gradients_on_face0[i + n_q_points_1d];
         // point 1
         auto co_shape_gradients_on_face1 =
           shape_info_co.data.front().shape_data_on_face[1].data();
-        for (unsigned int i = 0; i < q_points_per_face; ++i)
-          face_co_shape_gradients[(i + q_points_per_face) * q_points_per_face +
-                                  q_points_per_face - 2] =
-            co_shape_gradients_on_face1[i + q_points_per_face];
+        for (unsigned int i = 0; i < n_q_points_1d; ++i)
+          face_co_shape_gradients[(i + n_q_points_1d) * n_q_points_1d] =
+            co_shape_gradients_on_face1[i + n_q_points_1d];
 
 
         cuda_error =

@@ -58,15 +58,13 @@ namespace PSMF
   compute_face_index(unsigned int face_number)
   {
     return (
-      dim == 1 ?
-        0 :
-      dim == 2 ?
-        (face_number == 0 ? threadIdx.y : threadIdx.x % n_points_1d) :
-        (face_number == 0 ?
-           n_points_1d * (threadIdx.y + n_points_1d * threadIdx.z) :
-         face_number == 1 ?
-           threadIdx.x % n_points_1d + n_points_1d * n_points_1d * threadIdx.z :
-           threadIdx.x % n_points_1d + n_points_1d * threadIdx.y));
+      dim == 1 ? 0 :
+      dim == 2 ? (face_number == 0 ? threadIdx.y : threadIdx.x % n_points_1d) :
+                 (face_number == 0 ?
+                    threadIdx.y + n_points_1d * threadIdx.z :
+                  face_number == 1 ?
+                    ((threadIdx.x % n_points_1d) * n_points_1d) + threadIdx.z :
+                    threadIdx.x % n_points_1d + n_points_1d * threadIdx.y));
   }
 
   /**
@@ -470,6 +468,10 @@ namespace PSMF
     __device__ void
     apply_for_each_quad_point(const Functor &func);
 
+    Number *JxW;
+    Number *inv_jac;
+    Number *normal_vec;
+
   private:
     dealii::types::global_dof_index *local_to_global;
     dealii::types::global_dof_index *face_to_cell;
@@ -483,10 +485,6 @@ namespace PSMF
 
     const bool use_coloring;
     const bool is_interior_face;
-
-    Number *JxW;
-    Number *inv_jac;
-    Number *normal_vec;
 
     // Internal buffer
     Number *values;
@@ -632,6 +630,7 @@ namespace PSMF
       {
         evaluator_tensor_product.integrate_value_and_gradient(values,
                                                               gradients);
+        __syncthreads();
       }
     else if (integrate_val == true)
       {
@@ -696,6 +695,7 @@ namespace PSMF
   {
     const unsigned int q_point = compute_index<dim, n_q_points_1d>();
     values[q_point]            = val_in * JxW[q_point];
+    __syncthreads();
   }
 
 
@@ -711,6 +711,7 @@ namespace PSMF
   {
     const unsigned int dof = compute_index<dim, fe_degree + 1>();
     values[dof]            = val_in;
+    __syncthreads();
   }
 
 
@@ -769,6 +770,7 @@ namespace PSMF
                  grad_in[d_2];
         gradients[d_1][q_point] = tmp * JxW[q_point];
       }
+    __syncthreads();
   }
 
 
@@ -818,16 +820,18 @@ namespace PSMF
     normal_vec      = data->normal_vector + face_padding_length * face_no;
     face_number     = data->face_number[face_no];
 
-    // if (threadIdx.x == 0 && threadIdx.y == 0)
-    //   printf("%d: is %d faceid-faceno:[%d,%d]\n",
+    // auto q_point = compute_face_index<dim, fe_degree + 1>(face_number / 2);
+
+    // if (blockIdx.x == 4 && threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0)
+    //   printf("%2d: %2d | %d, %d\n",
     //          blockIdx.x,
     //          is_interior_face,
-    //          face_no,
-    //          face_number);
+    //          face_number,
+    //          cell_id);
 
-    // if (threadIdx.x == 0 && threadIdx.y == 0)
-    //   printf("jac n:[%.2f, %.2f]\n", normal_vec[0], normal_vec[n_cells *
-    //   face_padding_length]);
+    // if (blockIdx.x == 4 && threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0)
+    //   printf("n:[%.2f, %.2f, %.2f]\n", normal_vec[q_point], normal_vec[q_point + n_cells * face_padding_length]
+    //   , normal_vec[q_point + n_cells * face_padding_length * 2]); 
 
     // if (threadIdx.x == 0 && threadIdx.y == 0)
     //   printf("facedir: %d %.2f %.2f %.2f\n", face_id, JxW[0], JxW[1],
@@ -1025,6 +1029,8 @@ namespace PSMF
       compute_face_index<dim, n_q_points_1d>(face_number / 2);
 
     values[q_point] = val_in * JxW[q_point_face];
+
+    __syncthreads();
   }
 
 
@@ -1040,6 +1046,8 @@ namespace PSMF
   {
     const unsigned int dof = compute_index<dim, fe_degree + 1>();
     values[dof]            = val_in;
+
+    __syncthreads();
   }
 
 
@@ -1104,6 +1112,8 @@ namespace PSMF
             grad_in[d_2];
         gradients[d_1][q_point] = tmp * JxW[q_point_face];
       }
+
+    __syncthreads();
   }
 
 
@@ -1173,6 +1183,8 @@ namespace PSMF
     for (unsigned int d = 0; d < dim; ++d)
       gradients[d][q_point] =
         grad_in * normal_x_jacobian[d] * JxW[q_point_face];
+
+    __syncthreads();
   }
 
 
