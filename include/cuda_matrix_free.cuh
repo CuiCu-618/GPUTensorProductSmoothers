@@ -238,6 +238,12 @@ namespace PSMF
       unsigned int *face_number;
 
       /**
+       * Pointer to the subface number.
+       */
+      int *subface_number;
+
+
+      /**
        * ID of the associated MatrixFree object.
        */
       unsigned int id;
@@ -658,6 +664,11 @@ namespace PSMF
     std::vector<unsigned int *> face_number;
 
     /**
+     * Vector of pointer to the subface number.
+     */
+    std::vector<int *> subface_number;
+
+    /**
      * Pointer to the constrained degrees of freedom.
      */
     dealii::types::global_dof_index *constrained_dofs;
@@ -927,9 +938,14 @@ namespace PSMF
     std::vector<Number> normal_vector;
 
     /**
-     * Pointer to the face direction.
+     * Vector of the face direction.
      */
     std::vector<unsigned int> face_number;
+
+    /**
+     * Vector of the subface number.
+     */
+    std::vector<int> subface_number;
 
     /**
      * ID of the associated MatrixFree object.

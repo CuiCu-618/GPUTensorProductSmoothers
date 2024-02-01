@@ -179,22 +179,9 @@ public:
     phi_outer.read_dof_values(src);
     phi_outer.evaluate(true, true);
 
-    // if (blockIdx.x == 2)
-    //   {
-    //     auto val = phi_outer.get_dof_value();
-    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
-    //     printf("%d: %.2f\n", idx, val);
-    //   }
-
     auto hi    = 0.5 * (fabs(phi_inner.inverse_length_normal_to_face()) +
                      fabs(phi_outer.inverse_length_normal_to_face()));
     auto sigma = hi * get_penalty_factor();
-
-    // if (blockIdx.x == 1)
-    //   {
-    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
-    //     printf("%d: %.5f, %.5f\n", idx, hi, sigma);
-    //   }
 
     auto solution_jump = phi_inner.get_value() - phi_outer.get_value();
     auto average_normal_derivative = 0.5 * (phi_inner.get_normal_derivative() +
@@ -202,49 +189,17 @@ public:
     auto test_by_value = solution_jump * sigma - average_normal_derivative;
 
 
-    // if (blockIdx.x == 1)
-    //   {
-    //     auto val = phi_inner.get_value();
-    //     auto der = phi_inner.get_gradient();
-    //     auto nor = phi_inner.get_normal_derivative();
-    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
-    //     printf("%d: %.2f, %.2f |  %.2f, %.2f\n", idx, val, nor, der[0], der[1]);
-    //     // printf("%d: %.2f, %.2f, %.2f\n", idx, solution_jump,
-    //     // average_normal_derivative, test_by_value);
-    //   }
-
     phi_inner.submit_value(test_by_value);
     phi_outer.submit_value(-test_by_value);
 
     phi_inner.submit_normal_derivative(-solution_jump * 0.5);
     phi_outer.submit_normal_derivative(-solution_jump * 0.5);
 
-    // if (blockIdx.x == 1)
-    //   {
-    //     auto val = phi_inner.get_value();
-    //     auto der = phi_inner.get_gradient();
-    //     auto nor = phi_inner.get_normal_derivative();
-    //     auto idx = PSMF::compute_index<dim, fe_degree + 1>();
-    //     printf("%d: %.2f, %.2f |  %.2f, %.2f\n", idx, val, nor, der[0], der[1]);
-    //     // printf("%d: %.2f, %.2f, %.2f\n", idx, solution_jump,
-    //     // average_normal_derivative, test_by_value);
-    //   }
-
     phi_inner.integrate(true, true);
     phi_inner.distribute_local_to_global(dst);
 
     phi_outer.integrate(true, true);
     phi_outer.distribute_local_to_global(dst);
-
-    // if (blockIdx.x == 1)
-    //   {
-    //     auto val  = phi_inner.get_value();
-    //     auto val1 = phi_outer.get_value();
-    //     auto idx  = PSMF::compute_index<dim, fe_degree + 1>();
-    //     printf("%d: %.2f, %.2f\n", idx, val, val1);
-    //     // printf("%d: %.2f, %.2f, %.2f\n", idx, solution_jump,
-    //     // average_normal_derivative, test_by_value);
-    //   }
   }
 };
 
@@ -284,14 +239,14 @@ LaplaceOperator<dim, fe_degree>::LaplaceOperator(
   additional_data.mapping_update_flags_inner_faces =
     update_values | update_gradients | update_JxW_values |
     update_normal_vectors;
-  // additional_data.mg_level = 2;
+  additional_data.mg_level = 2;
 
   const QGauss<1> quad(fe_degree + 1);
   mf_data.reinit(mapping,
                  dof_handler,
                  constraints,
                  quad,
-                 IteratorFilters::LocallyOwnedCell(),
+                 IteratorFilters::LocallyOwnedLevelCell(),
                  additional_data);
 }
 
@@ -365,17 +320,25 @@ test()
   GridGenerator::hyper_cube(triangulation, 0., 1.);
   triangulation.refine_global(1);
 
+  auto begin_cell = triangulation.begin_active();
+  begin_cell->set_refine_flag();
+  begin_cell++;
+  begin_cell->set_refine_flag();
+  begin_cell++;
+  begin_cell->set_refine_flag();
+  triangulation.execute_coarsening_and_refinement();
+  triangulation.refine_global(1);
+
   FE_DGQ<dim>     fe(fe_degree);
   DoFHandler<dim> dof_handler(triangulation);
   MappingQ1<dim>  mapping;
 
-  GridTools::distort_random(0.2, triangulation, true, 1);
+  // GridTools::distort_random(0.2, triangulation, true, 1);
 
   dof_handler.distribute_dofs(fe);
   dof_handler.distribute_mg_dofs();
 
-
-  output_mesh(triangulation, dof_handler);
+  // output_mesh(triangulation, dof_handler);
 
   AffineConstraints<double> level_constraints;
   level_constraints.close();
@@ -392,8 +355,10 @@ test()
   // system_rhs_dev = 1.;
   // laplace_operator.vmult(solution_dev, system_rhs_dev);
 
+  // for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
   {
     LinearAlgebra::ReadWriteVector<double> rw_vector(system_rhs_dev.size());
+
     for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
       rw_vector[i] = 1. + i;
 
@@ -415,7 +380,7 @@ main(int argc, char *argv[])
   int device_id = findCudaDevice(argc, (const char **)argv);
   AssertCuda(cudaSetDevice(device_id));
 
-  test<3, 2>();
+  test<3, 7>();
 
   return 0;
 }

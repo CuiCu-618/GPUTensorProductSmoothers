@@ -30,6 +30,35 @@
 namespace PSMF
 {
   /**
+   * For face integral, compute the offset for a given subface.
+   */
+  template <int dim, int n_points_2d, int dir>
+  __device__ inline unsigned int
+  compute_subface_offset(unsigned int face_number, int subface_number)
+  {
+    if (subface_number == -1)
+      return 0;
+
+    if (dim == 2)
+      return n_points_2d * (subface_number + 1);
+
+    if (dir == 0)
+      return face_number / 2 == 1 ? n_points_2d * ((subface_number / 2) + 1) :
+                                    n_points_2d * ((subface_number & 1) + 1);
+
+    if (dir == 1)
+      return face_number / 2 == 2 ? n_points_2d * ((subface_number / 2) + 1) :
+                                    n_points_2d * ((subface_number & 1) + 1);
+
+    if (dir == 2)
+      return face_number / 2 == 1 ? n_points_2d * ((subface_number & 1) + 1) :
+                                    n_points_2d * ((subface_number / 2) + 1);
+
+    return 0;
+  }
+
+
+  /**
    * In this namespace, the evaluator routines that evaluate the tensor
    * products are implemented.
    *
@@ -708,7 +737,9 @@ namespace PSMF
       dealii::Utilities::pow(fe_degree + 1, dim);
 
     __device__
-    EvaluatorTensorProduct(int mf_object_id, int face_number);
+    EvaluatorTensorProduct(int mf_object_id,
+                           int face_number,
+                           int subface_number);
 
     /**
      * Evaluate the values of a finite element function at the quadrature
@@ -776,15 +807,17 @@ namespace PSMF
 
     const int mf_object_id;
     const int face_number;
+    const int subface_number;
   };
 
 
   template <int dim, int fe_degree, int n_q_points_1d, typename Number>
   __device__
   EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    EvaluatorTensorProduct(int object_id, int face_number)
+    EvaluatorTensorProduct(int object_id, int face_number, int subface_number)
     : mf_object_id(object_id)
     , face_number(face_number)
+    , subface_number(subface_number)
   {}
 
   template <int dim, int fe_degree, int n_q_points_1d, typename Number>
@@ -857,23 +890,34 @@ namespace PSMF
   EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
     value_at_quad_pts(Number *u)
   {
-    const unsigned int shift =
-      (face_number & 1) * n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+
+    const unsigned int shift = (face_number & 1) * n_q_points_2d;
+    const unsigned int offset0 =
+      compute_subface_offset<dim, n_q_points_2d, 0>(face_number,
+                                                    subface_number);
+    const unsigned int offset1 =
+      compute_subface_offset<dim, n_q_points_2d, 1>(face_number,
+                                                    subface_number);
+    const unsigned int offset2 =
+      compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
+                                                    subface_number);
+
 
     Number *shape_value_dir0 =
       face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
       face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
       face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset2;
 
     switch (dim)
       {
@@ -920,23 +964,33 @@ namespace PSMF
   EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
     integrate_value(Number *u)
   {
-    const unsigned int shift =
-      (face_number & 1) * n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+
+    const unsigned int shift = (face_number & 1) * n_q_points_2d;
+    const unsigned int offset0 =
+      compute_subface_offset<dim, n_q_points_2d, 0>(face_number,
+                                                    subface_number);
+    const unsigned int offset1 =
+      compute_subface_offset<dim, n_q_points_2d, 1>(face_number,
+                                                    subface_number);
+    const unsigned int offset2 =
+      compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
+                                                    subface_number);
 
     Number *shape_value_dir0 =
       face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
       face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
       face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset2;
 
     switch (dim)
       {
@@ -983,38 +1037,49 @@ namespace PSMF
   EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
     gradient_at_quad_pts(const Number *const u, Number *grad_u[dim])
   {
-    const unsigned int shift =
-      (face_number & 1) * n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+
+    const unsigned int shift = (face_number & 1) * n_q_points_2d;
+    const unsigned int offset0 =
+      compute_subface_offset<dim, n_q_points_2d, 0>(face_number,
+                                                    subface_number);
+    const unsigned int offset1 =
+      compute_subface_offset<dim, n_q_points_2d, 1>(face_number,
+                                                    subface_number);
+    const unsigned int offset2 =
+      compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
+                                                    subface_number);
+
 
     Number *shape_value_dir0 =
       face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
       face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
       face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset2;
 
     Number *shape_gradient_dir0 =
       face_number / 2 == 0 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id);
+        get_cell_shape_gradients<Number>(mf_object_id) + offset0;
 
     Number *shape_gradient_dir1 =
       face_number / 2 == 1 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id);
+        get_cell_shape_gradients<Number>(mf_object_id) + offset1;
 
     Number *shape_gradient_dir2 =
       face_number / 2 == 2 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id);
+        get_cell_shape_gradients<Number>(mf_object_id) + offset2;
 
     switch (dim)
       {
@@ -1091,38 +1156,49 @@ namespace PSMF
   EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
     value_and_gradient_at_quad_pts(Number *const u, Number *grad_u[dim])
   {
-    const unsigned int shift =
-      (face_number & 1) * n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+
+    const unsigned int shift = (face_number & 1) * n_q_points_2d;
+    const unsigned int offset0 =
+      compute_subface_offset<dim, n_q_points_2d, 0>(face_number,
+                                                    subface_number);
+    const unsigned int offset1 =
+      compute_subface_offset<dim, n_q_points_2d, 1>(face_number,
+                                                    subface_number);
+    const unsigned int offset2 =
+      compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
+                                                    subface_number);
+
 
     Number *shape_value_dir0 =
       face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
       face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
       face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset2;
 
     Number *co_shape_gradient_dir0 =
       face_number / 2 == 0 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_co_shape_gradients<Number>(mf_object_id);
+        get_cell_co_shape_gradients<Number>(mf_object_id) + offset0;
 
     Number *co_shape_gradient_dir1 =
       face_number / 2 == 1 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_co_shape_gradients<Number>(mf_object_id);
+        get_cell_co_shape_gradients<Number>(mf_object_id) + offset1;
 
     Number *co_shape_gradient_dir2 =
       face_number / 2 == 2 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_co_shape_gradients<Number>(mf_object_id);
+        get_cell_co_shape_gradients<Number>(mf_object_id) + offset2;
 
     switch (dim)
       {
@@ -1194,38 +1270,49 @@ namespace PSMF
   EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
     integrate_gradient(Number *u, Number *grad_u[dim])
   {
-    const unsigned int shift =
-      (face_number & 1) * n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+
+    const unsigned int shift = (face_number & 1) * n_q_points_2d;
+    const unsigned int offset0 =
+      compute_subface_offset<dim, n_q_points_2d, 0>(face_number,
+                                                    subface_number);
+    const unsigned int offset1 =
+      compute_subface_offset<dim, n_q_points_2d, 1>(face_number,
+                                                    subface_number);
+    const unsigned int offset2 =
+      compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
+                                                    subface_number);
+
 
     Number *shape_value_dir0 =
       face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
       face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
       face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset2;
 
     Number *shape_gradient_dir0 =
       face_number / 2 == 0 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id);
+        get_cell_shape_gradients<Number>(mf_object_id) + offset0;
 
     Number *shape_gradient_dir1 =
       face_number / 2 == 1 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id);
+        get_cell_shape_gradients<Number>(mf_object_id) + offset1;
 
     Number *shape_gradient_dir2 =
       face_number / 2 == 2 ?
         get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id);
+        get_cell_shape_gradients<Number>(mf_object_id) + offset2;
 
     switch (dim)
       {
@@ -1307,38 +1394,49 @@ namespace PSMF
   EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
     integrate_value_and_gradient(Number *u, Number *grad_u[dim])
   {
-    const unsigned int shift =
-      (face_number & 1) * n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+
+    const unsigned int shift = (face_number & 1) * n_q_points_2d;
+    const unsigned int offset0 =
+      compute_subface_offset<dim, n_q_points_2d, 0>(face_number,
+                                                    subface_number);
+    const unsigned int offset1 =
+      compute_subface_offset<dim, n_q_points_2d, 1>(face_number,
+                                                    subface_number);
+    const unsigned int offset2 =
+      compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
+                                                    subface_number);
+
 
     Number *shape_value_dir0 =
       face_number / 2 == 0 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
       face_number / 2 == 1 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
       face_number / 2 == 2 ?
         get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id);
+        get_cell_shape_values<Number>(mf_object_id) + offset2;
 
     Number *co_shape_gradient_dir0 =
       face_number / 2 == 0 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_co_shape_gradients<Number>(mf_object_id);
+        get_cell_co_shape_gradients<Number>(mf_object_id) + offset0;
 
     Number *co_shape_gradient_dir1 =
       face_number / 2 == 1 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_co_shape_gradients<Number>(mf_object_id);
+        get_cell_co_shape_gradients<Number>(mf_object_id) + offset1;
 
     Number *co_shape_gradient_dir2 =
       face_number / 2 == 2 ?
         get_face_co_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_co_shape_gradients<Number>(mf_object_id);
+        get_cell_co_shape_gradients<Number>(mf_object_id) + offset2;
 
     switch (dim)
       {

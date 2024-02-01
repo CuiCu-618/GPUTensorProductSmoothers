@@ -481,6 +481,7 @@ namespace PSMF
     unsigned int                     padding_length;
     unsigned int                     face_padding_length;
     unsigned int                     face_number;
+    int                              subface_number;
     const unsigned int               mf_object_id;
 
     const bool use_coloring;
@@ -819,26 +820,7 @@ namespace PSMF
     JxW             = data->face_JxW + face_padding_length * face_no;
     normal_vec      = data->normal_vector + face_padding_length * face_no;
     face_number     = data->face_number[face_no];
-
-    // auto q_point = compute_face_index<dim, fe_degree + 1>(face_number / 2);
-
-    // if (blockIdx.x == 4 && threadIdx.x == 0 && threadIdx.y == 0 &&
-    // threadIdx.z == 0)
-    //   printf("%2d: %2d | %d, %d\n",
-    //          blockIdx.x,
-    //          is_interior_face,
-    //          face_number,
-    //          cell_id);
-
-    // if (blockIdx.x == 4 && threadIdx.x == 0 && threadIdx.y == 0 &&
-    // threadIdx.z == 0)
-    //   printf("n:[%.2f, %.2f, %.2f]\n", normal_vec[q_point],
-    //   normal_vec[q_point + n_cells * face_padding_length] ,
-    //   normal_vec[q_point + n_cells * face_padding_length * 2]);
-
-    // if (threadIdx.x == 0 && threadIdx.y == 0)
-    //   printf("facedir: %d %.2f %.2f %.2f\n", face_id, JxW[0], JxW[1],
-    //   JxW[2]);
+    subface_number  = data->subface_number[face_no];
 
     unsigned int shift = is_interior_face ? 0 : tensor_dofs_per_cell;
 
@@ -911,7 +893,7 @@ namespace PSMF
                            fe_degree,
                            n_q_points_1d,
                            Number>
-      evaluator_tensor_product(mf_object_id, face_number);
+      evaluator_tensor_product(mf_object_id, face_number, subface_number);
     if (evaluate_val == true && evaluate_grad == true)
       {
         // todo:
@@ -955,7 +937,7 @@ namespace PSMF
                            fe_degree,
                            n_q_points_1d,
                            Number>
-      evaluator_tensor_product(mf_object_id, face_number);
+      evaluator_tensor_product(mf_object_id, face_number, subface_number);
     if (integrate_val == true && integrate_grad == true)
       {
         // todo

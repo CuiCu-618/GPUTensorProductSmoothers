@@ -347,14 +347,14 @@ namespace PSMF
     std::vector<Number>                          face_inv_jacobian_host;
     std::vector<Number>                          normal_vector_host;
     std::vector<dealii::types::global_dof_index> face_number_host;
+    std::vector<int>                             subface_number_host;
     std::vector<dealii::internal::MatrixFreeFunctions::ConstraintKinds>
       constraint_mask_host;
     // Local buffer
     std::vector<dealii::types::global_dof_index> local_dof_indices;
     dealii::FEValues<dim>                        fe_values;
     dealii::FEFaceValues<dim>                    fe_face_values;
-    dealii::FEFaceValues<dim>                    fe_face_values1;
-    dealii::FEFaceValues<dim>                    fe_face_values2;
+    dealii::FESubfaceValues<dim>                 fe_subface_values;
     // Convert the default dof numbering to a lexicographic one
     const std::vector<unsigned int>             &lexicographic_inv;
     std::vector<dealii::types::global_dof_index> lexicographic_dof_indices;
@@ -403,20 +403,14 @@ namespace PSMF
                        dealii::update_quadrature_points |
                        dealii::update_normal_vectors | dealii::update_values |
                        dealii::update_gradients | dealii::update_JxW_values)
-    , fe_face_values1(mapping,
-                      fe,
-                      dealii::Quadrature<dim - 1>(quad),
-                      dealii::update_inverse_jacobians |
-                        dealii::update_quadrature_points |
-                        dealii::update_normal_vectors | dealii::update_values |
-                        dealii::update_gradients | dealii::update_JxW_values)
-    , fe_face_values2(mapping,
-                      fe,
-                      dealii::Quadrature<dim - 1>(quad),
-                      dealii::update_inverse_jacobians |
-                        dealii::update_quadrature_points |
-                        dealii::update_normal_vectors | dealii::update_values |
-                        dealii::update_gradients | dealii::update_JxW_values)
+    , fe_subface_values(mapping,
+                        fe,
+                        dealii::Quadrature<dim - 1>(quad),
+                        dealii::update_inverse_jacobians |
+                          dealii::update_quadrature_points |
+                          dealii::update_normal_vectors |
+                          dealii::update_values | dealii::update_gradients |
+                          dealii::update_JxW_values)
     , lexicographic_inv(shape_info.lexicographic_numbering)
     , update_flags(update_flags)
     , update_flags_inner_faces(update_flags_inner_faces)
@@ -459,6 +453,7 @@ namespace PSMF
     data->inner_face2cell_id.resize(n_colors);
     data->boundary_face2cell_id.resize(n_colors);
     data->face_number.resize(n_colors);
+    data->subface_number.resize(n_colors);
     data->constraint_mask.resize(n_colors);
 
     data->row_start.resize(n_colors);
@@ -570,6 +565,7 @@ namespace PSMF
     inner_face2cell_id_host.resize(n_inner_faces * 2);
     boundary_face2cell_id_host.resize(n_boundary_faces);
     face_number_host.resize(n_faces);
+    subface_number_host.resize(n_faces);
 
     if (update_flags_inner_faces & dealii::update_JxW_values)
       face_JxW_host.resize(n_faces * face_padding_length);
@@ -661,11 +657,17 @@ namespace PSMF
           {
             auto neighbor = cell->neighbor_or_periodic_neighbor(face_no);
 
-            if (neighbor < cell)
-              continue;
+            if (cell->neighbor_is_coarser(face_no))
+              {
+                n_inner_faces++;
+              }
+            else
+              {
+                if (neighbor < cell)
+                  continue;
 
-            n_inner_faces++;
-            // TODO: subfaces
+                n_inner_faces++;
+              }
           }
       }
   }
@@ -719,8 +721,9 @@ namespace PSMF
 
         if (cell->at_boundary(face_no))
           {
-            boundary_face2cell_id_host[boundary_face_id]           = cell_id;
-            face_number_host[n_inner_faces * 2 + boundary_face_id] = face_no;
+            boundary_face2cell_id_host[boundary_face_id]              = cell_id;
+            face_number_host[n_inner_faces * 2 + boundary_face_id]    = face_no;
+            subface_number_host[n_inner_faces * 2 + boundary_face_id] = -1;
 
             fe_face_values.reinit(cell, face_no);
             fill_data(fe_face_values, n_inner_faces * 2 + boundary_face_id);
@@ -731,29 +734,66 @@ namespace PSMF
           {
             auto neighbor = cell->neighbor_or_periodic_neighbor(face_no);
 
-            if (neighbor < cell)
-              continue;
+            if (cell->neighbor_is_coarser(face_no))
+              {
+                const std::pair<unsigned int, unsigned int> neighbor_face_no =
+                  cell->neighbor_of_coarser_neighbor(face_no);
 
-            auto neighbor_info =
-              std::make_pair<int, int>(neighbor->level(), neighbor->index());
-            auto cell_id1         = cell2id[neighbor_info];
-            auto neighbor_face_no = cell->neighbor_face_no(face_no);
+                auto neighbor_info =
+                  std::make_pair<int, int>(neighbor->level(),
+                                           neighbor->index());
+                auto cell_id1 = cell2id[neighbor_info];
 
-            inner_face2cell_id_host[inner_face_id] = cell_id;
-            face_number_host[inner_face_id]        = face_no;
+                inner_face2cell_id_host[inner_face_id] = cell_id;
+                face_number_host[inner_face_id]        = face_no;
+                subface_number_host[inner_face_id]     = -1;
 
-            inner_face2cell_id_host[inner_face_id + n_inner_faces] = cell_id1;
-            face_number_host[inner_face_id + n_inner_faces] = neighbor_face_no;
+                inner_face2cell_id_host[inner_face_id + n_inner_faces] =
+                  cell_id1;
+                face_number_host[inner_face_id + n_inner_faces] =
+                  neighbor_face_no.first;
+                subface_number_host[inner_face_id + n_inner_faces] =
+                  neighbor_face_no.second;
 
-            fe_face_values.reinit(cell, face_no);
-            fe_face_values1.reinit(neighbor, neighbor_face_no);
+                fe_face_values.reinit(cell, face_no);
+                fill_data(fe_face_values, inner_face_id);
 
-            fill_data(fe_face_values, inner_face_id);
-            fill_data(fe_face_values1, inner_face_id + n_inner_faces);
+                fe_subface_values.reinit(neighbor,
+                                         neighbor_face_no.first,
+                                         neighbor_face_no.second);
+                fill_data(fe_subface_values, inner_face_id + n_inner_faces);
 
-            inner_face_id++;
+                inner_face_id++;
+              }
+            else
+              {
+                if (neighbor < cell)
+                  continue;
 
-            // TODO: subfaces
+                auto neighbor_info =
+                  std::make_pair<int, int>(neighbor->level(),
+                                           neighbor->index());
+                auto cell_id1         = cell2id[neighbor_info];
+                auto neighbor_face_no = cell->neighbor_face_no(face_no);
+
+                inner_face2cell_id_host[inner_face_id] = cell_id;
+                face_number_host[inner_face_id]        = face_no;
+                subface_number_host[inner_face_id]     = -1;
+
+                inner_face2cell_id_host[inner_face_id + n_inner_faces] =
+                  cell_id1;
+                face_number_host[inner_face_id + n_inner_faces] =
+                  neighbor_face_no;
+                subface_number_host[inner_face_id + n_inner_faces] = -1;
+
+                fe_face_values.reinit(cell, face_no);
+                fill_data(fe_face_values, inner_face_id);
+
+                fe_face_values.reinit(neighbor, neighbor_face_no);
+                fill_data(fe_face_values, inner_face_id + n_inner_faces);
+
+                inner_face_id++;
+              }
           }
       }
   }
@@ -824,6 +864,11 @@ namespace PSMF
     alloc_and_copy(&data->face_number[color],
                    dealii::ArrayView<const dealii::types::global_dof_index>(
                      face_number_host.data(), face_number_host.size()),
+                   n_faces);
+
+    alloc_and_copy(&data->subface_number[color],
+                   dealii::ArrayView<const int>(subface_number_host.data(),
+                                                subface_number_host.size()),
                    n_faces);
 
     alloc_and_copy(&data->inner_face2cell_id[color],
@@ -1146,6 +1191,8 @@ namespace PSMF
     data_copy.local_to_global = local_to_global[color];
     data_copy.face_number =
       face_number[color] + is_boundary_face * n_inner_faces[color] * 2;
+    data_copy.subface_number =
+      subface_number[color] + is_boundary_face * n_inner_faces[color] * 2;
     data_copy.id                  = my_id;
     data_copy.padding_length      = padding_length;
     data_copy.face_padding_length = face_padding_length;
@@ -1346,8 +1393,25 @@ namespace PSMF
     q_points_per_cell = std::pow(n_q_points_1d, dim);
     q_points_per_face = std::pow(n_q_points_1d, dim - 1);
 
+    auto qpoints  = quad.get_points();
+    auto qweights = quad.get_weights();
+
+    for (auto &q : qpoints)
+      q[0] = q[0] / 2;
+
+    dealii::Quadrature<1> sub_quad0(qpoints, qweights);
+
+    for (auto &q : qpoints)
+      q[0] = q[0] + 0.5;
+
+    dealii::Quadrature<1> sub_quad1(qpoints, qweights);
+
     const dealii::internal::MatrixFreeFunctions::ShapeInfo<Number> shape_info(
       quad, fe);
+    const dealii::internal::MatrixFreeFunctions::ShapeInfo<Number>
+      sub_shape_info0(sub_quad0, fe);
+    const dealii::internal::MatrixFreeFunctions::ShapeInfo<Number>
+      sub_shape_info1(sub_quad1, fe);
 
     unsigned int size_shape_values = n_dofs_1d * n_q_points_1d * sizeof(Number);
     unsigned int n_shape_values    = n_dofs_1d * n_q_points_1d;
@@ -1355,6 +1419,14 @@ namespace PSMF
     dealii::FE_DGQArbitraryNodes<1> fe_quad_co(quad);
     const dealii::internal::MatrixFreeFunctions::ShapeInfo<Number>
       shape_info_co(quad, fe_quad_co);
+
+    dealii::FE_DGQArbitraryNodes<1> fe_subquad_co0(sub_quad0);
+    const dealii::internal::MatrixFreeFunctions::ShapeInfo<Number>
+      sub_shape_info_co0(sub_quad0, fe_subquad_co0);
+
+    dealii::FE_DGQArbitraryNodes<1> fe_subquad_co1(sub_quad1);
+    const dealii::internal::MatrixFreeFunctions::ShapeInfo<Number>
+      sub_shape_info_co1(sub_quad1, fe_subquad_co1);
 
     unsigned int size_co_shape_values =
       n_q_points_1d * n_q_points_1d * sizeof(Number);
@@ -1382,6 +1454,24 @@ namespace PSMF
                          cudaMemcpyHostToDevice);
     AssertCuda(cuda_error);
 
+    cuda_error =
+      cudaMemcpyToSymbol(get_cell_shape_values<Number>(0),
+                         sub_shape_info0.data.front().shape_values.data(),
+                         size_shape_values,
+                         (my_id * data_array_size + n_shape_values) *
+                           sizeof(Number),
+                         cudaMemcpyHostToDevice);
+    AssertCuda(cuda_error);
+
+    cuda_error =
+      cudaMemcpyToSymbol(get_cell_shape_values<Number>(0),
+                         sub_shape_info1.data.front().shape_values.data(),
+                         size_shape_values,
+                         (my_id * data_array_size + n_shape_values * 2) *
+                           sizeof(Number),
+                         cudaMemcpyHostToDevice);
+    AssertCuda(cuda_error);
+
     if (update_flags & dealii::update_gradients)
       {
         cuda_error =
@@ -1392,12 +1482,44 @@ namespace PSMF
                              cudaMemcpyHostToDevice);
         AssertCuda(cuda_error);
 
+        cuda_error = cudaMemcpyToSymbol(
+          get_cell_shape_gradients<Number>(0),
+          sub_shape_info0.data.front().shape_gradients.data(),
+          size_shape_values,
+          (my_id * data_array_size + n_shape_values) * sizeof(Number),
+          cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
+
+        cuda_error = cudaMemcpyToSymbol(
+          get_cell_shape_gradients<Number>(0),
+          sub_shape_info1.data.front().shape_gradients.data(),
+          size_shape_values,
+          (my_id * data_array_size + n_shape_values * 2) * sizeof(Number),
+          cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
+
         cuda_error =
           cudaMemcpyToSymbol(get_cell_co_shape_gradients<Number>(0),
                              shape_info_co.data.front().shape_gradients.data(),
                              size_co_shape_values,
                              my_id * data_array_size * sizeof(Number),
                              cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
+
+        cuda_error = cudaMemcpyToSymbol(
+          get_cell_co_shape_gradients<Number>(0),
+          sub_shape_info_co0.data.front().shape_gradients.data(),
+          size_co_shape_values,
+          (my_id * data_array_size + n_shape_values) * sizeof(Number),
+          cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
+
+        cuda_error = cudaMemcpyToSymbol(
+          get_cell_co_shape_gradients<Number>(0),
+          sub_shape_info_co1.data.front().shape_gradients.data(),
+          size_co_shape_values,
+          (my_id * data_array_size + n_shape_values * 2) * sizeof(Number),
+          cudaMemcpyHostToDevice);
         AssertCuda(cuda_error);
       }
 
