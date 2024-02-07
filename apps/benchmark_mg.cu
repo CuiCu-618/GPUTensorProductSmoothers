@@ -151,8 +151,8 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   dof_handler.distribute_mg_dofs();
 
   n_dofs = dof_handler.n_dofs();
-  N      = 1;
-  n_mv   = 1; // dof_handler.n_dofs() < 10000000 ? 20 : 4;
+  N      = 5;
+  n_mv   = dof_handler.n_dofs() < 10000000 ? 20 : 4;
 
   const unsigned int nlevels = triangulation.n_global_levels();
   for (unsigned int level = 0; level < nlevels; ++level)

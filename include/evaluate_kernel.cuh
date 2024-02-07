@@ -1507,6 +1507,9 @@ namespace PSMF
   {
   public:
     static constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
+#ifdef OPTIMIZE
+    static constexpr unsigned int n_dofs_1d_inv = 2 * fe_degree - 1;
+#endif
 
     LocalSmoother()
       : ndofs_per_dim(0)
@@ -1532,6 +1535,26 @@ namespace PSMF
                                       DoFLayout::Q>::Data   *gpu_data,
       SharedMemData<dim, Number, SmootherVariant::SEPERATE> *shared_data) const
     {
+#ifdef OPTIMIZE
+      constexpr unsigned int n_bound_dofs =
+        Util::pow(n_dofs_1d, dim) - Util::pow(n_dofs_1d_inv, dim);
+      constexpr unsigned int n_inner_dofs = Util::pow(n_dofs_1d_inv, dim);
+      constexpr unsigned int n_max =
+        n_bound_dofs > n_inner_dofs ? n_bound_dofs : n_inner_dofs;
+
+      TPEvaluator_vmult<n_dofs_1d_inv,
+                        Number,
+                        dim,
+                        SmootherVariant::FUSED_BD,
+                        DoFLayout::Q>
+        eval_vmult;
+      __syncthreads();
+
+      eval_vmult.vmult(&shared_data->local_src[patch * n_inner_dofs],
+                       &shared_data->local_dst[patch * n_bound_dofs],
+                       &shared_data->temp[patch * n_max * (dim - 1)],
+                       shared_data);
+#else
       constexpr unsigned int local_dim = Util::pow(n_dofs_1d, dim);
 
       TPEvaluator_vmult<n_dofs_1d,
@@ -1547,6 +1570,7 @@ namespace PSMF
                  shared_data->local_mass,
                  shared_data->local_derivative,
                  &shared_data->temp[patch * local_dim * (dim - 1)]);
+#endif
       __syncthreads();
     }
 
@@ -1711,6 +1735,9 @@ namespace PSMF
   {
   public:
     static constexpr unsigned int n_dofs_1d = 2 * fe_degree - 1;
+#ifdef OPTIMIZE
+    static constexpr unsigned int n_dofs_1d_inv = 2 * fe_degree - 1;
+#endif
 
     LocalSmoother_inverse()
       : ndofs_per_dim(0)
@@ -1736,6 +1763,24 @@ namespace PSMF
                                       DoFLayout::Q>::Data   *gpu_data,
       SharedMemData<dim, Number, SmootherVariant::SEPERATE> *shared_data) const
     {
+#ifdef OPTIMIZE
+      constexpr unsigned int n_inner_dofs = Util::pow(n_dofs_1d_inv, dim);
+
+      TPEvaluator_inverse<n_dofs_1d_inv,
+                          Number,
+                          dim,
+                          SmootherVariant::FUSED_BD,
+                          DoFLayout::Q>
+        eval_inverse;
+      __syncthreads();
+
+      eval_inverse.apply_inverse(
+        &shared_data->local_src[patch * n_inner_dofs],
+        shared_data->mass_ii,
+        shared_data->der_ii,
+        &shared_data->temp[patch * n_inner_dofs * (dim - 1)]);
+      __syncthreads();
+#else
       const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
 
       TPEvaluator_inverse<n_dofs_1d,
@@ -1752,6 +1797,7 @@ namespace PSMF
                          shared_data->local_mass,
                          shared_data->local_derivative,
                          &shared_data->temp[patch * local_dim]);
+#endif
       __syncthreads();
     }
 
@@ -2133,11 +2179,12 @@ namespace PSMF
     /**
      * Vector multication.
      */
+    template <typename SharedMemDataType>
     __device__ void
-    vmult(Number                                              *dst,
-          const Number                                        *src,
-          Number                                              *temp,
-          SharedMemData<2, Number, SmootherVariant::FUSED_BD> *shared_data)
+    vmult(Number            *dst,
+          const Number      *src,
+          Number            *temp,
+          SharedMemDataType *shared_data)
     {
       //
       constexpr unsigned int shift = kernel_size * 2;
@@ -2239,11 +2286,12 @@ namespace PSMF
     /**
      * Vector multication.
      */
+    template <typename SharedMemDataType>
     __device__ void
-    vmult(Number                                              *dst,
-          const Number                                        *src,
-          Number                                              *temp,
-          SharedMemData<3, Number, SmootherVariant::FUSED_BD> *shared_data)
+    vmult(Number            *dst,
+          const Number      *src,
+          Number            *temp,
+          SharedMemDataType *shared_data)
     {
       constexpr unsigned int n_bound_dofs =
         Util::pow(kernel_size + 2, 3) - Util::pow(kernel_size, 3);
