@@ -1078,7 +1078,7 @@ namespace PSMF
       std::string comp_name = "";
 
       const unsigned int n_dofs = dof_handler->n_dofs();
-      const unsigned int n_mv   = 1; // n_dofs < 10000000 ? 100 : 20;
+      const unsigned int n_mv   = n_dofs < 10000000 ? 100 : 20;
 
       auto tester = [&](auto kernel) {
         Timer              time;
@@ -1099,7 +1099,7 @@ namespace PSMF
         comp_data.push_back(data);
       };
 
-      for (unsigned int s = 0; s < 4; ++s)
+      for (unsigned int s = 0; s < 2; ++s)
         {
           switch (s)
             {

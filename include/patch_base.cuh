@@ -13,6 +13,8 @@
 
 using namespace dealii;
 
+#define OPTIMIZE
+
 /**
  * Namespace for the Patch Smoother Matrix-Free
  */
@@ -484,6 +486,21 @@ namespace PSMF
     /**
      * Constructor.
      */
+#ifdef OPTIMIZE
+    __device__
+    SharedMemData(Number      *data,
+                  unsigned int n_buff,
+                  unsigned int n_dofs_1d,
+                  unsigned int local_dim)
+    {
+      local_src = data;
+
+      mass_ii = local_src + n_buff * local_dim;
+      der_ii  = mass_ii + n_dofs_1d;
+
+      temp = der_ii + n_dofs_1d * n_dofs_1d;
+    }
+#else
     __device__
     SharedMemData(Number      *data,
                   unsigned int n_buff,
@@ -497,7 +514,7 @@ namespace PSMF
       local_derivative = local_mass + 1 * n_dofs_1d * n_dofs_1d * 1;
       temp             = local_derivative + 1 * n_dofs_1d * n_dofs_1d * 1;
     }
-
+#endif
     __device__
     SharedMemData(Number      *data,
                   unsigned int n_buff,

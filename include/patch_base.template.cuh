@@ -375,7 +375,21 @@ namespace PSMF
   {
     auto shared_mem = [&]() {
       std::size_t mem = 0;
+#ifdef OPTIMIZE
+      const unsigned int n_dofs_1d   = 2 * fe_degree - 1;
+      const unsigned int local_inner = Util::pow(n_dofs_1d, dim);
+      const unsigned int local_boundary =
+        Util::pow(n_dofs_1d + 2, dim) - local_inner;
+      const unsigned int n_max = max(local_inner, local_boundary);
 
+      // local_src, local_dst, local_residual
+      mem += patch_per_block * local_inner * sizeof(Number);
+      mem += patch_per_block * local_boundary * sizeof(Number);
+      // local_mass, local_derivative, local_eigenvectors, local_eigenvalues
+      mem += 4 * 1 * n_dofs_1d * (n_dofs_1d + 2) * 1 * sizeof(Number);
+      // temp
+      mem += (dim - 1) * patch_per_block * n_max * sizeof(Number);
+#else
       const unsigned int n_dofs_1d = 2 * fe_degree + 1;
       const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
       // local_src, local_dst, local_residual
@@ -384,13 +398,23 @@ namespace PSMF
       mem += (dim + 1) * n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
       // temp
       mem += (dim - 1) * patch_per_block * local_dim * sizeof(Number);
-
+#endif
       return mem;
     };
 
     auto shared_mem_inv = [&]() {
       std::size_t mem = 0;
+#ifdef OPTIMIZE
+      const unsigned int n_dofs_1d   = 2 * fe_degree - 1;
+      const unsigned int local_inner = Util::pow(n_dofs_1d, dim);
 
+      // local_src
+      mem += patch_per_block * local_inner * sizeof(Number);
+      // local_eigenvectors, local_eigenvalues
+      mem += n_dofs_1d * (n_dofs_1d + 1) * sizeof(Number);
+      // temp
+      mem += (dim - 1) * patch_per_block * local_inner * sizeof(Number);
+#else
       const unsigned int n_dofs_1d = 2 * fe_degree - 1;
       const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
       // local_src, local_dst, local_residual
@@ -400,7 +424,7 @@ namespace PSMF
       mem += n_dofs_1d * n_dofs_1d * 1 * sizeof(Number);
       // temp
       mem += patch_per_block * local_dim * sizeof(Number);
-
+#endif
       return mem;
     };
 
@@ -1136,9 +1160,15 @@ namespace PSMF
           block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
           break;
         case SmootherVariant::SEPERATE:
+#ifdef OPTIMIZE
+          block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d_inv);
+          block_dim_inv[color] =
+            dim3(patch_per_block * n_dofs_1d, n_dofs_1d_inv);
+#else
           block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
           block_dim_inv[color] =
             dim3(patch_per_block * n_dofs_1d_inv, n_dofs_1d_inv);
+#endif
           break;
         case SmootherVariant::Exact:
           block_dim[color] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
