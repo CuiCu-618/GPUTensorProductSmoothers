@@ -36,7 +36,7 @@ namespace PSMF
   __device__ inline unsigned int
   compute_subface_offset(unsigned int face_number, int subface_number)
   {
-    if (subface_number == -1)
+    if (subface_number == -1 || subface_number == -2)
       return 0;
 
     if (dim == 2)

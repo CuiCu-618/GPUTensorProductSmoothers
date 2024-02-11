@@ -239,7 +239,9 @@ LaplaceOperator<dim, fe_degree>::LaplaceOperator(
   additional_data.mapping_update_flags_inner_faces =
     update_values | update_gradients | update_JxW_values |
     update_normal_vectors;
-  additional_data.mg_level = 2;
+  additional_data.mg_level    = 3;
+  additional_data.matrix_type = PSMF::MatrixType::level_matrix;
+  // additional_data.matrix_type = PSMF::MatrixType::edge_down_matrix;
 
   const QGauss<1> quad(fe_degree + 1);
   mf_data.reinit(mapping,
@@ -285,29 +287,29 @@ template <typename Tri, typename Dof>
 void
 output_mesh(Tri &tri, Dof &dof)
 {
-  // int               degree = 2;
-  // const std::string filename_grid =
-  //   "./grid_2D_Q" + std::to_string(degree) + ".gnuplot";
-  // std::ofstream out(filename_grid);
-  // out << "set terminal png" << std::endl
-  //     << "set output 'grid_2D_Q" << std::to_string(degree) << ".png'"
-  //     << std::endl
-  //     << "plot '-' using 1:2 with lines, "
-  //     << "'-' with labels point pt 2 offset 1,1" << std::endl;
-  // GridOut().write_gnuplot(tri, out);
-  // out << "e" << std::endl;
+  int               degree = 2;
+  const std::string filename_grid =
+    "./grid_2D_Q" + std::to_string(degree) + ".gnuplot";
+  std::ofstream out(filename_grid);
+  out << "set terminal png" << std::endl
+      << "set output 'grid_2D_Q" << std::to_string(degree) << ".png'"
+      << std::endl
+      << "plot '-' using 1:2 with lines, "
+      << "'-' with labels point pt 2 offset 1,1" << std::endl;
+  GridOut().write_gnuplot(tri, out);
+  out << "e" << std::endl;
 
-  // std::map<types::global_dof_index, Point<2>> support_points;
-  // DoFTools::map_dofs_to_support_points(MappingQ1<2>(), dof, support_points);
-  // DoFTools::write_gnuplot_dof_support_point_info(out, support_points);
-  // out << "e" << std::endl;
+  std::map<types::global_dof_index, Point<2>> support_points;
+  DoFTools::map_dofs_to_support_points(MappingQ1<2>(), dof, support_points);
+  DoFTools::write_gnuplot_dof_support_point_info(out, support_points);
+  out << "e" << std::endl;
 
-  std::ofstream out("mesh.vtu");
+  // std::ofstream out("mesh.vtu");
 
-  DataOut<3> data_out;
-  data_out.attach_dof_handler(dof);
-  data_out.build_patches();
-  data_out.write_vtu(out);
+  // DataOut<2> data_out;
+  // data_out.attach_dof_handler(dof);
+  // data_out.build_patches();
+  // data_out.write_vtu(out);
 }
 
 
@@ -318,6 +320,11 @@ test()
   Triangulation<dim> triangulation(
     Triangulation<dim>::limit_level_difference_at_vertices);
   GridGenerator::hyper_cube(triangulation, 0., 1.);
+  // const Point<dim> center(1, 0);
+  // const double     inner_radius = 0.5, outer_radius = 1.0;
+  // GridGenerator::hyper_shell(
+  // triangulation, center, inner_radius, outer_radius, 6);
+
   triangulation.refine_global(1);
 
   auto begin_cell = triangulation.begin_active();
@@ -327,7 +334,13 @@ test()
   begin_cell++;
   begin_cell->set_refine_flag();
   triangulation.execute_coarsening_and_refinement();
-  triangulation.refine_global(1);
+
+  begin_cell = triangulation.begin_active();
+  begin_cell++;
+  begin_cell->set_refine_flag();
+  begin_cell++;
+  begin_cell->set_refine_flag();
+  triangulation.execute_coarsening_and_refinement();
 
   FE_DGQ<dim>     fe(fe_degree);
   DoFHandler<dim> dof_handler(triangulation);
@@ -349,28 +362,31 @@ test()
   LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> solution_dev;
   LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> system_rhs_dev;
 
-  laplace_operator.initialize_dof_vector(solution_dev);
-  system_rhs_dev.reinit(solution_dev);
+  // laplace_operator.initialize_dof_vector(solution_dev);
+  // system_rhs_dev.reinit(solution_dev);
+
+  system_rhs_dev.reinit(dof_handler.n_dofs(3));
+  solution_dev.reinit(dof_handler.n_dofs(3));
 
   // system_rhs_dev = 1.;
   // laplace_operator.vmult(solution_dev, system_rhs_dev);
 
-  // for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
-  {
-    LinearAlgebra::ReadWriteVector<double> rw_vector(system_rhs_dev.size());
+  for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
+    {
+      LinearAlgebra::ReadWriteVector<double> rw_vector(system_rhs_dev.size());
 
-    for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
-      rw_vector[i] = 1. + i;
+      // for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
+      rw_vector[i] = 1.;
 
-    system_rhs_dev.import(rw_vector, VectorOperation::insert);
+      system_rhs_dev.import(rw_vector, VectorOperation::insert);
 
-    laplace_operator.vmult(solution_dev, system_rhs_dev);
+      laplace_operator.vmult(solution_dev, system_rhs_dev);
 
-    solution_dev.print(std::cout);
-    std::cout << solution_dev.l2_norm() << std::endl;
-    // if (i == 0)
-    // break;
-  }
+      solution_dev.print(std::cout);
+      // std::cout << solution_dev.l2_norm() << std::endl;
+      // if (i == 0)
+      // break;
+    }
   // std::cout << solution_dev.l2_norm() << std::endl;
 }
 
@@ -380,7 +396,7 @@ main(int argc, char *argv[])
   int device_id = findCudaDevice(argc, (const char **)argv);
   AssertCuda(cudaSetDevice(device_id));
 
-  test<3, 7>();
+  test<2, 1>();
 
   return 0;
 }

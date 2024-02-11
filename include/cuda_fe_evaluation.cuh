@@ -474,6 +474,7 @@ namespace PSMF
 
   private:
     dealii::types::global_dof_index *local_to_global;
+    dealii::types::global_dof_index *l_to_g_coarse;
     dealii::types::global_dof_index *face_to_cell;
     unsigned int                     cell_id;
     unsigned int                     n_faces;
@@ -482,10 +483,15 @@ namespace PSMF
     unsigned int                     face_padding_length;
     unsigned int                     face_number;
     int                              subface_number;
-    const unsigned int               mf_object_id;
+    int                              face_orientation;
+    bool                             ignore_read;
+    bool                             ignore_write;
 
-    const bool use_coloring;
-    const bool is_interior_face;
+
+    const unsigned int mf_object_id;
+    const bool         use_coloring;
+    const bool         is_interior_face;
+    const MatrixType   matrix_type;
 
     // Internal buffer
     Number *values;
@@ -810,19 +816,41 @@ namespace PSMF
     , mf_object_id(data->id)
     , use_coloring(data->use_coloring)
     , is_interior_face(is_interior_face)
+    , matrix_type(data->matrix_type)
   {
     auto face_no = is_interior_face ? face_id : face_id + n_faces;
 
     cell_id = data->face2cell_id[face_no];
 
     local_to_global = data->local_to_global + padding_length * cell_id;
-    inv_jac         = data->face_inv_jacobian + face_padding_length * face_no;
-    JxW             = data->face_JxW + face_padding_length * face_no;
-    normal_vec      = data->normal_vector + face_padding_length * face_no;
-    face_number     = data->face_number[face_no];
-    subface_number  = data->subface_number[face_no];
+    l_to_g_coarse   = data->l_to_g_coarse + padding_length * cell_id;
+
+    inv_jac        = data->face_inv_jacobian + face_padding_length * face_no;
+    JxW            = data->face_JxW + face_padding_length * face_no;
+    normal_vec     = data->normal_vector + face_padding_length * face_no;
+    face_number    = data->face_number[face_no];
+    subface_number = data->subface_number[face_no];
 
     unsigned int shift = is_interior_face ? 0 : tensor_dofs_per_cell;
+
+    ignore_read  = false;
+    ignore_write = false;
+
+    if (matrix_type == MatrixType::level_matrix)
+      {
+        ignore_read  = !is_interior_face && subface_number != -1;
+        ignore_write = ignore_read;
+      }
+    else if (matrix_type == MatrixType::edge_down_matrix)
+      {
+        ignore_read  = !is_interior_face || subface_number == -1;
+        ignore_write = is_interior_face || subface_number == -1;
+      }
+    else if (matrix_type == MatrixType::edge_up_matrix)
+      {
+        ignore_read  = is_interior_face || subface_number == -1;
+        ignore_write = !is_interior_face || subface_number == -1;
+      }
 
     values = &shdata->values[shift];
 
@@ -845,7 +873,10 @@ namespace PSMF
 
     const dealii::types::global_dof_index src_idx = local_to_global[idx];
     // Use the read-only data cache.
-    values[idx] = __ldg(&src[src_idx]);
+    if (ignore_read)
+      values[idx] = 0;
+    else
+      values[idx] = __ldg(&src[src_idx]);
 
     __syncthreads();
   }
@@ -866,13 +897,18 @@ namespace PSMF
 
     const unsigned int idx = compute_index<dim, n_q_points_1d>();
 
-    const dealii::types::global_dof_index destination_idx =
-      local_to_global[idx];
+    const dealii::types::global_dof_index destination_idx = l_to_g_coarse[idx];
 
     if (use_coloring)
-      dst[destination_idx] += values[idx];
+      {
+        if (!ignore_write)
+          dst[destination_idx] += values[idx];
+      }
     else
-      atomicAdd(&dst[destination_idx], values[idx]);
+      {
+        if (!ignore_write)
+          atomicAdd(&dst[destination_idx], values[idx]);
+      }
   }
 
 

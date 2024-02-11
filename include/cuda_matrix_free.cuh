@@ -44,6 +44,13 @@ namespace PSMF
   template <int dim, typename Number>
   class ReinitHelper;
 
+  enum MatrixType
+  {
+    active_matrix,
+    level_matrix,
+    edge_up_matrix,
+    edge_down_matrix,
+  };
 
   /**
    * This class collects all the data that is stored for the matrix free
@@ -92,6 +99,7 @@ namespace PSMF
        * Constructor.
        */
       AdditionalData(
+        const MatrixType          matrix_type = MatrixType::active_matrix,
         const dealii::UpdateFlags mapping_update_flags =
           dealii::update_gradients | dealii::update_JxW_values,
         const dealii::UpdateFlags mapping_update_flags_boundary_faces =
@@ -101,7 +109,8 @@ namespace PSMF
         const unsigned int mg_level     = dealii::numbers::invalid_unsigned_int,
         const bool         use_coloring = false,
         const bool         overlap_communication_computation = false)
-        : mapping_update_flags(mapping_update_flags)
+        : matrix_type(matrix_type)
+        , mapping_update_flags(mapping_update_flags)
         , mapping_update_flags_boundary_faces(
             mapping_update_flags_boundary_faces)
         , mapping_update_flags_inner_faces(mapping_update_flags_inner_faces)
@@ -183,6 +192,8 @@ namespace PSMF
        * MPI and use_coloring must be false.
        */
       bool overlap_communication_computation;
+
+      MatrixType matrix_type;
     };
 
     /**
@@ -201,6 +212,12 @@ namespace PSMF
        * vector.
        */
       dealii::types::global_dof_index *local_to_global;
+
+      /**
+       * When using Multigrid Method, for one level coarse, map the position in
+       * the local vector to the position in the global vector.
+       */
+      dealii::types::global_dof_index *l_to_g_coarse;
 
       /**
        * Map the face to cell id.
@@ -242,11 +259,20 @@ namespace PSMF
        */
       int *subface_number;
 
+      /**
+       * Pointer to the face orientation.
+       */
+      int *face_orientation;
 
       /**
        * ID of the associated MatrixFree object.
        */
       unsigned int id;
+
+      /**
+       * Level of the mesh to be worked on.
+       */
+      unsigned int mg_level;
 
       /**
        * Number of objects.
@@ -288,6 +314,8 @@ namespace PSMF
        * the destingation vector. Otherwise, use atomic operations.
        */
       bool use_coloring;
+
+      MatrixType matrix_type;
     };
 
     /**
@@ -619,6 +647,12 @@ namespace PSMF
     std::vector<dealii::types::global_dof_index *> local_to_global;
 
     /**
+     * When using Multigrid Method, for one level coarse, map the position in
+     * the local vector to the position in the global vector.
+     */
+    std::vector<dealii::types::global_dof_index *> l_to_g_coarse;
+
+    /**
      * Map the inner face to cell id.
      */
     std::vector<dealii::types::global_dof_index *> inner_face2cell_id;
@@ -667,6 +701,13 @@ namespace PSMF
      * Vector of pointer to the subface number.
      */
     std::vector<int *> subface_number;
+
+    /**
+     * Vector of pointer to the face orientation.
+     * Return whether the face with index face has its normal pointing in the
+     * standard direction (true) or whether it is the opposite (false)
+     */
+    std::vector<int *> face_orientation;
 
     /**
      * Pointer to the constrained degrees of freedom.
@@ -770,6 +811,7 @@ namespace PSMF
      */
     const dealii::DoFHandler<dim> *dof_handler;
 
+    MatrixType matrix_type;
     /**
      * Colored graphed of locally owned active cells.
      */
@@ -908,6 +950,12 @@ namespace PSMF
     std::vector<dealii::types::global_dof_index> local_to_global;
 
     /**
+     * When using Multigrid Method, for one level coarse, map the position in
+     * the local vector to the position in the global vector.
+     */
+    std::vector<dealii::types::global_dof_index> l_to_g_coarse;
+
+    /**
      * Map the face to cell id.
      */
     std::vector<dealii::types::global_dof_index> face2cell_id;
@@ -946,6 +994,11 @@ namespace PSMF
      * Vector of the subface number.
      */
     std::vector<int> subface_number;
+
+    /**
+     * Vector of the face orientation.
+     */
+    std::vector<int> face_orientation;
 
     /**
      * ID of the associated MatrixFree object.
@@ -988,6 +1041,8 @@ namespace PSMF
      * the destingation vector. Otherwise, use atomic operations.
      */
     bool use_coloring;
+
+    MatrixType matrix_type;
   };
 
 
