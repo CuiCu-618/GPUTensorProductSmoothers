@@ -719,6 +719,10 @@ namespace PSMF
               }
             else
               {
+                if (matrix_type == MatrixType::active_matrix &&
+                    neighbor->has_children())
+                  continue;
+
                 if (neighbor < cell)
                   continue;
 
@@ -836,6 +840,10 @@ namespace PSMF
               }
             else
               {
+                if (matrix_type == MatrixType::active_matrix &&
+                    neighbor->has_children())
+                  continue;
+
                 if (neighbor < cell)
                   continue;
 

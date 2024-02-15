@@ -239,8 +239,8 @@ LaplaceOperator<dim, fe_degree>::LaplaceOperator(
   additional_data.mapping_update_flags_inner_faces =
     update_values | update_gradients | update_JxW_values |
     update_normal_vectors;
-  additional_data.mg_level    = 3;
-  additional_data.matrix_type = PSMF::MatrixType::level_matrix;
+  // additional_data.mg_level    = 3;
+  additional_data.matrix_type = PSMF::MatrixType::active_matrix;
   // additional_data.matrix_type = PSMF::MatrixType::edge_down_matrix;
 
   const QGauss<1> quad(fe_degree + 1);
@@ -248,7 +248,7 @@ LaplaceOperator<dim, fe_degree>::LaplaceOperator(
                  dof_handler,
                  constraints,
                  quad,
-                 IteratorFilters::LocallyOwnedLevelCell(),
+                 IteratorFilters::LocallyOwnedCell(),
                  additional_data);
 }
 
@@ -287,7 +287,7 @@ template <typename Tri, typename Dof>
 void
 output_mesh(Tri &tri, Dof &dof)
 {
-  int               degree = 2;
+  int               degree = 1;
   const std::string filename_grid =
     "./grid_2D_Q" + std::to_string(degree) + ".gnuplot";
   std::ofstream out(filename_grid);
@@ -328,19 +328,20 @@ test()
   triangulation.refine_global(1);
 
   auto begin_cell = triangulation.begin_active();
-  begin_cell->set_refine_flag();
+  // begin_cell->set_refine_flag();
   begin_cell++;
-  begin_cell->set_refine_flag();
+  // begin_cell->set_refine_flag();
+  begin_cell++;
   begin_cell++;
   begin_cell->set_refine_flag();
   triangulation.execute_coarsening_and_refinement();
 
-  begin_cell = triangulation.begin_active();
-  begin_cell++;
-  begin_cell->set_refine_flag();
-  begin_cell++;
-  begin_cell->set_refine_flag();
-  triangulation.execute_coarsening_and_refinement();
+  // begin_cell = triangulation.begin_active();
+  // begin_cell++;
+  // begin_cell->set_refine_flag();
+  // begin_cell++;
+  // begin_cell->set_refine_flag();
+  // triangulation.execute_coarsening_and_refinement();
 
   FE_DGQ<dim>     fe(fe_degree);
   DoFHandler<dim> dof_handler(triangulation);
@@ -351,7 +352,7 @@ test()
   dof_handler.distribute_dofs(fe);
   dof_handler.distribute_mg_dofs();
 
-  // output_mesh(triangulation, dof_handler);
+  output_mesh(triangulation, dof_handler);
 
   AffineConstraints<double> level_constraints;
   level_constraints.close();
@@ -365,8 +366,8 @@ test()
   // laplace_operator.initialize_dof_vector(solution_dev);
   // system_rhs_dev.reinit(solution_dev);
 
-  system_rhs_dev.reinit(dof_handler.n_dofs(3));
-  solution_dev.reinit(dof_handler.n_dofs(3));
+  system_rhs_dev.reinit(dof_handler.n_dofs());
+  solution_dev.reinit(dof_handler.n_dofs());
 
   // system_rhs_dev = 1.;
   // laplace_operator.vmult(solution_dev, system_rhs_dev);
