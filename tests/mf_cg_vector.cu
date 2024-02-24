@@ -1,0 +1,300 @@
+
+#include <deal.II/base/function.h>
+#include <deal.II/base/quadrature_lib.h>
+
+#include <deal.II/dofs/dof_tools.h>
+
+#include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_system.h>
+
+#include <deal.II/grid/filtered_iterator.h>
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_out.h>
+#include <deal.II/grid/grid_tools.h>
+#include <deal.II/grid/tria.h>
+
+#include <deal.II/lac/affine_constraints.h>
+
+#include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/vector_tools.h>
+
+#include <helper_cuda.h>
+
+#include <iostream>
+
+#include "cuda_fe_evaluation.cuh"
+#include "cuda_matrix_free.cuh"
+
+// Matrix-free implementation with vector valued continous elements.
+
+using namespace dealii;
+
+template <int dim, int fe_degree, typename Number>
+class LocalLaplaceOperator
+{
+public:
+  static const unsigned int n_dofs_1d = fe_degree + 1;
+  static const unsigned int n_local_dofs =
+    Utilities::pow(fe_degree + 1, dim) * dim;
+  static const unsigned int n_q_points =
+    Utilities::pow(fe_degree + 1, dim) * dim;
+
+  static const unsigned int cells_per_block =
+    PSMF::cells_per_block_shmem(dim, fe_degree);
+
+
+  LocalLaplaceOperator()
+  {}
+
+
+  // __device__ void
+  // operator()(const unsigned int                                  cell,
+  //            const typename PSMF::MatrixFree<dim, Number>::Data *gpu_data,
+  //            PSMF::SharedData<dim, Number>                      *shared_data,
+  //            const Number                                       *src,
+  //            Number                                             *dst) const
+  // {
+  //   PSMF::FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> fe_eval(
+  //     cell, gpu_data, shared_data);
+  //   fe_eval.read_dof_values(src);
+  //   fe_eval.evaluate(false, true);
+  //   fe_eval.submit_gradient(fe_eval.get_gradient());
+  //   fe_eval.integrate(false, true);
+  //   fe_eval.distribute_local_to_global(dst);
+  // }
+
+  __device__ void
+  operator()(const unsigned int                                  cell,
+             const typename PSMF::MatrixFree<dim, Number>::Data *gpu_data,
+             PSMF::SharedData<dim, Number>                      *shared_data,
+             const Number                                       *src,
+             Number                                             *dst) const
+  {
+    PSMF::FEEvaluation<dim, fe_degree, fe_degree + 1, dim, Number> fe_eval(
+      cell, gpu_data, shared_data);
+
+    fe_eval.read_dof_values(src);
+    fe_eval.evaluate(false, true);
+
+    const Number mu     = 1.5;
+    const Number lambda = 2.0;
+
+    auto grad_copy = fe_eval.get_gradient(); // (\mu\nabla u_i, \nabla v_j)
+    auto gradij    = grad_copy; // (\mu\partial_i u_j, \partial_j u_i)
+
+    // (\lambda\partial_i u_i, \partial_j u_j)
+    Number val_ii = 0;
+    for (unsigned int c0 = 0; c0 < dim; ++c0)
+      val_ii += grad_copy[c0][c0] * lambda;
+
+    for (unsigned int c0 = 0; c0 < dim; ++c0)
+      for (unsigned int c1 = 0; c1 < dim; ++c1)
+        grad_copy[c0][c1] =
+          grad_copy[c0][c1] * mu +
+          (c0 == c1 ? val_ii + gradij[c1][c0] * mu : gradij[c1][c0] * mu);
+
+    fe_eval.submit_gradient(grad_copy);
+    fe_eval.integrate(false, true);
+    fe_eval.distribute_local_to_global(dst);
+  }
+};
+
+
+template <int dim, int fe_degree>
+class LaplaceOperator
+{
+public:
+  LaplaceOperator(const DoFHandler<dim>           &dof_handler,
+                  const AffineConstraints<double> &constraints);
+
+  void
+  vmult(
+    LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> &dst,
+    LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> &src) const;
+
+  void
+  initialize_dof_vector(
+    LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> &vec) const;
+
+private:
+  PSMF::MatrixFree<dim, double> mf_data;
+};
+
+
+
+template <int dim, int fe_degree>
+LaplaceOperator<dim, fe_degree>::LaplaceOperator(
+  const DoFHandler<dim>           &dof_handler,
+  const AffineConstraints<double> &constraints)
+{
+  MappingQ<dim>                                          mapping(fe_degree);
+  typename PSMF::MatrixFree<dim, double>::AdditionalData additional_data;
+  additional_data.mapping_update_flags =
+    update_values | update_gradients | update_JxW_values;
+  additional_data.mapping_update_flags_inner_faces =
+    update_values | update_gradients | update_JxW_values |
+    update_normal_vectors;
+  // additional_data.mg_level    = 3;
+  additional_data.matrix_type = PSMF::MatrixType::active_matrix;
+  // additional_data.matrix_type = PSMF::MatrixType::edge_down_matrix;
+
+  const QGauss<1> quad(fe_degree + 1);
+  mf_data.reinit(mapping,
+                 dof_handler,
+                 constraints,
+                 quad,
+                 IteratorFilters::LocallyOwnedCell(),
+                 additional_data);
+}
+
+
+template <int dim, int fe_degree>
+void
+LaplaceOperator<dim, fe_degree>::vmult(
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> &dst,
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> &src) const
+{
+  dst = 0.;
+
+  LocalLaplaceOperator<dim, fe_degree, double> laplace_operator;
+  mf_data.cell_loop(laplace_operator, src, dst);
+
+  mf_data.copy_constrained_values(src, dst);
+}
+
+
+
+template <int dim, int fe_degree>
+void
+LaplaceOperator<dim, fe_degree>::initialize_dof_vector(
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> &vec) const
+{
+  mf_data.initialize_dof_vector(vec);
+}
+
+template <typename Tri, typename Dof>
+void
+output_mesh(Tri &tri, Dof &dof)
+{
+  int               degree = 2;
+  const std::string filename_grid =
+    "./grid_2D_Q" + std::to_string(degree) + ".gnuplot";
+  std::ofstream out(filename_grid);
+  out << "set terminal png" << std::endl
+      << "set output 'grid_2D_Q" << std::to_string(degree) << ".png'"
+      << std::endl
+      << "plot '-' using 1:2 with lines, "
+      << "'-' with labels point pt 2 offset 1,1" << std::endl;
+  GridOut().write_gnuplot(tri, out);
+  out << "e" << std::endl;
+
+  std::map<types::global_dof_index, Point<2>> support_points;
+  DoFTools::map_dofs_to_support_points(MappingQ1<2>(), dof, support_points);
+  DoFTools::write_gnuplot_dof_support_point_info(out, support_points);
+  out << "e" << std::endl;
+
+  // std::ofstream out("mesh.vtu");
+
+  // DataOut<2> data_out;
+  // data_out.attach_dof_handler(dof);
+  // data_out.build_patches();
+  // data_out.write_vtu(out);
+}
+
+
+template <int dim, int fe_degree>
+void
+test()
+{
+  Triangulation<dim> triangulation(
+    Triangulation<dim>::limit_level_difference_at_vertices);
+  GridGenerator::hyper_cube(triangulation, 0., 1.);
+  // const Point<dim> center(1, 0);
+  // const double     inner_radius = 0.5, outer_radius = 1.0;
+  // GridGenerator::hyper_shell(
+  // triangulation, center, inner_radius, outer_radius, 6);
+
+  triangulation.refine_global(1);
+
+  auto begin_cell = triangulation.begin_active();
+  // begin_cell++;
+  // begin_cell->set_refine_flag();
+  // begin_cell++;
+  begin_cell->set_refine_flag();
+  triangulation.execute_coarsening_and_refinement();
+
+  // begin_cell = triangulation.begin_active();
+  // begin_cell++;
+  // begin_cell->set_refine_flag();
+  // begin_cell++;
+  // begin_cell->set_refine_flag();
+  // triangulation.execute_coarsening_and_refinement();
+
+  // FE_Q<dim>     fe(fe_degree);
+  FESystem<dim>   fe(FE_Q<dim>(fe_degree), dim);
+  DoFHandler<dim> dof_handler(triangulation);
+  MappingQ1<dim>  mapping;
+
+  // GridTools::distort_random(0.2, triangulation, true, 1);
+
+  dof_handler.distribute_dofs(fe);
+  dof_handler.distribute_mg_dofs();
+
+  // output_mesh(triangulation, dof_handler);
+
+  AffineConstraints<double> constraints;
+  constraints.clear();
+  // DoFTools::make_hanging_node_constraints(dof_handler, constraints);
+  // VectorTools::interpolate_boundary_values(dof_handler,
+  //                                          0,
+  //                                          Functions::ZeroFunction<dim>(dim),
+  //                                          constraints);
+  constraints.close();
+  constraints.print(std::cout);
+
+  LaplaceOperator<dim, fe_degree> laplace_operator(dof_handler, constraints);
+
+  // return;
+
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> solution_dev;
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA> system_rhs_dev;
+
+  // laplace_operator.initialize_dof_vector(solution_dev);
+  // system_rhs_dev.reinit(solution_dev);
+
+  system_rhs_dev.reinit(dof_handler.n_dofs());
+  solution_dev.reinit(dof_handler.n_dofs());
+
+  // system_rhs_dev = 1.;
+  // laplace_operator.vmult(solution_dev, system_rhs_dev);
+
+  for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
+    {
+      LinearAlgebra::ReadWriteVector<double> rw_vector(system_rhs_dev.size());
+
+      // for (unsigned int i = 0; i < system_rhs_dev.size(); ++i)
+      rw_vector[i] = 1. + 0;
+
+      system_rhs_dev.import(rw_vector, VectorOperation::insert);
+
+      laplace_operator.vmult(solution_dev, system_rhs_dev);
+
+      solution_dev.print(std::cout);
+      // std::cout << solution_dev.l2_norm() << std::endl;
+      // if (i == 0)
+      // break;
+    }
+  // std::cout << solution_dev.l2_norm() << std::endl;
+}
+
+int
+main(int argc, char *argv[])
+{
+  int device_id = findCudaDevice(argc, (const char **)argv);
+  AssertCuda(cudaSetDevice(device_id));
+
+  test<2, 2>();
+
+  return 0;
+}

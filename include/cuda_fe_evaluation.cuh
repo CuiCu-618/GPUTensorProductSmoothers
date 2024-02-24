@@ -29,7 +29,7 @@
 
 #include "cuda_matrix_free.cuh"
 #include "cuda_tensor_product_kernels.cuh"
-
+#include <cuda/std/array>
 
 namespace PSMF
 {
@@ -103,12 +103,12 @@ namespace PSMF
     /**
      * An alias for scalar quantities.
      */
-    using value_type = Number;
+    using value_type = cuda::std::array<Number, n_components_>;
 
     /**
      * An alias for vectorial quantities.
      */
-    using gradient_type = dealii::Tensor<1, dim, Number>;
+    using gradient_type = cuda::std::array<value_type, dim>;
 
     /**
      * An alias to kernel specific information.
@@ -249,8 +249,7 @@ namespace PSMF
     unsigned int                     padding_length;
     const unsigned int               mf_object_id;
 
-    const dealii::internal::MatrixFreeFunctions::ConstraintKinds
-      constraint_mask;
+    dealii::internal::MatrixFreeFunctions::ConstraintKinds *constraint_mask;
 
     const bool use_coloring;
 
@@ -513,13 +512,15 @@ namespace PSMF
     : n_cells(data->n_cells)
     , padding_length(data->padding_length)
     , mf_object_id(data->id)
-    , constraint_mask(data->constraint_mask[cell_id])
     , use_coloring(data->use_coloring)
     , values(shdata->values)
   {
-    local_to_global = data->local_to_global + padding_length * cell_id;
-    inv_jac         = data->inv_jacobian + padding_length * cell_id;
-    JxW             = data->JxW + padding_length * cell_id;
+    constraint_mask = data->constraint_mask + cell_id * n_components;
+
+    local_to_global =
+      data->local_to_global + padding_length * cell_id * n_components;
+    inv_jac = data->inv_jacobian + padding_length * cell_id;
+    JxW     = data->JxW + padding_length * cell_id;
 
     for (unsigned int i = 0; i < dim; ++i)
       gradients[i] = shdata->gradients[i];
@@ -536,18 +537,22 @@ namespace PSMF
   FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     read_dof_values(const Number *src)
   {
-    static_assert(n_components_ == 1, "This function only supports FE with one \
-                  components");
     const unsigned int idx = compute_index<dim, n_q_points_1d>();
 
-    const dealii::types::global_dof_index src_idx = local_to_global[idx];
-    // Use the read-only data cache.
-    values[idx] = __ldg(&src[src_idx]);
+    for (unsigned int c = 0; c < n_components_; ++c)
+      {
+        auto                                  shift = c * tensor_dofs_per_cell;
+        const dealii::types::global_dof_index src_idx =
+          local_to_global[idx + shift];
 
+        // Use the read-only data cache.
+        values[idx + shift] = __ldg(&src[src_idx]);
+
+        dealii::CUDAWrappers::internal::
+          resolve_hanging_nodes<dim, fe_degree, false>(constraint_mask[c],
+                                                       &values[shift]);
+      }
     __syncthreads();
-
-    dealii::CUDAWrappers::internal::
-      resolve_hanging_nodes<dim, fe_degree, false>(constraint_mask, values);
   }
 
 
@@ -561,20 +566,24 @@ namespace PSMF
   FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     distribute_local_to_global(Number *dst) const
   {
-    static_assert(n_components_ == 1, "This function only supports FE with one \
-                  components");
-    dealii::CUDAWrappers::internal::resolve_hanging_nodes<dim, fe_degree, true>(
-      constraint_mask, values);
-
     const unsigned int idx = compute_index<dim, n_q_points_1d>();
 
-    const dealii::types::global_dof_index destination_idx =
-      local_to_global[idx];
+    for (unsigned int c = 0; c < n_components_; ++c)
+      {
+        auto shift = c * tensor_dofs_per_cell;
 
-    if (use_coloring)
-      dst[destination_idx] += values[idx];
-    else
-      atomicAdd(&dst[destination_idx], values[idx]);
+        const dealii::types::global_dof_index destination_idx =
+          local_to_global[idx + shift];
+
+        dealii::CUDAWrappers::internal::
+          resolve_hanging_nodes<dim, fe_degree, true>(constraint_mask[c],
+                                                      &values[shift]);
+
+        if (use_coloring)
+          dst[destination_idx] += values[idx + shift];
+        else
+          atomicAdd(&dst[destination_idx], values[idx + shift]);
+      }
   }
 
 
@@ -595,6 +604,7 @@ namespace PSMF
                            dim,
                            fe_degree,
                            n_q_points_1d,
+                           n_components_,
                            Number>
       evaluator_tensor_product(mf_object_id);
     if (evaluate_val == true && evaluate_grad == true)
@@ -631,6 +641,7 @@ namespace PSMF
                            dim,
                            fe_degree,
                            n_q_points_1d,
+                           n_components_,
                            Number>
       evaluator_tensor_product(mf_object_id);
     if (integrate_val == true && integrate_grad == true)
@@ -667,7 +678,13 @@ namespace PSMF
     get_value() const
   {
     const unsigned int q_point = compute_index<dim, n_q_points_1d>();
-    return values[q_point];
+
+    value_type val;
+
+    for (unsigned int c = 0; c < n_components_; ++c)
+      val[c] = values[q_point + c * n_q_points];
+
+    return val;
   }
 
 
@@ -686,7 +703,13 @@ namespace PSMF
     get_dof_value() const
   {
     const unsigned int dof = compute_index<dim, fe_degree + 1>();
-    return values[dof];
+
+    value_type val;
+
+    for (unsigned int c = 0; c < n_components_; ++c)
+      val[c] = values[dof + c * tensor_dofs_per_cell];
+
+    return val;
   }
 
 
@@ -701,7 +724,10 @@ namespace PSMF
     submit_value(const value_type &val_in)
   {
     const unsigned int q_point = compute_index<dim, n_q_points_1d>();
-    values[q_point]            = val_in * JxW[q_point];
+
+    for (unsigned int c = 0; c < n_components_; ++c)
+      values[q_point + c * n_q_points] = val_in[c] * JxW[q_point];
+
     __syncthreads();
   }
 
@@ -717,7 +743,10 @@ namespace PSMF
     submit_dof_value(const value_type &val_in)
   {
     const unsigned int dof = compute_index<dim, fe_degree + 1>();
-    values[dof]            = val_in;
+
+    for (unsigned int c = 0; c < n_components_; ++c)
+      values[dof + c * tensor_dofs_per_cell] = val_in[c];
+
     __syncthreads();
   }
 
@@ -736,21 +765,20 @@ namespace PSMF
   FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     get_gradient() const
   {
-    static_assert(n_components_ == 1, "This function only supports FE with one \
-                  components");
-
     // TODO optimize if the mesh is uniform
     const unsigned int q_point      = compute_index<dim, n_q_points_1d>();
     const Number      *inv_jacobian = &inv_jac[q_point];
     gradient_type      grad;
-    for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
-      {
-        Number tmp = 0.;
-        for (unsigned int d_2 = 0; d_2 < dim; ++d_2)
-          tmp += inv_jacobian[padding_length * n_cells * (dim * d_2 + d_1)] *
-                 gradients[d_2][q_point];
-        grad[d_1] = tmp;
-      }
+
+    for (unsigned int c = 0; c < n_components_; ++c)
+      for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
+        {
+          Number tmp = 0.;
+          for (unsigned int d_2 = 0; d_2 < dim; ++d_2)
+            tmp += inv_jacobian[padding_length * n_cells * (dim * d_2 + d_1)] *
+                   gradients[d_2][q_point + c * n_q_points];
+          grad[d_1][c] = tmp;
+        }
 
     return grad;
   }
@@ -769,14 +797,16 @@ namespace PSMF
     // TODO optimize if the mesh is uniform
     const unsigned int q_point      = compute_index<dim, n_q_points_1d>();
     const Number      *inv_jacobian = &inv_jac[q_point];
-    for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
-      {
-        Number tmp = 0.;
-        for (unsigned int d_2 = 0; d_2 < dim; ++d_2)
-          tmp += inv_jacobian[n_cells * padding_length * (dim * d_1 + d_2)] *
-                 grad_in[d_2];
-        gradients[d_1][q_point] = tmp * JxW[q_point];
-      }
+
+    for (unsigned int c = 0; c < n_components_; ++c)
+      for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
+        {
+          Number tmp = 0.;
+          for (unsigned int d_2 = 0; d_2 < dim; ++d_2)
+            tmp += inv_jacobian[n_cells * padding_length * (dim * d_1 + d_2)] *
+                   grad_in[d_2][c];
+          gradients[d_1][q_point + c * n_q_points] = tmp * JxW[q_point];
+        }
     __syncthreads();
   }
 
@@ -928,6 +958,7 @@ namespace PSMF
                            dim,
                            fe_degree,
                            n_q_points_1d,
+                           n_components_,
                            Number>
       evaluator_tensor_product(mf_object_id, face_number, subface_number);
     if (evaluate_val == true && evaluate_grad == true)
@@ -972,6 +1003,7 @@ namespace PSMF
                            dim,
                            fe_degree,
                            n_q_points_1d,
+                           n_components_,
                            Number>
       evaluator_tensor_product(mf_object_id, face_number, subface_number);
     if (integrate_val == true && integrate_grad == true)

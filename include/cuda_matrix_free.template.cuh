@@ -363,6 +363,7 @@ namespace PSMF
     const std::vector<unsigned int>             &lexicographic_inv;
     std::vector<dealii::types::global_dof_index> lexicographic_dof_indices;
     const unsigned int                           fe_degree;
+    const unsigned int                           n_components;
     const unsigned int                           dofs_per_cell;
     const unsigned int                           dofs_per_face;
     const unsigned int                           q_points_per_cell;
@@ -393,6 +394,7 @@ namespace PSMF
     const dealii::UpdateFlags &update_flags_boundary_faces)
     : data(data)
     , fe_degree(data->fe_degree)
+    , n_components(data->n_components)
     , dofs_per_cell(data->dofs_per_cell)
     , dofs_per_face(data->dofs_per_face)
     , q_points_per_cell(data->q_points_per_cell)
@@ -438,9 +440,9 @@ namespace PSMF
         shape_info.data.front().subface_interpolation_matrices[0].size());
     AssertCuda(error_code);
 
-    local_dof_indices.resize(data->dofs_per_cell);
-    local_dof_indices_coarse.resize(data->dofs_per_cell);
-    lexicographic_dof_indices.resize(dofs_per_cell);
+    local_dof_indices.resize(data->dofs_per_cell * n_components);
+    local_dof_indices_coarse.resize(data->dofs_per_cell * n_components);
+    lexicographic_dof_indices.resize(data->dofs_per_cell * n_components);
   }
 
   template <int dim, typename Number>
@@ -518,7 +520,7 @@ namespace PSMF
     else
       AssertThrow(false, dealii::ExcMessage("Invalid dimension."));
 
-    local_to_global_host.resize(n_cells * padding_length);
+    local_to_global_host.resize(n_cells * padding_length * n_components);
     l_to_g_coarse_host.resize(n_cells * padding_length);
 
     if (update_flags & dealii::update_quadrature_points)
@@ -530,7 +532,7 @@ namespace PSMF
     if (update_flags & dealii::update_gradients)
       inv_jacobian_host.resize(n_cells * padding_length * dim * dim);
 
-    constraint_mask_host.resize(n_cells);
+    constraint_mask_host.resize(n_cells * n_components);
   }
 
 
@@ -613,12 +615,13 @@ namespace PSMF
         for (auto &index : local_dof_indices)
           index = partitioner->global_to_local(index);
 
-      for (unsigned int i = 0; i < dofs_per_cell; ++i)
+      for (unsigned int i = 0; i < dofs_per_cell * n_components; ++i)
         lexicographic_dof_indices[i] = local_dof_indices[lexicographic_inv[i]];
 
       const dealii::ArrayView<
         dealii::internal::MatrixFreeFunctions::ConstraintKinds>
-        cell_id_view(constraint_mask_host[obj_id]);
+        cell_id_view(&constraint_mask_host[obj_id * n_components],
+                     n_components);
 
       hanging_nodes.setup_constraints(c,
                                       partitioner,
@@ -626,9 +629,10 @@ namespace PSMF
                                       lexicographic_dof_indices,
                                       cell_id_view);
 
-      memcpy(&local_to_global_host[obj_id * padding_length],
+      memcpy(&local_to_global_host[obj_id * padding_length * n_components],
              lexicographic_dof_indices.data(),
-             dofs_per_cell * sizeof(dealii::types::global_dof_index));
+             dofs_per_cell * n_components *
+               sizeof(dealii::types::global_dof_index));
     };
 
     auto fill_cell_data = [&](auto &fe_value, auto obj_id) {
@@ -889,7 +893,7 @@ namespace PSMF
     alloc_and_copy(&data->local_to_global[color],
                    dealii::ArrayView<const dealii::types::global_dof_index>(
                      local_to_global_host.data(), local_to_global_host.size()),
-                   n_cells * padding_length);
+                   n_cells * padding_length * n_components);
 
     // Local-to-global mapping
     alloc_and_copy(&data->l_to_g_coarse[color],
@@ -937,7 +941,7 @@ namespace PSMF
       dealii::ArrayView<
         const dealii::internal::MatrixFreeFunctions::ConstraintKinds>(
         constraint_mask_host.data(), constraint_mask_host.size()),
-      n_cells);
+      n_cells * n_components);
   }
 
   template <int dim, typename Number>
@@ -1504,7 +1508,8 @@ namespace PSMF
     face_padding_length = 1 << static_cast<unsigned int>(
                             std::ceil((dim - 1) * std::log2(fe_degree + 1.)));
 
-    dofs_per_cell     = fe.n_dofs_per_cell();
+    n_components      = fe.n_components();
+    dofs_per_cell     = std::pow(n_dofs_1d, dim);
     q_points_per_cell = std::pow(n_q_points_1d, dim);
     q_points_per_face = std::pow(n_q_points_1d, dim - 1);
 
@@ -1860,20 +1865,21 @@ namespace PSMF
         helper.alloc_and_copy_arrays(i);
       }
 
-    // Setup faces
-    for (unsigned int i = 0; i < n_colors; ++i)
-      {
-        unsigned int inner_face_id    = 0;
-        unsigned int boundary_face_id = 0;
+    // // Setup faces
+    // for (unsigned int i = 0; i < n_colors; ++i)
+    //   {
+    //     unsigned int inner_face_id    = 0;
+    //     unsigned int boundary_face_id = 0;
 
-        helper.setup_face_arrays(i);
-        typename std::vector<CellIterator>::iterator cell = graph[i].begin(),
-                                                     end_cell = graph[i].end();
-        for (unsigned int cell_id = 0; cell != end_cell; ++cell, ++cell_id)
-          helper.get_face_data(*cell, inner_face_id, boundary_face_id, i);
+    //     helper.setup_face_arrays(i);
+    //     typename std::vector<CellIterator>::iterator cell = graph[i].begin(),
+    //                                                  end_cell =
+    //                                                  graph[i].end();
+    //     for (unsigned int cell_id = 0; cell != end_cell; ++cell, ++cell_id)
+    //       helper.get_face_data(*cell, inner_face_id, boundary_face_id, i);
 
-        helper.alloc_and_copy_face_arrays(i);
-      }
+    //     helper.alloc_and_copy_face_arrays(i);
+    //   }
 
     // Setup row starts
     if (n_colors > 0)

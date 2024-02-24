@@ -12,6 +12,7 @@ INCLUDE_DIRECTORIES(
 
 SET( SOURCE_FILES
         mf_dg.cu
+        mf_cg_vector.cu
         )
 
 FOREACH ( sourcefile ${SOURCE_FILES} )

@@ -590,6 +590,11 @@ namespace PSMF
     unsigned int fe_degree;
 
     /**
+     * Number of components.
+     */
+    unsigned int n_components;
+
+    /**
      * Number of degrees of freedom per cell.
      */
     unsigned int dofs_per_cell;
@@ -862,6 +867,8 @@ namespace PSMF
   __host__ __device__ constexpr unsigned int
   cells_per_block_shmem(int dim, int fe_degree)
   {
+    return 1;
+
     constexpr int warp_size = 32;
 
     /* clang-format off */

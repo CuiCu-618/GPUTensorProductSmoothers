@@ -97,6 +97,7 @@ namespace PSMF
             int              dim,
             int              fe_degree,
             int              n_q_points_1d,
+            int              n_components_,
             typename Number>
   struct EvaluatorTensorProduct
   {
@@ -109,11 +110,16 @@ namespace PSMF
    *
    * @ingroup MatrixFree
    */
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   struct EvaluatorTensorProduct<evaluate_general,
                                 dim,
                                 fe_degree,
                                 n_q_points_1d,
+                                n_components_,
                                 Number>
   {
     static constexpr unsigned int dofs_per_cell =
@@ -192,23 +198,33 @@ namespace PSMF
   };
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   __device__
   EvaluatorTensorProduct<evaluate_general,
                          dim,
                          fe_degree,
                          n_q_points_1d,
+                         n_components_,
                          Number>::EvaluatorTensorProduct(int object_id)
     : mf_object_id(object_id)
   {}
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   template <int direction, bool dof_to_quad, bool add, bool in_place>
   __device__ void
   EvaluatorTensorProduct<evaluate_general,
                          dim,
                          fe_degree,
                          n_q_points_1d,
+                         n_components_,
                          Number>::values(Number        shape_values[],
                                          const Number *in,
                                          Number       *out) const
@@ -218,13 +234,18 @@ namespace PSMF
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   template <int direction, bool dof_to_quad, bool add, bool in_place>
   __device__ void
   EvaluatorTensorProduct<evaluate_general,
                          dim,
                          fe_degree,
                          n_q_points_1d,
+                         n_components_,
                          Number>::gradients(Number        shape_gradients[],
                                             const Number *in,
                                             Number       *out) const
@@ -234,13 +255,18 @@ namespace PSMF
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   template <int direction, bool dof_to_quad, bool add, bool in_place>
   __device__ void
   EvaluatorTensorProduct<evaluate_general,
                          dim,
                          fe_degree,
                          n_q_points_1d,
+                         n_components_,
                          Number>::apply(Number        shape_data[],
                                         const Number *in,
                                         Number       *out) const
@@ -282,439 +308,589 @@ namespace PSMF
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
   EvaluatorTensorProduct<evaluate_general,
                          dim,
                          fe_degree,
                          n_q_points_1d,
+                         n_components_,
                          Number>::value_at_quad_pts(Number *u)
   {
-    switch (dim)
+    for (unsigned int c = 0; c < n_components_; ++c)
       {
-        case 1:
+        auto shift = c * n_q_points;
+        switch (dim)
           {
-            values<0, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
+            case 1:
+              {
+                values<0, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
 
-            break;
-          }
-        case 2:
-          {
-            values<0, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<1, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
+                break;
+              }
+            case 2:
+              {
+                values<0, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
+                __syncthreads();
+                values<1, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
 
-            break;
-          }
-        case 3:
-          {
-            values<0, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<1, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<2, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
+                break;
+              }
+            case 3:
+              {
+                values<0, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
+                __syncthreads();
+                values<1, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
+                __syncthreads();
+                values<2, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
 
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:301\n");
+                break;
+              }
+            default:
+              {
+                // Do nothing. We should throw but we can't from a __device__
+                // function.
+                printf(
+                  "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:301\n");
+              }
           }
       }
   }
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
   EvaluatorTensorProduct<evaluate_general,
                          dim,
                          fe_degree,
                          n_q_points_1d,
+                         n_components_,
                          Number>::integrate_value(Number *u)
   {
-    switch (dim)
+    for (unsigned int c = 0; c < n_components_; ++c)
       {
-        case 1:
+        auto shift = c * n_q_points;
+        switch (dim)
           {
-            values<0, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
+            case 1:
+              {
+                values<0, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
 
-            break;
-          }
-        case 2:
-          {
-            values<0, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<1, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
+                break;
+              }
+            case 2:
+              {
+                values<0, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
+                __syncthreads();
+                values<1, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
 
-            break;
-          }
-        case 3:
-          {
-            values<0, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<1, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<2, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
+                break;
+              }
+            case 3:
+              {
+                values<0, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
+                __syncthreads();
+                values<1, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
+                __syncthreads();
+                values<2, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
 
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:353\n");
+                break;
+              }
+            default:
+              {
+                // Do nothing. We should throw but we can't from a __device__
+                // function.
+                printf(
+                  "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:353\n");
+              }
           }
       }
   }
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
   EvaluatorTensorProduct<evaluate_general,
                          dim,
                          fe_degree,
                          n_q_points_1d,
+                         n_components_,
                          Number>::gradient_at_quad_pts(const Number *const u,
                                                        Number *grad_u[dim])
   {
-    switch (dim)
+    for (unsigned int c = 0; c < n_components_; ++c)
       {
-        case 1:
+        auto shift = c * n_q_points;
+        switch (dim)
           {
-            gradients<0, true, false, false>(
-              get_cell_shape_gradients<Number>(mf_object_id), u, grad_u[0]);
+            case 1:
+              {
+                gradients<0, true, false, false>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &u[shift],
+                  &grad_u[0][shift]);
 
-            break;
-          }
-        case 2:
-          {
-            gradients<0, true, false, false>(
-              get_cell_shape_gradients<Number>(mf_object_id), u, grad_u[0]);
-            values<0, true, false, false>(
-              get_cell_shape_values<Number>(mf_object_id), u, grad_u[1]);
+                break;
+              }
+            case 2:
+              {
+                gradients<0, true, false, false>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &u[shift],
+                  &grad_u[0][shift]);
+                values<0, true, false, false>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &grad_u[1][shift]);
 
-            __syncthreads();
+                __syncthreads();
 
-            values<1, true, false, true>(get_cell_shape_values<Number>(
-                                           mf_object_id),
-                                         grad_u[0],
-                                         grad_u[0]);
-            gradients<1, true, false, true>(get_cell_shape_gradients<Number>(
-                                              mf_object_id),
-                                            grad_u[1],
-                                            grad_u[1]);
+                values<1, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &grad_u[0][shift],
+                                             &grad_u[0][shift]);
+                gradients<1, true, false, true>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &grad_u[1][shift],
+                  &grad_u[1][shift]);
 
-            break;
-          }
-        case 3:
-          {
-            gradients<0, true, false, false>(
-              get_cell_shape_gradients<Number>(mf_object_id), u, grad_u[0]);
-            values<0, true, false, false>(
-              get_cell_shape_values<Number>(mf_object_id), u, grad_u[1]);
-            values<0, true, false, false>(
-              get_cell_shape_values<Number>(mf_object_id), u, grad_u[2]);
+                break;
+              }
+            case 3:
+              {
+                gradients<0, true, false, false>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &u[shift],
+                  &grad_u[0][shift]);
+                values<0, true, false, false>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &grad_u[1][shift]);
+                values<0, true, false, false>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &grad_u[2][shift]);
 
-            __syncthreads();
+                __syncthreads();
 
-            values<1, true, false, true>(get_cell_shape_values<Number>(
-                                           mf_object_id),
-                                         grad_u[0],
-                                         grad_u[0]);
-            gradients<1, true, false, true>(get_cell_shape_gradients<Number>(
-                                              mf_object_id),
-                                            grad_u[1],
-                                            grad_u[1]);
-            values<1, true, false, true>(get_cell_shape_values<Number>(
-                                           mf_object_id),
-                                         grad_u[2],
-                                         grad_u[2]);
+                values<1, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &grad_u[0][shift],
+                                             &grad_u[0][shift]);
+                gradients<1, true, false, true>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &grad_u[1][shift],
+                  &grad_u[1][shift]);
+                values<1, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &grad_u[2][shift],
+                                             &grad_u[2][shift]);
 
-            __syncthreads();
+                __syncthreads();
 
-            values<2, true, false, true>(get_cell_shape_values<Number>(
-                                           mf_object_id),
-                                         grad_u[0],
-                                         grad_u[0]);
-            values<2, true, false, true>(get_cell_shape_values<Number>(
-                                           mf_object_id),
-                                         grad_u[1],
-                                         grad_u[1]);
-            gradients<2, true, false, true>(get_cell_shape_gradients<Number>(
-                                              mf_object_id),
-                                            grad_u[2],
-                                            grad_u[2]);
+                values<2, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &grad_u[0][shift],
+                                             &grad_u[0][shift]);
+                values<2, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &grad_u[1][shift],
+                                             &grad_u[1][shift]);
+                gradients<2, true, false, true>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &grad_u[2][shift],
+                  &grad_u[2][shift]);
 
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:444\n");
+                break;
+              }
+            default:
+              {
+                // Do nothing. We should throw but we can't from a __device__
+                // function.
+                printf(
+                  "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:444\n");
+              }
           }
       }
   }
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
   EvaluatorTensorProduct<
     evaluate_general,
     dim,
     fe_degree,
     n_q_points_1d,
+    n_components_,
     Number>::value_and_gradient_at_quad_pts(Number *const u,
                                             Number       *grad_u[dim])
   {
-    switch (dim)
+    for (unsigned int c = 0; c < n_components_; ++c)
       {
-        case 1:
+        auto shift = c * n_q_points;
+        switch (dim)
           {
-            values<0, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
+            case 1:
+              {
+                values<0, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
+                __syncthreads();
 
-            gradients<0, true, false, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), u, grad_u[0]);
+                gradients<0, true, false, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &u[shift],
+                  &grad_u[0][shift]);
 
-            break;
-          }
-        case 2:
-          {
-            values<0, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<1, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
+                break;
+              }
+            case 2:
+              {
+                values<0, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
+                __syncthreads();
+                values<1, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
+                __syncthreads();
 
-            gradients<0, true, false, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), u, grad_u[0]);
-            gradients<1, true, false, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), u, grad_u[1]);
+                gradients<0, true, false, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &u[shift],
+                  &grad_u[0][shift]);
+                gradients<1, true, false, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &u[shift],
+                  &grad_u[1][shift]);
 
-            break;
-          }
-        case 3:
-          {
-            values<0, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<1, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<2, true, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
+                break;
+              }
+            case 3:
+              {
+                values<0, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
+                __syncthreads();
+                values<1, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
+                __syncthreads();
+                values<2, true, false, true>(get_cell_shape_values<Number>(
+                                               mf_object_id),
+                                             &u[shift],
+                                             &u[shift]);
+                __syncthreads();
 
-            gradients<0, true, false, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), u, grad_u[0]);
-            gradients<1, true, false, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), u, grad_u[1]);
-            gradients<2, true, false, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), u, grad_u[2]);
+                gradients<0, true, false, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &u[shift],
+                  &grad_u[0][shift]);
+                gradients<1, true, false, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &u[shift],
+                  &grad_u[1][shift]);
+                gradients<2, true, false, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &u[shift],
+                  &grad_u[2][shift]);
 
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:516\n");
+                break;
+              }
+            default:
+              {
+                // Do nothing. We should throw but we can't from a __device__
+                // function.
+                printf(
+                  "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:516\n");
+              }
           }
       }
   }
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   template <bool add>
   inline __device__ void
   EvaluatorTensorProduct<evaluate_general,
                          dim,
                          fe_degree,
                          n_q_points_1d,
+                         n_components_,
                          Number>::integrate_gradient(Number *u,
                                                      Number *grad_u[dim])
   {
-    switch (dim)
+    for (unsigned int c = 0; c < n_components_; ++c)
       {
-        case 1:
+        auto shift = c * n_q_points;
+        switch (dim)
           {
-            gradients<0, false, add, false>(
-              get_cell_shape_gradients<Number>(mf_object_id), grad_u[dim], u);
+            case 1:
+              {
+                gradients<0, false, add, false>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &grad_u[0][shift],
+                  &u[shift]);
 
-            break;
-          }
-        case 2:
-          {
-            gradients<0, false, false, true>(get_cell_shape_gradients<Number>(
+                break;
+              }
+            case 2:
+              {
+                gradients<0, false, false, true>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &grad_u[0][shift],
+                  &grad_u[0][shift]);
+                values<0, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &grad_u[1][shift],
+                                              &grad_u[1][shift]);
+
+                __syncthreads();
+
+                values<1, false, add, false>(get_cell_shape_values<Number>(
                                                mf_object_id),
-                                             grad_u[0],
-                                             grad_u[0]);
-            values<0, false, false, true>(get_cell_shape_values<Number>(
-                                            mf_object_id),
-                                          grad_u[1],
-                                          grad_u[1]);
+                                             &grad_u[0][shift],
+                                             &u[shift]);
+                __syncthreads();
+                gradients<1, false, true, false>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &grad_u[1][shift],
+                  &u[shift]);
 
-            __syncthreads();
+                break;
+              }
+            case 3:
+              {
+                gradients<0, false, false, true>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &grad_u[0][shift],
+                  &grad_u[0][shift]);
+                values<0, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &grad_u[1][shift],
+                                              &grad_u[1][shift]);
+                values<0, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &grad_u[2][shift],
+                                              &grad_u[2][shift]);
 
-            values<1, false, add, false>(
-              get_cell_shape_values<Number>(mf_object_id), grad_u[0], u);
-            __syncthreads();
-            gradients<1, false, true, false>(
-              get_cell_shape_gradients<Number>(mf_object_id), grad_u[1], u);
+                __syncthreads();
 
-            break;
-          }
-        case 3:
-          {
-            gradients<0, false, false, true>(get_cell_shape_gradients<Number>(
+                values<1, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &grad_u[0][shift],
+                                              &grad_u[0][shift]);
+                gradients<1, false, false, true>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &grad_u[1][shift],
+                  &grad_u[1][shift]);
+                values<1, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &grad_u[2][shift],
+                                              &grad_u[2][shift]);
+
+                __syncthreads();
+
+                values<2, false, add, false>(get_cell_shape_values<Number>(
                                                mf_object_id),
-                                             grad_u[0],
-                                             grad_u[0]);
-            values<0, false, false, true>(get_cell_shape_values<Number>(
-                                            mf_object_id),
-                                          grad_u[1],
-                                          grad_u[1]);
-            values<0, false, false, true>(get_cell_shape_values<Number>(
-                                            mf_object_id),
-                                          grad_u[2],
-                                          grad_u[2]);
+                                             &grad_u[0][shift],
+                                             &u[shift]);
+                __syncthreads();
+                values<2, false, true, false>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &grad_u[1][shift],
+                                              &u[shift]);
+                __syncthreads();
+                gradients<2, false, true, false>(
+                  get_cell_shape_gradients<Number>(mf_object_id),
+                  &grad_u[2][shift],
+                  &u[shift]);
 
-            __syncthreads();
-
-            values<1, false, false, true>(get_cell_shape_values<Number>(
-                                            mf_object_id),
-                                          grad_u[0],
-                                          grad_u[0]);
-            gradients<1, false, false, true>(get_cell_shape_gradients<Number>(
-                                               mf_object_id),
-                                             grad_u[1],
-                                             grad_u[1]);
-            values<1, false, false, true>(get_cell_shape_values<Number>(
-                                            mf_object_id),
-                                          grad_u[2],
-                                          grad_u[2]);
-
-            __syncthreads();
-
-            values<2, false, add, false>(
-              get_cell_shape_values<Number>(mf_object_id), grad_u[0], u);
-            __syncthreads();
-            values<2, false, true, false>(
-              get_cell_shape_values<Number>(mf_object_id), grad_u[1], u);
-            __syncthreads();
-            gradients<2, false, true, false>(
-              get_cell_shape_gradients<Number>(mf_object_id), grad_u[2], u);
-
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:611\n");
+                break;
+              }
+            default:
+              {
+                // Do nothing. We should throw but we can't from a __device__
+                // function.
+                printf(
+                  "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:611\n");
+              }
           }
       }
   }
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
   EvaluatorTensorProduct<evaluate_general,
                          dim,
                          fe_degree,
                          n_q_points_1d,
+                         n_components_,
                          Number>::integrate_value_and_gradient(Number *u,
                                                                Number
                                                                  *grad_u[dim])
   {
-    switch (dim)
+    for (unsigned int c = 0; c < n_components_; ++c)
       {
-        case 1:
+        auto shift = c * n_q_points;
+        switch (dim)
           {
-            gradients<0, false, true, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), grad_u[0], u);
-            __syncthreads();
+            case 1:
+              {
+                gradients<0, false, true, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &grad_u[0][shift],
+                  &u[shift]);
+                __syncthreads();
 
-            values<0, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
+                values<0, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
 
-            break;
-          }
-        case 2:
-          {
-            gradients<1, false, true, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), grad_u[1], u);
-            __syncthreads();
-            gradients<0, false, true, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), grad_u[0], u);
-            __syncthreads();
+                break;
+              }
+            case 2:
+              {
+                gradients<1, false, true, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &grad_u[1][shift],
+                  &u[shift]);
+                __syncthreads();
+                gradients<0, false, true, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &grad_u[0][shift],
+                  &u[shift]);
+                __syncthreads();
 
-            values<1, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<0, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
+                values<1, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
+                __syncthreads();
+                values<0, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
+                __syncthreads();
 
-            break;
-          }
-        case 3:
-          {
-            gradients<2, false, true, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), grad_u[2], u);
-            __syncthreads();
-            gradients<1, false, true, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), grad_u[1], u);
-            __syncthreads();
-            gradients<0, false, true, false>(
-              get_cell_co_shape_gradients<Number>(mf_object_id), grad_u[0], u);
-            __syncthreads();
+                break;
+              }
+            case 3:
+              {
+                gradients<2, false, true, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &grad_u[2][shift],
+                  &u[shift]);
+                __syncthreads();
+                gradients<1, false, true, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &grad_u[1][shift],
+                  &u[shift]);
+                __syncthreads();
+                gradients<0, false, true, false>(
+                  get_cell_co_shape_gradients<Number>(mf_object_id),
+                  &grad_u[0][shift],
+                  &u[shift]);
+                __syncthreads();
 
-            values<2, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<1, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
-            values<0, false, false, true>(
-              get_cell_shape_values<Number>(mf_object_id), u, u);
-            __syncthreads();
+                values<2, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
+                __syncthreads();
+                values<1, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
+                __syncthreads();
+                values<0, false, false, true>(get_cell_shape_values<Number>(
+                                                mf_object_id),
+                                              &u[shift],
+                                              &u[shift]);
+                __syncthreads();
 
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:688\n");
+                break;
+              }
+            default:
+              {
+                // Do nothing. We should throw but we can't from a __device__
+                // function.
+                printf(
+                  "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh:688\n");
+              }
           }
       }
   }
@@ -726,11 +902,16 @@ namespace PSMF
    *
    * @ingroup MatrixFree
    */
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   struct EvaluatorTensorProduct<evaluate_face,
                                 dim,
                                 fe_degree,
                                 n_q_points_1d,
+                                n_components_,
                                 Number>
   {
     static constexpr unsigned int dofs_per_cell =
@@ -811,42 +992,82 @@ namespace PSMF
   };
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   __device__
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    EvaluatorTensorProduct(int object_id, int face_number, int subface_number)
+  EvaluatorTensorProduct<evaluate_face,
+                         dim,
+                         fe_degree,
+                         n_q_points_1d,
+                         n_components_,
+                         Number>::EvaluatorTensorProduct(int object_id,
+                                                         int face_number,
+                                                         int subface_number)
     : mf_object_id(object_id)
     , face_number(face_number)
     , subface_number(subface_number)
   {}
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   template <int direction, bool dof_to_quad, bool add, bool in_place>
   __device__ void
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    values(Number shape_values[], const Number *in, Number *out) const
+  EvaluatorTensorProduct<evaluate_face,
+                         dim,
+                         fe_degree,
+                         n_q_points_1d,
+                         n_components_,
+                         Number>::values(Number        shape_values[],
+                                         const Number *in,
+                                         Number       *out) const
   {
     apply<direction, dof_to_quad, add, in_place>(shape_values, in, out);
   }
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   template <int direction, bool dof_to_quad, bool add, bool in_place>
   __device__ void
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    gradients(Number shape_gradients[], const Number *in, Number *out) const
+  EvaluatorTensorProduct<evaluate_face,
+                         dim,
+                         fe_degree,
+                         n_q_points_1d,
+                         n_components_,
+                         Number>::gradients(Number        shape_gradients[],
+                                            const Number *in,
+                                            Number       *out) const
   {
     apply<direction, dof_to_quad, add, in_place>(shape_gradients, in, out);
   }
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   template <int direction, bool dof_to_quad, bool add, bool in_place>
   __device__ void
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    apply(Number shape_data[], const Number *in, Number *out) const
+  EvaluatorTensorProduct<evaluate_face,
+                         dim,
+                         fe_degree,
+                         n_q_points_1d,
+                         n_components_,
+                         Number>::apply(Number        shape_data[],
+                                        const Number *in,
+                                        Number       *out) const
   {
     const unsigned int i = (dim == 1) ? 0 : threadIdx.x % n_q_points_1d;
     const unsigned int j = (dim == 3) ? threadIdx.y : 0;
@@ -885,10 +1106,18 @@ namespace PSMF
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    value_at_quad_pts(Number *u)
+  EvaluatorTensorProduct<evaluate_face,
+                         dim,
+                         fe_degree,
+                         n_q_points_1d,
+                         n_components_,
+                         Number>::value_at_quad_pts(Number *u)
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
 
@@ -951,7 +1180,7 @@ namespace PSMF
             // function.
             printf(
               "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh: \n"
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::"
+              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
               "value_at_quad_pts().\n");
           }
       }
@@ -959,10 +1188,18 @@ namespace PSMF
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    integrate_value(Number *u)
+  EvaluatorTensorProduct<evaluate_face,
+                         dim,
+                         fe_degree,
+                         n_q_points_1d,
+                         n_components_,
+                         Number>::integrate_value(Number *u)
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
 
@@ -1024,7 +1261,7 @@ namespace PSMF
             // function.
             printf(
               "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::"
+              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
               "integrate_value().\n");
           }
       }
@@ -1032,10 +1269,19 @@ namespace PSMF
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    gradient_at_quad_pts(const Number *const u, Number *grad_u[dim])
+  EvaluatorTensorProduct<evaluate_face,
+                         dim,
+                         fe_degree,
+                         n_q_points_1d,
+                         n_components_,
+                         Number>::gradient_at_quad_pts(const Number *const u,
+                                                       Number *grad_u[dim])
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
 
@@ -1143,7 +1389,7 @@ namespace PSMF
             // function.
             printf(
               "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::"
+              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
               "gradient_at_quad_pts().\n");
           }
       }
@@ -1151,10 +1397,20 @@ namespace PSMF
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    value_and_gradient_at_quad_pts(Number *const u, Number *grad_u[dim])
+  EvaluatorTensorProduct<
+    evaluate_face,
+    dim,
+    fe_degree,
+    n_q_points_1d,
+    n_components_,
+    Number>::value_and_gradient_at_quad_pts(Number *const u,
+                                            Number       *grad_u[dim])
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
 
@@ -1256,7 +1512,7 @@ namespace PSMF
             // function.
             printf(
               "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::"
+              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
               "value_and_gradient_at_quad_pts().\n");
           }
       }
@@ -1264,11 +1520,20 @@ namespace PSMF
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   template <bool add>
   inline __device__ void
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    integrate_gradient(Number *u, Number *grad_u[dim])
+  EvaluatorTensorProduct<evaluate_face,
+                         dim,
+                         fe_degree,
+                         n_q_points_1d,
+                         n_components_,
+                         Number>::integrate_gradient(Number *u,
+                                                     Number *grad_u[dim])
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
 
@@ -1381,7 +1646,7 @@ namespace PSMF
             // function.
             printf(
               "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::"
+              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
               "integrate_gradient().\n");
           }
       }
@@ -1389,10 +1654,20 @@ namespace PSMF
 
 
 
-  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
   inline __device__ void
-  EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::
-    integrate_value_and_gradient(Number *u, Number *grad_u[dim])
+  EvaluatorTensorProduct<evaluate_face,
+                         dim,
+                         fe_degree,
+                         n_q_points_1d,
+                         n_components_,
+                         Number>::integrate_value_and_gradient(Number *u,
+                                                               Number
+                                                                 *grad_u[dim])
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
 
@@ -1499,7 +1774,7 @@ namespace PSMF
             // function.
             printf(
               "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, Number>::"
+              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
               "integrate_value_and_gradient().\n");
           }
       }
