@@ -14,6 +14,7 @@ SET( SOURCE_FILES
         operator_stokes.cu
         get_1d_matrices.cu
         patch_dofs.cu
+        mf_rt.cu
         )
 
 FOREACH ( sourcefile ${SOURCE_FILES} )

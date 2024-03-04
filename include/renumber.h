@@ -50,6 +50,8 @@ namespace PSMF
         auto cell_rt_lnumbering_x =
           get_cell_rt_lexicographic_numbering_xfast(fe_degree + 1, fe_degree);
 
+        lexicographic_numbering = cell_rt_lnumbering;
+
         const value_type        dofs_per_cell = fe_v.n_dofs_per_cell();
         std::vector<value_type> local_dof_indices(dofs_per_cell);
 
@@ -223,6 +225,9 @@ namespace PSMF
 
     DoFMapping(const unsigned int degree)
     {
+      lexicographic_numbering =
+        get_cell_rt_lexicographic_numbering(degree + 1, degree);
+
       // first dof rt
       {
         int n_cells   = 1 << dim;
@@ -358,6 +363,11 @@ namespace PSMF
                         dof_offset_dg.end());
     }
 
+    std::vector<value_type>
+    get_lexicographic_numbering()
+    {
+      return lexicographic_numbering;
+    }
     std::vector<value_type>
     get_h_to_l_rt()
     {
@@ -924,6 +934,10 @@ namespace PSMF
         }
       return local_dof_indices;
     }
+
+
+    // cell numbering
+    std::vector<value_type> lexicographic_numbering;
 
     // dir fast
     std::vector<value_type> h_to_l_rt;

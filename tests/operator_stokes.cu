@@ -46,6 +46,13 @@ test()
   for (auto d = 0U; d < dim; ++d)
     shape_data[d] = shape_info.get_shape_data(d, 0);
 
+  for (auto val : shape_data[0].shape_values)
+    std::cout << val << " ";
+  std::cout << std::endl;
+  for (auto val : shape_data[1].shape_values)
+    std::cout << val << " ";
+  std::cout << std::endl;
+
   const Number h              = 2.0;
   const Number penalty_factor = 1 * h * (degree + 1) * (degree + 2);
 
@@ -221,6 +228,7 @@ test()
   auto mixed   = cell_mixed();
   auto penalty = cell_penalty();
 
+  print_matrices(mass_matrices0);
   // print_matrices(mixed);
   // print_matrices(penalty);
 
@@ -460,7 +468,7 @@ test_mixed()
 int
 main()
 {
-  test<3, 2>();
+  test<2, 2>();
 
   // test_mixed<3, 2>();
 
