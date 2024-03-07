@@ -46,15 +46,22 @@ test()
   for (auto d = 0U; d < dim; ++d)
     shape_data[d] = shape_info.get_shape_data(d, 0);
 
-  for (auto val : shape_data[0].shape_values)
+  for (auto val : shape_data[0].shape_data_on_face[0])
     std::cout << val << " ";
   std::cout << std::endl;
-  for (auto val : shape_data[1].shape_values)
+  for (auto val : shape_data[1].shape_data_on_face[0])
+    std::cout << val << " ";
+  std::cout << std::endl;
+  for (auto val : shape_data[1].shape_data_on_face[1])
+    std::cout << val << " ";
+  std::cout << std::endl;
+  std::cout << std::endl;
+  for (auto val : shape_data[1].shape_gradients)
     std::cout << val << " ";
   std::cout << std::endl;
 
   const Number h              = 2.0;
-  const Number penalty_factor = 1 * h * (degree + 1) * (degree + 2);
+  const Number penalty_factor = 0 * h * (degree + 1) * (degree + 2);
 
   auto cell_mass = [&](unsigned int pos) {
     std::array<Table<2, Number>, dim> mass_matrices;
@@ -228,7 +235,7 @@ test()
   auto mixed   = cell_mixed();
   auto penalty = cell_penalty();
 
-  print_matrices(mass_matrices0);
+  // print_matrices(mass_matrices0);
   // print_matrices(mixed);
   // print_matrices(penalty);
 

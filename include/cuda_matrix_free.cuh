@@ -108,6 +108,7 @@ namespace PSMF
           dealii::update_default,
         const unsigned int mg_level     = dealii::numbers::invalid_unsigned_int,
         const bool         use_coloring = false,
+        const unsigned int my_id        = 0,
         const bool         overlap_communication_computation = false)
         : matrix_type(matrix_type)
         , mapping_update_flags(mapping_update_flags)
@@ -116,6 +117,7 @@ namespace PSMF
         , mapping_update_flags_inner_faces(mapping_update_flags_inner_faces)
         , mg_level(mg_level)
         , use_coloring(use_coloring)
+        , my_id(my_id)
         , overlap_communication_computation(overlap_communication_computation)
       {
 #ifndef DEAL_II_MPI_WITH_CUDA_SUPPORT
@@ -188,6 +190,11 @@ namespace PSMF
       bool use_coloring;
 
       /**
+       * Unique ID associated with the object.
+       */
+      int my_id;
+
+      /**
        * Overlap MPI communications with computation. This requires CUDA-aware
        * MPI and use_coloring must be false.
        */
@@ -250,7 +257,6 @@ namespace PSMF
        */
       Number *inv_det;
 
-
       /**
        * Pointer to the face Jacobian.
        */
@@ -265,6 +271,17 @@ namespace PSMF
        * Pointer to the face Jacobian times the weights.
        */
       Number *face_JxW;
+
+      /**
+       * Pointer to the face quadrature weights.
+       */
+      Number *face_q_weights;
+
+      /**
+       * Pointer to the determinant face inverse Jacobian associated to the
+       * cells of each color.
+       */
+      Number *face_inv_det;
 
       /**
        * Pointer to the unit normal vector on a face.
@@ -356,7 +373,7 @@ namespace PSMF
       /**
        * Pointer to the hanging nodes constraint indicator.
        */
-      dealii::types::global_dof_index *hanging_nodes_constraint_indicator;
+      int *hanging_nodes_constraint_indicator;
 
       /**
        * Pointer to the hanging nodes constraint weights.
@@ -556,6 +573,13 @@ namespace PSMF
      */
     const dealii::DoFHandler<dim> &
     get_dof_handler() const;
+
+    /**
+     * Return the number of dofs.
+     */
+    dealii::types::global_dof_index
+    get_n_dofs() const;
+
 
     /**
      * Return an approximation of the memory consumption of this class in bytes.
@@ -769,6 +793,17 @@ namespace PSMF
     std::vector<Number *> face_JxW;
 
     /**
+     * Vector of pointer to the face quadrature weights.
+     */
+    std::vector<Number *> face_q_weights;
+
+    /**
+     * Vector of pointer to the determinant face inverse Jacobian associated to
+     * the cells of each color.
+     */
+    std::vector<Number *> face_inv_det;
+
+    /**
      * Vector of pointer to the unit normal vector on a face associated to the
      * cells of each color.
      */
@@ -804,7 +839,7 @@ namespace PSMF
     /**
      * Pointer to the hanging nodes constraint indicator.
      */
-    dealii::types::global_dof_index *hanging_nodes_constraint_indicator;
+    int *hanging_nodes_constraint_indicator;
 
     /**
      * Pointer to the hanging nodes constraint weights.
@@ -1061,6 +1096,14 @@ namespace PSMF
     Assert(dof_handler != nullptr, dealii::ExcNotInitialized());
 
     return *dof_handler;
+  }
+
+
+  template <int dim, typename Number>
+  inline dealii::types::global_dof_index
+  MatrixFree<dim, Number>::get_n_dofs() const
+  {
+    return n_dofs;
   }
 
 } // namespace PSMF

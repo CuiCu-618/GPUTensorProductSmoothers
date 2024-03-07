@@ -351,6 +351,9 @@ namespace PSMF
     std::vector<Number>                          jacobian_host;
     std::vector<Number>                          inv_jacobian_host;
     std::vector<Number>                          face_JxW_host;
+    std::vector<Number>                          face_q_weights_host;
+    std::vector<Number>                          face_inv_det_host;
+    std::vector<Number>                          face_jacobian_host;
     std::vector<Number>                          face_inv_jacobian_host;
     std::vector<Number>                          normal_vector_host;
     std::vector<dealii::types::global_dof_index> face_number_host;
@@ -521,6 +524,13 @@ namespace PSMF
     if (update_flags_inner_faces & dealii::update_gradients)
       data->face_inv_jacobian.resize(n_colors);
 
+    if (update_flags_inner_faces & dealii::update_jacobians)
+      {
+        data->face_jacobian.resize(n_colors);
+        data->face_inv_det.resize(n_colors);
+        data->face_q_weights.resize(n_colors);
+      }
+
     if (update_flags_inner_faces & dealii::update_normal_vectors)
       data->normal_vector.resize(n_colors);
   }
@@ -567,6 +577,7 @@ namespace PSMF
         inv_det_host.resize(n_cells * padding_length);
         q_weights_host.resize(padding_length);
       }
+
     if (update_flags & dealii::update_gradients)
       inv_jacobian_host.resize(n_cells * padding_length * dim * dim);
 
@@ -630,6 +641,13 @@ namespace PSMF
     if (update_flags_inner_faces & dealii::update_gradients)
       face_inv_jacobian_host.resize(n_faces * face_padding_length * dim * dim);
 
+    if (update_flags_inner_faces & dealii::update_jacobians)
+      {
+        face_jacobian_host.resize(n_faces * face_padding_length * dim * dim);
+        face_inv_det_host.resize(n_faces * face_padding_length);
+        face_q_weights_host.resize(face_padding_length);
+      }
+
     if (update_flags_inner_faces & dealii::update_normal_vectors)
       normal_vector_host.resize(n_faces * face_padding_length * dim * 1);
   }
@@ -666,9 +684,12 @@ namespace PSMF
 
           if (constraints.is_constrained(lexicographic_dof_indices[i]))
             {
-              auto entries = constraints.get_constraint_entries(
-                lexicographic_dof_indices[i]);
-              constraint_range_host[2 * obj_id + 1] += entries->size();
+              auto entries_size =
+                constraints
+                  .get_constraint_entries(lexicographic_dof_indices[i])
+                  ->size();
+              constraint_range_host[2 * obj_id + 1] +=
+                entries_size > 0 ? entries_size : 1;
             }
         }
 
@@ -842,6 +863,32 @@ namespace PSMF
               q_points_per_face * sizeof(dealii::DerivativeForm<1, dim, dim>) /
                 sizeof(double),
             &face_inv_jacobian_host[obj_id * face_padding_length * dim * dim]);
+        }
+
+      if (update_flags_inner_faces & dealii::update_jacobians)
+        {
+          const std::vector<dealii::DerivativeForm<1, dim, dim>> &jacobians =
+            fe_value.get_jacobians();
+          std::copy(
+            &jacobians[0][0][0],
+            &jacobians[0][0][0] +
+              q_points_per_face * sizeof(dealii::DerivativeForm<1, dim, dim>) /
+                sizeof(double),
+            &face_jacobian_host[obj_id * face_padding_length * dim * dim]);
+
+          // determinant of inverse jacobian
+          const unsigned int offset = obj_id * face_padding_length;
+          const std::vector<dealii::DerivativeForm<1, dim, dim>>
+            &inv_jacobians = fe_value.get_inverse_jacobians();
+          for (unsigned int i = 0; i < q_points_per_face; ++i)
+            face_inv_det_host[i + offset] =
+              static_cast<Number>(inv_jacobians[i].determinant());
+
+          // quadrature weights
+          std::vector<double> quadrature_weights =
+            fe_value.get_quadrature().get_weights();
+          for (unsigned int i = 0; i < q_points_per_face; ++i)
+            face_q_weights_host[i] = static_cast<Number>(quadrature_weights[i]);
         }
 
       if (update_flags_inner_faces & dealii::update_normal_vectors)
@@ -1098,6 +1145,34 @@ namespace PSMF
                        n_faces * face_padding_length);
       }
 
+    // face Jacobians
+    if (update_flags_inner_faces & dealii::update_jacobians)
+      {
+        // Reorder so that all J_11 elements are together, all J_12 elements
+        // are together, etc., i.e., reorder indices from
+        // cell_id*q_points_per_cell*dim*dim + q*dim*dim +i to
+        // i*q_points_per_cell*n_cells + cell_id*q_points_per_cell+q
+        transpose_in_place(face_jacobian_host,
+                           face_padding_length * n_faces,
+                           dim * dim);
+
+        alloc_and_copy(&data->face_jacobian[color],
+                       dealii::ArrayView<const Number>(
+                         face_jacobian_host.data(), face_jacobian_host.size()),
+                       n_faces * dim * dim * face_padding_length);
+
+        alloc_and_copy(&data->face_inv_det[color],
+                       dealii::ArrayView<const Number>(
+                         face_inv_det_host.data(), face_inv_det_host.size()),
+                       n_faces * face_padding_length);
+
+        alloc_and_copy(
+          &data->face_q_weights[color],
+          dealii::ArrayView<const Number>(face_q_weights_host.data(),
+                                          face_q_weights_host.size()),
+          face_padding_length);
+      }
+
     // face Inverse jacobians
     if (update_flags_inner_faces & dealii::update_gradients)
       {
@@ -1183,10 +1258,10 @@ namespace PSMF
 
   template <int dim, typename Number, typename Functor>
   __global__ void
-  apply_kernel_shmem(Functor                                      func,
-                     const typename MatrixFree<dim, Number>::Data gpu_data,
-                     const Number                                *src,
-                     Number                                      *dst)
+  apply_kernel_shmem(Functor            func,
+                     const unsigned int color,
+                     const Number      *src,
+                     Number            *dst)
   {
     constexpr unsigned int cells_per_block = Functor::cells_per_block;
 
@@ -1208,8 +1283,8 @@ namespace PSMF
     SharedData<dim, Number> shared_data(
       &values[local_cell * Functor::n_local_dofs], gq);
 
-    if (cell < gpu_data.n_cells) // todo should be n_cells or n_faces
-      func(cell, &gpu_data, &shared_data, src, dst);
+    // if (cell < gpu_data.n_cells) // todo should be n_cells or n_faces
+    func(cell, color, &shared_data, src, dst);
   }
 
 
@@ -1405,12 +1480,18 @@ namespace PSMF
     const unsigned int shift =
       is_boundary_face * n_inner_faces[color] * 2 * face_padding_length;
 
+    if (face_jacobian.size() > 0)
+      data_copy.face_jacobian = face_jacobian[color] + shift;
     if (face_inv_jacobian.size() > 0)
       data_copy.face_inv_jacobian = face_inv_jacobian[color] + shift;
     if (face_JxW.size() > 0)
       data_copy.face_JxW = face_JxW[color] + shift;
     if (normal_vector.size() > 0)
       data_copy.normal_vector = normal_vector[color] + shift;
+    if (face_inv_det.size() > 0)
+      data_copy.face_inv_det = face_inv_det[color] + shift;
+    if (face_q_weights.size() > 0)
+      data_copy.face_q_weights = face_q_weights[color];
 
     if (matrix_type == MatrixType::active_matrix ||
         matrix_type == MatrixType::level_matrix)
@@ -1440,6 +1521,15 @@ namespace PSMF
     data_copy.padding_length      = padding_length;
     data_copy.face_padding_length = face_padding_length;
     data_copy.use_coloring        = use_coloring;
+    data_copy.is_primitive        = is_primitive;
+
+    data_copy.constraint_range = constraint_range[color];
+
+    data_copy.hanging_nodes_constraint = hanging_nodes_constraint;
+    data_copy.hanging_nodes_constraint_indicator =
+      hanging_nodes_constraint_indicator;
+    data_copy.hanging_nodes_constraint_weights =
+      hanging_nodes_constraint_weights;
 
     data_copy.face2cell_id = is_boundary_face ? boundary_face2cell_id[color] :
                                                 inner_face2cell_id[color];
@@ -1508,10 +1598,7 @@ namespace PSMF
         {
           apply_kernel_shmem<dim, Number, Functor>
             <<<grid_dim_inner_face[i], block_dim_inner_face[i]>>>(
-              func,
-              get_face_data<false>(i),
-              src.get_values(),
-              dst.get_values());
+              func, i, src.get_values(), dst.get_values());
           AssertCudaKernel();
         }
   }
@@ -1531,7 +1618,7 @@ namespace PSMF
         {
           apply_kernel_shmem<dim, Number, Functor>
             <<<grid_dim_boundary_face[i], block_dim_boundary_face[i]>>>(
-              func, get_face_data<true>(i), src.get_values(), dst.get_values());
+              func, i, src.get_values(), dst.get_values());
           AssertCudaKernel();
         }
   }
@@ -1610,6 +1697,7 @@ namespace PSMF
     this->overlap_communication_computation =
       additional_data.overlap_communication_computation;
     this->mg_level = additional_data.mg_level;
+    this->my_id    = additional_data.my_id;
 
     // TODO: only free if we actually need arrays of different length
     // free();
@@ -1622,7 +1710,7 @@ namespace PSMF
     is_primitive = fe.is_primitive();
 
     // TODO this should be a templated parameter
-    const unsigned int n_dofs_1d     = fe_degree + 1;
+    const unsigned int n_dofs_1d     = fe_degree + 1 + is_primitive;
     const unsigned int n_q_points_1d = quad.size();
 
     Assert(n_dofs_1d == n_q_points_1d,
@@ -1630,11 +1718,11 @@ namespace PSMF
 
     // Set padding length to the closest power of two larger than or equal to
     // the number of threads. But why padding?
-    padding_length = 1 << static_cast<unsigned int>(
-                       std::ceil(dim * std::log2(fe_degree + 1.)));
+    padding_length =
+      1 << static_cast<unsigned int>(std::ceil(dim * std::log2(n_dofs_1d)));
 
     face_padding_length = 1 << static_cast<unsigned int>(
-                            std::ceil((dim - 1) * std::log2(fe_degree + 1.)));
+                            std::ceil((dim - 1) * std::log2(n_dofs_1d)));
 
     n_components      = fe.n_components();
     dofs_per_cell     = fe.n_dofs_per_cell();
@@ -1668,6 +1756,8 @@ namespace PSMF
     for (auto d = 0U; d < 2; ++d)
       shape_data[d] = shape_info.get_shape_data(d, 0);
 
+    // todo sub shape info for RT
+
     unsigned int size_shape_values = n_dofs_1d * n_q_points_1d * sizeof(Number);
     unsigned int n_shape_values    = n_dofs_1d * n_q_points_1d;
 
@@ -1686,22 +1776,23 @@ namespace PSMF
     unsigned int size_co_shape_values =
       n_q_points_1d * n_q_points_1d * sizeof(Number);
 
-    // Check if we already a part of the constant memory allocated to us. If
-    // not, we try to get a block of memory.
-    bool found_id = false;
-    while (!found_id && (!is_LevelMG || my_id == -1))
-      {
-        ++my_id;
-        Assert(
-          my_id < static_cast<int>(mf_n_concurrent_objects),
-          dealii::ExcMessage(
-            "Maximum number of concurrent MatrixFree objects reached. Increase mf_n_concurrent_objects"));
-        bool f   = false;
-        found_id = used_objects[my_id].compare_exchange_strong(f, true);
-      }
+    // // Check if we already a part of the constant memory allocated to us. If
+    // // not, we try to get a block of memory.
+    // bool found_id = false;
+    // while (!found_id && (!is_LevelMG || my_id == -1))
+    //   {
+    //     ++my_id;
+    //     Assert(
+    //       my_id < static_cast<int>(mf_n_concurrent_objects),
+    //       dealii::ExcMessage(
+    //         "Maximum number of concurrent MatrixFree objects reached.
+    //         Increase mf_n_concurrent_objects"));
+    //     bool f   = false;
+    //     found_id = used_objects[my_id].compare_exchange_strong(f, true);
+    //   }
 
-    // todo
-    my_id = 0;
+    // // todo
+    // my_id = 0;
 
     cudaError_t cuda_error =
       cudaMemcpyToSymbol(get_cell_shape_values<Number>(
@@ -1811,12 +1902,12 @@ namespace PSMF
         face_shape_value.resize(2 * n_shape_values);
         // point 0
         auto shape_value_on_face0 =
-          shape_info.data.front().shape_data_on_face[0];
+          shape_data[!is_primitive].shape_data_on_face[0];
         for (unsigned int i = 0; i < n_q_points_1d; ++i)
           face_shape_value[i * n_q_points_1d] = shape_value_on_face0[i];
         // point 1
         auto shape_value_on_face1 =
-          shape_info.data.front().shape_data_on_face[1];
+          shape_data[!is_primitive].shape_data_on_face[1];
         for (unsigned int i = 0; i < n_q_points_1d; ++i)
           face_shape_value[(i + n_q_points_1d) * n_q_points_1d] =
             shape_value_on_face1[i];
@@ -1837,16 +1928,16 @@ namespace PSMF
         face_shape_gradients.resize(2 * n_shape_values);
         // point 0
         auto shape_gradients_on_face0 =
-          shape_info.data.front().shape_data_on_face[0];
-        for (unsigned int i = 0; i < n_q_points_1d; ++i)
+          shape_data[!is_primitive].shape_data_on_face[0];
+        for (unsigned int i = 0; i < n_q_points_1d - 1; ++i)
           face_shape_gradients[i * n_q_points_1d] =
-            shape_gradients_on_face0[i + n_q_points_1d];
+            shape_gradients_on_face0[i + n_q_points_1d - !is_primitive];
         // point 1
         auto shape_gradients_on_face1 =
-          shape_info.data.front().shape_data_on_face[1].data();
-        for (unsigned int i = 0; i < n_q_points_1d; ++i)
+          shape_data[!is_primitive].shape_data_on_face[1];
+        for (unsigned int i = 0; i < n_q_points_1d - 1; ++i)
           face_shape_gradients[(i + n_q_points_1d) * n_q_points_1d] =
-            shape_gradients_on_face1[i + n_q_points_1d];
+            shape_gradients_on_face1[i + n_q_points_1d - !is_primitive];
 
         cuda_error =
           cudaMemcpyToSymbol(get_face_shape_gradients<Number>(0),
@@ -2024,21 +2115,20 @@ namespace PSMF
         helper.alloc_and_copy_arrays(i);
       }
 
-    // // Setup faces
-    // for (unsigned int i = 0; i < n_colors; ++i)
-    //   {
-    //     unsigned int inner_face_id    = 0;
-    //     unsigned int boundary_face_id = 0;
+    // Setup faces
+    for (unsigned int i = 0; i < n_colors; ++i)
+      {
+        unsigned int inner_face_id    = 0;
+        unsigned int boundary_face_id = 0;
 
-    //     helper.setup_face_arrays(i);
-    //     typename std::vector<CellIterator>::iterator cell = graph[i].begin(),
-    //                                                  end_cell =
-    //                                                  graph[i].end();
-    //     for (unsigned int cell_id = 0; cell != end_cell; ++cell, ++cell_id)
-    //       helper.get_face_data(*cell, inner_face_id, boundary_face_id, i);
+        helper.setup_face_arrays(i);
+        typename std::vector<CellIterator>::iterator cell = graph[i].begin(),
+                                                     end_cell = graph[i].end();
+        for (unsigned int cell_id = 0; cell != end_cell; ++cell, ++cell_id)
+          helper.get_face_data(*cell, inner_face_id, boundary_face_id, i);
 
-    //     helper.alloc_and_copy_face_arrays(i);
-    //   }
+        helper.alloc_and_copy_face_arrays(i);
+      }
 
     // Setup row starts
     if (n_colors > 0)
@@ -2049,16 +2139,23 @@ namespace PSMF
 
     // hanging node constraints
     std::vector<dealii::types::global_dof_index> h_c;
-    std::vector<dealii::types::global_dof_index> h_c_i;
+    std::vector<int>                             h_c_i;
     std::vector<Number>                          h_c_w;
 
     auto lines = constraints.get_lines();
     for (auto &l : lines)
-      for (auto e : l.entries)
+      if (l.entries.size() > 0)
+        for (auto e : l.entries)
+          {
+            h_c.push_back(l.index);
+            h_c_i.push_back(e.first);
+            h_c_w.push_back(e.second);
+          }
+      else
         {
           h_c.push_back(l.index);
-          h_c_i.push_back(e.first);
-          h_c_w.push_back(e.second);
+          h_c_i.push_back(0);
+          h_c_w.push_back(0);
         }
 
     alloc_and_copy(&hanging_nodes_constraint,
@@ -2067,8 +2164,7 @@ namespace PSMF
                    h_c.size());
 
     alloc_and_copy(&hanging_nodes_constraint_indicator,
-                   dealii::ArrayView<const dealii::types::global_dof_index>(
-                     h_c_i.data(), h_c_i.size()),
+                   dealii::ArrayView<const int>(h_c_i.data(), h_c_i.size()),
                    h_c_i.size());
 
     alloc_and_copy(&hanging_nodes_constraint_weights,
@@ -2157,7 +2253,7 @@ namespace PSMF
         {
           apply_kernel_shmem<dim, Number, Functor>
             <<<grid_dim[i], block_dim[i]>>>(func,
-                                            get_data(i),
+                                            i,
                                             src.get_values(),
                                             dst.get_values());
           AssertCudaKernel();
@@ -2193,7 +2289,7 @@ namespace PSMF
               {
                 apply_kernel_shmem<dim, Number, Functor>
                   <<<grid_dim[0], block_dim[0]>>>(func,
-                                                  get_data(0),
+                                                  0,
                                                   src.get_values(),
                                                   dst.get_values());
                 AssertCudaKernel();
@@ -2206,7 +2302,7 @@ namespace PSMF
               {
                 apply_kernel_shmem<dim, Number, Functor>
                   <<<grid_dim[1], block_dim[1]>>>(func,
-                                                  get_data(1),
+                                                  1,
                                                   src.get_values(),
                                                   dst.get_values());
                 AssertCudaKernel();
@@ -2223,7 +2319,7 @@ namespace PSMF
               {
                 apply_kernel_shmem<dim, Number, Functor>
                   <<<grid_dim[2], block_dim[2]>>>(func,
-                                                  get_data(2),
+                                                  2,
                                                   src.get_values(),
                                                   dst.get_values());
                 AssertCudaKernel();
@@ -2240,7 +2336,7 @@ namespace PSMF
                 {
                   apply_kernel_shmem<dim, Number, Functor>
                     <<<grid_dim[i], block_dim[i]>>>(func,
-                                                    get_data(i),
+                                                    i,
                                                     src.get_values(),
                                                     dst.get_values());
                 }
@@ -2266,7 +2362,7 @@ namespace PSMF
             {
               apply_kernel_shmem<dim, Number, Functor>
                 <<<grid_dim[i], block_dim[i]>>>(func,
-                                                get_data(i),
+                                                i,
                                                 ghosted_src.get_values(),
                                                 ghosted_dst.get_values());
               AssertCudaKernel();

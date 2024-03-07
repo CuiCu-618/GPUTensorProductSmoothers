@@ -48,6 +48,36 @@ namespace PSMF
                            (threadIdx.y + n_points_1d * threadIdx.z));
   }
 
+
+
+  /**
+   * Compute the dof/quad index for a given thread id, dimension, and
+   * number of points in each space dimensions.
+   */
+  template <int dim, int n_points_1d>
+  __device__ inline unsigned int
+  compute_active_index()
+  {
+    constexpr unsigned int n_q_points_1d_1 = n_points_1d - 1;
+
+    return (dim == 1 ? threadIdx.x % n_q_points_1d_1 :
+            dim == 2 ? threadIdx.x % n_q_points_1d_1 +
+                         n_q_points_1d_1 * threadIdx.y :
+                       threadIdx.x % n_q_points_1d_1 +
+                         n_q_points_1d_1 *
+                           (threadIdx.y + n_q_points_1d_1 * threadIdx.z));
+  }
+
+  template <int dim, int n_points_1d>
+  __device__ inline bool
+  is_active()
+  {
+    constexpr unsigned int n_q_points_1d_1 = n_points_1d - 1;
+
+    return (threadIdx.x % n_points_1d < n_q_points_1d_1 &&
+            threadIdx.y < n_q_points_1d_1 && threadIdx.z < n_q_points_1d_1);
+  }
+
   /**
    * Compute real dof index for active thread (based on function is_active()).
    */
@@ -181,7 +211,7 @@ namespace PSMF
      */
     __device__
     FEEvaluation(const unsigned int       cell_id,
-                 const data_type         *data,
+                 const data_type         &data,
                  SharedData<dim, Number> *shdata);
 
     /**
@@ -305,7 +335,7 @@ namespace PSMF
     dealii::internal::MatrixFreeFunctions::ConstraintKinds *constraint_mask;
 
     const dealii::types::global_dof_index *hanging_nodes_constraint;
-    const dealii::types::global_dof_index *hanging_nodes_constraint_indicator;
+    const int                             *hanging_nodes_constraint_indicator;
     const Number                          *hanging_nodes_constraint_weights;
     unsigned int                          *constraint_range;
 
@@ -361,12 +391,12 @@ namespace PSMF
     /**
      * An alias for scalar quantities.
      */
-    using value_type = Number;
+    using value_type = cuda::std::array<Number, n_components_>;
 
     /**
      * An alias for vectorial quantities.
      */
-    using gradient_type = dealii::Tensor<1, dim, Number>;
+    using gradient_type = cuda::std::array<value_type, dim>;
 
     /**
      * An alias to kernel specific information.
@@ -395,12 +425,18 @@ namespace PSMF
     static constexpr unsigned int tensor_dofs_per_cell =
       dealii::Utilities::pow(fe_degree + 1, dim);
 
+    static constexpr unsigned int rt_tensor_dofs_per_cell =
+      dealii::Utilities::pow(fe_degree + 2, dim);
+
+    static constexpr unsigned int rt_tensor_dofs_per_component =
+      dealii::Utilities::pow(fe_degree + 1, dim - 1) * (fe_degree + 2);
+
     /**
      * Constructor.
      */
     __device__
     FEFaceEvaluation(const unsigned int       face_id,
-                     const data_type         *data,
+                     const data_type         &data,
                      SharedData<dim, Number> *shdata,
                      const bool               is_interior_face = true);
 
@@ -510,7 +546,7 @@ namespace PSMF
      * length must be computed by the product of the inverse Jacobian times the
      * normal vector in real coordinates.
      */
-    __device__ value_type
+    __device__ Number
     inverse_length_normal_to_face();
 
     // clang-format off
@@ -530,7 +566,10 @@ namespace PSMF
     apply_for_each_quad_point(const Functor &func);
 
     Number *JxW;
+    Number *jac;
     Number *inv_jac;
+    Number *weights;
+    Number *inv_det;
     Number *normal_vec;
 
   private:
@@ -548,9 +587,14 @@ namespace PSMF
     bool                             ignore_read;
     bool                             ignore_write;
 
+    const dealii::types::global_dof_index *hanging_nodes_constraint;
+    const int                             *hanging_nodes_constraint_indicator;
+    const Number                          *hanging_nodes_constraint_weights;
+    unsigned int                          *constraint_range;
 
     const unsigned int mf_object_id;
     const bool         use_coloring;
+    const bool         is_primitive;
     const bool         is_interior_face;
     const MatrixType   matrix_type;
 
@@ -569,29 +613,29 @@ namespace PSMF
   __device__
   FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     FEEvaluation(const unsigned int       cell_id,
-                 const data_type         *data,
+                 const data_type         &data,
                  SharedData<dim, Number> *shdata)
-    : n_cells(data->n_cells)
-    , padding_length(data->padding_length)
-    , mf_object_id(data->id)
-    , hanging_nodes_constraint(data->hanging_nodes_constraint)
+    : n_cells(data.n_cells)
+    , padding_length(data.padding_length)
+    , mf_object_id(data.id)
+    , hanging_nodes_constraint(data.hanging_nodes_constraint)
     , hanging_nodes_constraint_indicator(
-        data->hanging_nodes_constraint_indicator)
-    , hanging_nodes_constraint_weights(data->hanging_nodes_constraint_weights)
-    , use_coloring(data->use_coloring)
-    , is_primitive(data->is_primitive)
+        data.hanging_nodes_constraint_indicator)
+    , hanging_nodes_constraint_weights(data.hanging_nodes_constraint_weights)
+    , use_coloring(data.use_coloring)
+    , is_primitive(data.is_primitive)
     , values(shdata->values)
   {
-    constraint_mask  = data->constraint_mask + cell_id * n_components;
-    constraint_range = data->constraint_range + cell_id * 2;
+    constraint_mask  = data.constraint_mask + cell_id * n_components;
+    constraint_range = data.constraint_range + cell_id * 2;
 
     local_to_global =
-      data->local_to_global + padding_length * cell_id * n_components;
-    jac     = data->jacobian + padding_length * cell_id;
-    inv_jac = data->inv_jacobian + padding_length * cell_id;
-    JxW     = data->JxW + padding_length * cell_id;
-    weights = data->q_weights;
-    inv_det = data->inv_det + padding_length * cell_id;
+      data.local_to_global + padding_length * cell_id * n_components;
+    jac     = data.jacobian + padding_length * cell_id;
+    inv_jac = data.inv_jacobian + padding_length * cell_id;
+    JxW     = data.JxW + padding_length * cell_id;
+    weights = data.q_weights;
+    inv_det = data.inv_det + padding_length * cell_id;
 
     for (unsigned int i = 0; i < dim; ++i)
       gradients[i] = shdata->gradients[i];
@@ -627,15 +671,21 @@ namespace PSMF
     if (is_primitive)
       for (unsigned int c = 0; c < n_components_; ++c)
         {
-          const dealii::types::global_dof_index src_idx =
-            local_to_global[idx + c * offset];
+          auto active_idx    = compute_active_index<dim, n_q_points_1d>();
+          auto is_active_idx = is_active<dim, n_q_points_1d>();
 
-          // Use the read-only data cache.
-          values[idx + c * stride] = __ldg(&src[src_idx]);
+          if (is_active_idx)
+            {
+              const dealii::types::global_dof_index src_idx =
+                local_to_global[active_idx + c * offset];
 
-          dealii::CUDAWrappers::internal::
-            resolve_hanging_nodes<dim, fe_degree, false>(constraint_mask[c],
-                                                         &values[c * stride]);
+              // Use the read-only data cache.
+              values[idx + c * stride] = __ldg(&src[src_idx]);
+
+              // dealii::CUDAWrappers::internal::
+              // resolve_hanging_nodes<dim, fe_degree + 1, false>(
+              //   constraint_mask[c], &values[c * stride]);
+            }
         }
     else
       for (unsigned int c = 0; c < n_components_; ++c)
@@ -650,10 +700,6 @@ namespace PSMF
 
               // Use the read-only data cache.
               values[idx + c * stride] = __ldg(&src[src_idx]);
-
-              // dealii::CUDAWrappers::internal::
-              //   resolve_hanging_nodes<dim, fe_degree + 1, false>(
-              //     constraint_mask[c], &values[c * stride]);
 
               Number tmp = 0;
               for (auto it = constraint_range[0]; it < constraint_range[1];
@@ -688,27 +734,29 @@ namespace PSMF
     if (is_primitive)
       for (unsigned int c = 0; c < n_components_; ++c)
         {
-          const dealii::types::global_dof_index destination_idx =
-            local_to_global[idx + c * offset];
+          auto active_idx    = compute_active_index<dim, n_q_points_1d>();
+          auto is_active_idx = is_active<dim, n_q_points_1d>();
 
-          dealii::CUDAWrappers::internal::
-            resolve_hanging_nodes<dim, fe_degree, true>(constraint_mask[c],
-                                                        &values[c * stride]);
+          if (is_active_idx)
+            {
+              const dealii::types::global_dof_index destination_idx =
+                local_to_global[active_idx + c * offset];
 
-          if (use_coloring)
-            dst[destination_idx] += values[idx + c * stride];
-          else
-            atomicAdd(&dst[destination_idx], values[idx + c * stride]);
+              // dealii::CUDAWrappers::internal::
+              //   resolve_hanging_nodes<dim, fe_degree + 1, true>(
+              //     constraint_mask[c], &values[c * stride]);
+
+              if (use_coloring)
+                dst[destination_idx] += values[idx + c * stride];
+              else
+                atomicAdd(&dst[destination_idx], values[idx + c * stride]);
+            }
         }
     else
       for (unsigned int c = 0; c < n_components_; ++c)
         {
           auto active_idx    = compute_active_index<dim, n_q_points_1d>(c);
           auto is_active_idx = is_active<dim, n_q_points_1d>(c);
-
-          // dealii::CUDAWrappers::internal::
-          //   resolve_hanging_nodes<dim, fe_degree + 1, true>(
-          //     constraint_mask[c], &values[c * stride]);
 
           if (is_active_idx)
             {
@@ -1191,32 +1239,42 @@ namespace PSMF
   __device__
   FEFaceEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     FEFaceEvaluation(const unsigned int       face_id,
-                     const data_type         *data,
+                     const data_type         &data,
                      SharedData<dim, Number> *shdata,
                      const bool               is_interior_face)
-    : n_faces(data->n_faces)
-    , n_cells(data->n_cells)
-    , padding_length(data->padding_length)
-    , face_padding_length(data->face_padding_length)
-    , mf_object_id(data->id)
-    , use_coloring(data->use_coloring)
+    : n_faces(data.n_faces)
+    , n_cells(data.n_cells)
+    , padding_length(data.padding_length)
+    , face_padding_length(data.face_padding_length)
+    , mf_object_id(data.id)
+    , hanging_nodes_constraint(data.hanging_nodes_constraint)
+    , hanging_nodes_constraint_indicator(
+        data.hanging_nodes_constraint_indicator)
+    , hanging_nodes_constraint_weights(data.hanging_nodes_constraint_weights)
+    , use_coloring(data.use_coloring)
     , is_interior_face(is_interior_face)
-    , matrix_type(data->matrix_type)
+    , is_primitive(data.is_primitive)
+    , matrix_type(data.matrix_type)
   {
     auto face_no = is_interior_face ? face_id : face_id + n_faces;
 
-    cell_id = data->face2cell_id[face_no];
+    cell_id = data.face2cell_id[face_no];
 
-    local_to_global = data->local_to_global + padding_length * cell_id;
-    l_to_g_coarse   = data->l_to_g_coarse + padding_length * cell_id;
+    constraint_range = data.constraint_range + cell_id * 2;
 
-    inv_jac        = data->face_inv_jacobian + face_padding_length * face_no;
-    JxW            = data->face_JxW + face_padding_length * face_no;
-    normal_vec     = data->normal_vector + face_padding_length * face_no;
-    face_number    = data->face_number[face_no];
-    subface_number = data->subface_number[face_no];
+    local_to_global =
+      data.local_to_global + padding_length * n_components_ * cell_id;
+    l_to_g_coarse =
+      data.l_to_g_coarse + padding_length * n_components_ * cell_id;
 
-    unsigned int shift = is_interior_face ? 0 : tensor_dofs_per_cell;
+    jac            = data.face_jacobian + face_padding_length * face_no;
+    inv_jac        = data.face_inv_jacobian + face_padding_length * face_no;
+    JxW            = data.face_JxW + face_padding_length * face_no;
+    weights        = data.face_q_weights;
+    inv_det        = data.face_inv_det + face_padding_length * face_no;
+    normal_vec     = data.normal_vector + face_padding_length * face_no;
+    face_number    = data.face_number[face_no];
+    subface_number = data.subface_number[face_no];
 
     ignore_read  = false;
     ignore_write = false;
@@ -1237,10 +1295,21 @@ namespace PSMF
         ignore_write = !is_interior_face || subface_number == -1;
       }
 
-    values = &shdata->values[shift];
+    const unsigned int stride =
+      is_primitive ? tensor_dofs_per_cell : rt_tensor_dofs_per_cell;
+    const unsigned int shift = is_interior_face ? 0 : n_components_ * stride;
 
+    values = &shdata->values[shift];
     for (unsigned int i = 0; i < dim; ++i)
       gradients[i] = &shdata->gradients[i][shift];
+
+    const unsigned int idx = compute_index<dim, n_q_points_1d>();
+    for (unsigned int c = 0; c < n_components_; ++c)
+      {
+        values[idx + c * stride] = 0.;
+        for (unsigned int d = 0; d < dim; ++d)
+          gradients[d][idx + c * stride] = 0.;
+      }
   }
 
   template <int dim,
@@ -1252,16 +1321,61 @@ namespace PSMF
   FEFaceEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     read_dof_values(const Number *src)
   {
-    static_assert(n_components_ == 1, "This function only supports FE with one \
-                  components");
     const unsigned int idx = compute_index<dim, n_q_points_1d>();
+    const unsigned int offset =
+      is_primitive ? tensor_dofs_per_cell : rt_tensor_dofs_per_component;
+    const unsigned int stride = is_primitive ? offset : rt_tensor_dofs_per_cell;
 
-    const dealii::types::global_dof_index src_idx = local_to_global[idx];
-    // Use the read-only data cache.
-    if (ignore_read)
-      values[idx] = 0;
+    if (is_primitive)
+      for (unsigned int c = 0; c < n_components_; ++c)
+        {
+          const dealii::types::global_dof_index src_idx =
+            local_to_global[idx + c * offset];
+
+          if (ignore_read)
+            values[idx + c * stride] = 0;
+          else
+            values[idx + c * stride] = __ldg(&src[src_idx]);
+        }
     else
-      values[idx] = __ldg(&src[src_idx]);
+      for (unsigned int c = 0; c < n_components_; ++c)
+        {
+          if (c == face_number / 2)
+            continue;
+
+          auto active_idx    = compute_active_index<dim, n_q_points_1d>(c);
+          auto is_active_idx = is_active<dim, n_q_points_1d>(c);
+
+          if (is_active_idx)
+            {
+              const dealii::types::global_dof_index src_idx =
+                local_to_global[active_idx + c * offset];
+
+              if (ignore_read)
+                values[idx + c * stride] = 0;
+              else
+                {
+                  values[idx + c * stride] = __ldg(&src[src_idx]);
+
+                  Number tmp = 0;
+                  for (auto it = constraint_range[0]; it < constraint_range[1];
+                       ++it)
+                    if (src_idx == hanging_nodes_constraint[it])
+                      {
+                        tmp += src[hanging_nodes_constraint_indicator[it]] *
+                               hanging_nodes_constraint_weights[it];
+                        values[idx + c * stride] = tmp;
+                      }
+                }
+            }
+        }
+
+
+    // if (blockIdx.x == 0)
+    //   printf("0-%d: %f, %f\n", idx, values[idx], values[idx + stride]);
+
+    // if (blockIdx.x == 3)
+    //   printf("2-%d: %f, %f\n", idx, values[idx], values[idx + stride]);
 
     __syncthreads();
   }
@@ -1277,23 +1391,57 @@ namespace PSMF
   FEFaceEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     distribute_local_to_global(Number *dst) const
   {
-    static_assert(n_components_ == 1, "This function only supports FE with one \
-                  components");
-
     const unsigned int idx = compute_index<dim, n_q_points_1d>();
+    const unsigned int offset =
+      is_primitive ? tensor_dofs_per_cell : rt_tensor_dofs_per_component;
+    const unsigned int stride = is_primitive ? offset : rt_tensor_dofs_per_cell;
 
-    const dealii::types::global_dof_index destination_idx = l_to_g_coarse[idx];
+    if (is_primitive)
+      for (unsigned int c = 0; c < n_components_; ++c)
+        {
+          const dealii::types::global_dof_index destination_idx =
+            local_to_global[idx + c * offset];
 
-    if (use_coloring)
-      {
-        if (!ignore_write)
-          dst[destination_idx] += values[idx];
-      }
+          if (use_coloring && !ignore_write)
+            dst[destination_idx] += values[idx + c * stride];
+          else if (!use_coloring && !ignore_write)
+            atomicAdd(&dst[destination_idx], values[idx + c * stride]);
+        }
     else
-      {
-        if (!ignore_write)
-          atomicAdd(&dst[destination_idx], values[idx]);
-      }
+      for (unsigned int c = 0; c < n_components_; ++c)
+        {
+          if (c == face_number / 2)
+            continue;
+
+          auto active_idx    = compute_active_index<dim, n_q_points_1d>(c);
+          auto is_active_idx = is_active<dim, n_q_points_1d>(c);
+
+          if (is_active_idx)
+            {
+              const dealii::types::global_dof_index destination_idx =
+                local_to_global[active_idx + c * offset];
+
+              for (auto it = constraint_range[0]; it < constraint_range[1];
+                   ++it)
+                if (destination_idx == hanging_nodes_constraint[it])
+                  {
+                    atomicAdd(&dst[hanging_nodes_constraint_indicator[it]],
+                              values[idx + c * stride] *
+                                hanging_nodes_constraint_weights[it]);
+                  }
+
+              if (use_coloring && !ignore_write)
+                dst[destination_idx] += values[idx + c * stride];
+              else if (!use_coloring && !ignore_write)
+                atomicAdd(&dst[destination_idx], values[idx + c * stride]);
+            }
+        }
+
+    // if (blockIdx.x == 0)
+    //   printf("0-%d: %f, %f\n", idx, values[idx], values[idx + stride]);
+
+    // if (blockIdx.x == 0)
+    //   printf("0-%d: %f, %f\n", idx, values[idx], values[idx + stride]);
   }
 
 
@@ -1401,7 +1549,26 @@ namespace PSMF
     get_value() const
   {
     const unsigned int q_point = compute_index<dim, n_q_points_1d>();
-    return values[q_point];
+    const unsigned int q_point_face =
+      compute_face_index<dim, n_q_points_1d>(face_number / 2);
+
+    value_type val = {};
+
+    if (is_primitive)
+      {
+        for (unsigned int c = 0; c < n_components_; ++c)
+          val[c] = values[q_point + c * rt_tensor_dofs_per_cell];
+      }
+    else
+      {
+        const Number *jacobian = &jac[q_point_face];
+
+        for (unsigned int c = 0; c < n_components_; ++c)
+          val[c] = values[q_point + c * rt_tensor_dofs_per_cell] *
+                   inv_det[q_point_face];
+      }
+
+    return val;
   }
 
 
@@ -1418,8 +1585,22 @@ namespace PSMF
   FEFaceEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     get_dof_value() const
   {
-    const unsigned int dof = compute_index<dim, fe_degree + 1>();
-    return values[dof];
+    const unsigned int dof = compute_index<dim, n_q_points_1d>();
+
+    value_type val = {};
+
+    if (is_primitive)
+      {
+        for (unsigned int c = 0; c < n_components_; ++c)
+          val[c] = values[dof + c * tensor_dofs_per_cell];
+      }
+    else // todo
+      {
+        for (unsigned int c = 0; c < n_components_; ++c)
+          val[c] = values[dof + c * rt_tensor_dofs_per_cell];
+      }
+
+    return val;
   }
 
 
@@ -1436,7 +1617,24 @@ namespace PSMF
     const unsigned int q_point_face =
       compute_face_index<dim, n_q_points_1d>(face_number / 2);
 
-    values[q_point] = val_in * JxW[q_point_face];
+    if (is_primitive)
+      {
+        for (unsigned int c = 0; c < n_components_; ++c)
+          values[q_point + c * rt_tensor_dofs_per_cell] =
+            val_in[c] * JxW[q_point_face];
+      }
+    else
+      {
+        const Number *jacobian = &jac[q_point_face];
+        const Number  fac      = weights[q_point_face];
+
+        for (unsigned int c = 0; c < n_components_; ++c)
+          {
+            values[q_point + c * rt_tensor_dofs_per_cell] =
+              val_in[c] *
+              jacobian[face_padding_length * n_cells * (dim * c + c)] * fac;
+          }
+      }
 
     __syncthreads();
   }
@@ -1453,8 +1651,17 @@ namespace PSMF
     submit_dof_value(const value_type &val_in)
   {
     const unsigned int dof = compute_index<dim, fe_degree + 1>();
-    values[dof]            = val_in;
 
+    if (is_primitive)
+      {
+        for (unsigned int c = 0; c < n_components_; ++c)
+          values[dof + c * tensor_dofs_per_cell] = val_in[c];
+      }
+    else // todo
+      {
+        for (unsigned int c = 0; c < n_components_; ++c)
+          values[dof + c * rt_tensor_dofs_per_cell] = val_in[c];
+      }
     __syncthreads();
   }
 
@@ -1473,25 +1680,41 @@ namespace PSMF
   FEFaceEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     get_gradient() const
   {
-    static_assert(n_components_ == 1, "This function only supports FE with one \
-                  components");
-
     // TODO optimize if the mesh is uniform
     const unsigned int q_point = compute_index<dim, n_q_points_1d>();
     const unsigned int q_point_face =
       compute_face_index<dim, n_q_points_1d>(face_number / 2);
     const Number *inv_jacobian = &inv_jac[q_point_face];
-    gradient_type grad;
-    for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
-      {
-        Number tmp = 0.;
-        for (unsigned int d_2 = 0; d_2 < dim; ++d_2)
-          tmp +=
-            inv_jacobian[n_cells * face_padding_length * (dim * d_2 + d_1)] *
-            gradients[d_2][q_point];
-        grad[d_1] = tmp;
-      }
+    gradient_type grad         = {};
 
+    if (is_primitive)
+      {
+        for (unsigned int c = 0; c < n_components_; ++c)
+          for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
+            {
+              Number tmp = 0.;
+              for (unsigned int d_2 = 0; d_2 < dim; ++d_2)
+                tmp += inv_jacobian[n_cells * face_padding_length *
+                                    (dim * d_2 + d_1)] *
+                       gradients[d_2][q_point + c * rt_tensor_dofs_per_cell];
+              grad[d_1][c] = tmp;
+            }
+      }
+    else
+      {
+        // cartesian mesh only
+        const Number *jacobian = &jac[q_point_face];
+
+        // (J?) * grad_quad * J^-1 * det(J^-1)
+        for (unsigned int c = 0; c < n_components_; ++c)
+          for (unsigned int d = 0; d < dim; ++d)
+            {
+              grad[d][c] =
+                inv_jacobian[face_padding_length * n_cells * (dim * d + d)] *
+                gradients[d][q_point + c * rt_tensor_dofs_per_cell] *
+                inv_det[q_point_face];
+            }
+      }
     return grad;
   }
 
@@ -1511,16 +1734,37 @@ namespace PSMF
     const unsigned int q_point_face =
       compute_face_index<dim, n_q_points_1d>(face_number / 2);
     const Number *inv_jacobian = &inv_jac[q_point_face];
-    for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
-      {
-        Number tmp = 0.;
-        for (unsigned int d_2 = 0; d_2 < dim; ++d_2)
-          tmp +=
-            inv_jacobian[n_cells * face_padding_length * (dim * d_1 + d_2)] *
-            grad_in[d_2];
-        gradients[d_1][q_point] = tmp * JxW[q_point_face];
-      }
 
+    if (is_primitive)
+      {
+        for (unsigned int c = 0; c < n_components_; ++c)
+          for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
+            {
+              Number tmp = 0.;
+              for (unsigned int d_2 = 0; d_2 < dim; ++d_2)
+                tmp += inv_jacobian[n_cells * face_padding_length *
+                                    (dim * d_1 + d_2)] *
+                       grad_in[d_2][c];
+              gradients[d_1][q_point + c * rt_tensor_dofs_per_cell] =
+                tmp * JxW[q_point_face];
+            }
+      }
+    else
+      {
+        // Cartesian cell
+        const Number *jacobian = &jac[q_point_face];
+        const Number  fac =
+          weights[q_point_face] * (dim == 2 ? 1. : inv_jacobian[0]);
+
+        for (unsigned int c = 0; c < n_components_; ++c)
+          for (unsigned int d = 0; d < dim; ++d)
+            {
+              gradients[d][q_point + c * rt_tensor_dofs_per_cell] =
+                inv_jacobian[n_cells * face_padding_length * (dim * d + d)] *
+                jacobian[face_padding_length * n_cells * (dim * c + c)] * fac *
+                grad_in[d][c];
+            }
+      }
     __syncthreads();
   }
 
@@ -1539,22 +1783,37 @@ namespace PSMF
   FEFaceEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     get_normal_derivative() const
   {
-    static_assert(n_components_ == 1, "This function only supports FE with one \
-                  components");
-
     // TODO optimize if the mesh is uniform
     const unsigned int q_point_face =
       compute_face_index<dim, n_q_points_1d>(face_number / 2);
     const Number *normal_vector = &normal_vec[q_point_face];
 
     gradient_type grad              = get_gradient();
-    value_type    normal_derivative = 0.;
+    value_type    normal_derivative = {};
 
-    for (unsigned int d = 0; d < dim; ++d)
-      normal_derivative +=
-        grad[d] * normal_vector[n_cells * face_padding_length * d];
+    const Number fac = is_interior_face ? 1. : -1.;
 
-    return is_interior_face ? normal_derivative : -normal_derivative;
+    for (unsigned int c = 0; c < n_components_; ++c)
+      for (unsigned int d = 0; d < dim; ++d)
+        normal_derivative[c] +=
+          grad[d][c] * normal_vector[n_cells * face_padding_length * d] * fac;
+
+    // for (unsigned int c = 0; c < n_components_; ++c)
+    //   if (c == face_number / 2)
+
+    // for (unsigned int d = 0; d < dim; ++d)
+    //   if (d == face_number / 2)
+    //     normal_derivative[d] = tmp[d];
+
+    // if (blockIdx.x == 1)
+    //   printf("grad: 0-%d: %f, %f, %f, %f\n", q_point_face,
+    //     grad[0][0], grad[0][1], grad[1][0], grad[1][1]);
+
+    // if (blockIdx.x == 0)
+    //   printf("nd: 0-%d: %f, %f\n", q_point_face,
+    //     tmp[0], tmp[1]);
+
+    return normal_derivative;
   }
 
 
@@ -1575,9 +1834,10 @@ namespace PSMF
     const Number *normal_vector = &normal_vec[q_point_face];
     const Number *inv_jacobian  = &inv_jac[q_point_face];
 
-    const Number coe = is_interior_face ? 1. : -1.;
+    const Number coe =
+      (dim == 2 ? 1 : inv_jacobian[0]) * (is_interior_face ? 1. : -1.);
 
-    gradient_type normal_x_jacobian;
+    gradient_type normal_x_jacobian = {};
     for (unsigned int d_1 = 0; d_1 < dim; ++d_1)
       {
         Number tmp = 0.;
@@ -1585,12 +1845,25 @@ namespace PSMF
           tmp +=
             inv_jacobian[n_cells * face_padding_length * (dim * d_1 + d_2)] *
             normal_vector[n_cells * face_padding_length * d_2];
-        normal_x_jacobian[d_1] = coe * tmp;
+        normal_x_jacobian[d_1][0] = coe * tmp;
       }
 
-    for (unsigned int d = 0; d < dim; ++d)
-      gradients[d][q_point] =
-        grad_in * normal_x_jacobian[d] * JxW[q_point_face];
+    for (unsigned int c = 0; c < n_components_; ++c)
+      for (unsigned int d = 0; d < dim; ++d)
+        gradients[d][q_point + c * rt_tensor_dofs_per_cell] =
+          grad_in[c] * normal_x_jacobian[d][0] * JxW[q_point_face];
+
+    // if (blockIdx.x == 1)
+    //   printf("grad: 0-%d: %f, %f, %f, %f\n", q_point_face,
+    //     gradients[0][q_point], gradients[0][q_point + 1 *
+    //     rt_tensor_dofs_per_cell], gradients[1][q_point], gradients[1][q_point
+    //     + 1 * rt_tensor_dofs_per_cell]);
+
+    // if (blockIdx.x == 0)
+    //   printf("grad: 0-%d: %f, %f\n", q_point, grad_in[0], grad_in[1]);
+
+    // if (blockIdx.x == 1)
+    //   printf("grad: 1-%d: %f, %f\n", q_point, grad_in[0], grad_in[1]);
 
     __syncthreads();
   }
@@ -1602,11 +1875,7 @@ namespace PSMF
             int n_q_points_1d,
             int n_components_,
             typename Number>
-  __device__ typename FEFaceEvaluation<dim,
-                                       fe_degree,
-                                       n_q_points_1d,
-                                       n_components_,
-                                       Number>::value_type
+  __device__ Number
   FEFaceEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     inverse_length_normal_to_face()
   {

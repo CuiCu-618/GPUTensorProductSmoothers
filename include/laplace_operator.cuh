@@ -181,7 +181,7 @@ namespace PSMF
 
       data->cell_loop(local_laplace, tmp, dst);
 
-      data->copy_constrained_values(src, dst); //
+      // data->copy_constrained_values(src, dst); //
     }
 
     void

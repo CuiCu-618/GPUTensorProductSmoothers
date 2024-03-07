@@ -1756,7 +1756,9 @@ namespace PSMF
                                 Number>
   {
     static constexpr unsigned int dofs_per_cell =
-      dealii::Utilities::pow(fe_degree + 1, dim);
+      dealii::Utilities::pow(fe_degree + 2, dim);
+    static constexpr unsigned int n_q_points =
+      dealii::Utilities::pow(n_q_points_1d, dim);
 
     __device__
     EvaluatorTensorProduct(int mf_object_id,
@@ -1961,6 +1963,7 @@ namespace PSMF
                          Number>::value_at_quad_pts(Number *u)
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int tangent       = 3 * n_q_points_2d;
 
     const unsigned int shift = (face_number & 1) * n_q_points_2d;
     const unsigned int offset0 =
@@ -1973,58 +1976,79 @@ namespace PSMF
       compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
                                                     subface_number);
 
+    const unsigned int face_dir = face_number / 2;
 
     Number *shape_value_dir0 =
-      face_number / 2 == 0 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset0;
+      face_dir == 0 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
-      face_number / 2 == 1 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset1;
+      face_dir == 1 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
-      face_number / 2 == 2 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset2;
+      face_dir == 2 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset2;
 
-    switch (dim)
-      {
-        case 1:
-          {
-            values<0, true, false, true>(shape_value_dir0, u, u);
+    for (unsigned int c = 0; c < n_components_; ++c)
+      if (c != face_dir) // todo: only rt element now
+        {
+          auto stride = c * n_q_points;
+          switch (dim)
+            {
+              case 1:
+                {
+                  values<0, true, false, true>(shape_value_dir0,
+                                               &u[stride],
+                                               &u[stride]);
 
-            break;
-          }
-        case 2:
-          {
-            values<0, true, false, true>(shape_value_dir0, u, u);
-            __syncthreads();
-            values<1, true, false, true>(shape_value_dir1, u, u);
+                  break;
+                }
+              case 2:
+                {
+                  values<0, true, false, true>(shape_value_dir0,
+                                               &u[stride],
+                                               &u[stride]);
+                  __syncthreads();
+                  values<1, true, false, true>(shape_value_dir1,
+                                               &u[stride],
+                                               &u[stride]);
 
-            break;
-          }
-        case 3:
-          {
-            values<0, true, false, true>(shape_value_dir0, u, u);
-            __syncthreads();
-            values<1, true, false, true>(shape_value_dir1, u, u);
-            __syncthreads();
-            values<2, true, false, true>(shape_value_dir2, u, u);
+                  break;
+                }
+              case 3:
+                {
+                  values<0, true, false, true>(shape_value_dir0 +
+                                                 (face_dir != 0 && c != 0) *
+                                                   tangent,
+                                               &u[stride],
+                                               &u[stride]);
+                  __syncthreads();
+                  values<1, true, false, true>(shape_value_dir1 +
+                                                 (face_dir != 1 && c != 1) *
+                                                   tangent,
+                                               &u[stride],
+                                               &u[stride]);
+                  __syncthreads();
+                  values<2, true, false, true>(shape_value_dir2 +
+                                                 (face_dir != 2 && c != 2) *
+                                                   tangent,
+                                               &u[stride],
+                                               &u[stride]);
 
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh: \n"
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
-              "value_at_quad_pts().\n");
-          }
-      }
+                  break;
+                }
+              default:
+                {
+                  // Do nothing. We should throw but we can't from a __device__
+                  // function.
+                  printf(
+                    "Error: Invalid dimension. In file cuda_tensor_product_kernels.cuh: \n"
+                    "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
+                    "value_at_quad_pts().\n");
+                }
+            }
+        }
   }
 
 
@@ -2043,6 +2067,7 @@ namespace PSMF
                          Number>::integrate_value(Number *u)
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int tangent       = 3 * n_q_points_2d;
 
     const unsigned int shift = (face_number & 1) * n_q_points_2d;
     const unsigned int offset0 =
@@ -2055,57 +2080,79 @@ namespace PSMF
       compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
                                                     subface_number);
 
+    const unsigned int face_dir = face_number / 2;
+
     Number *shape_value_dir0 =
-      face_number / 2 == 0 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset0;
+      face_dir == 0 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
-      face_number / 2 == 1 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset1;
+      face_dir == 1 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
-      face_number / 2 == 2 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset2;
+      face_dir == 2 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset2;
 
-    switch (dim)
-      {
-        case 1:
-          {
-            values<0, false, false, true>(shape_value_dir0, u, u);
+    for (unsigned int c = 0; c < n_components_; ++c)
+      if (c != face_dir) // todo: only rt element now
+        {
+          auto stride = c * n_q_points;
+          switch (dim)
+            {
+              case 1:
+                {
+                  values<0, false, false, true>(shape_value_dir0,
+                                                &u[stride],
+                                                &u[stride]);
 
-            break;
-          }
-        case 2:
-          {
-            values<0, false, false, true>(shape_value_dir0, u, u);
-            __syncthreads();
-            values<1, false, false, true>(shape_value_dir1, u, u);
+                  break;
+                }
+              case 2:
+                {
+                  values<0, false, false, true>(shape_value_dir0,
+                                                &u[stride],
+                                                &u[stride]);
+                  __syncthreads();
+                  values<1, false, false, true>(shape_value_dir1,
+                                                &u[stride],
+                                                &u[stride]);
 
-            break;
-          }
-        case 3:
-          {
-            values<0, false, false, true>(shape_value_dir0, u, u);
-            __syncthreads();
-            values<1, false, false, true>(shape_value_dir1, u, u);
-            __syncthreads();
-            values<2, false, false, true>(shape_value_dir2, u, u);
+                  break;
+                }
+              case 3:
+                {
+                  values<0, false, false, true>(shape_value_dir0 +
+                                                  (face_dir != 0 && c != 0) *
+                                                    tangent,
+                                                &u[stride],
+                                                &u[stride]);
+                  __syncthreads();
+                  values<1, false, false, true>(shape_value_dir1 +
+                                                  (face_dir != 1 && c != 1) *
+                                                    tangent,
+                                                &u[stride],
+                                                &u[stride]);
+                  __syncthreads();
+                  values<2, false, false, true>(shape_value_dir2 +
+                                                  (face_dir != 2 && c != 2) *
+                                                    tangent,
+                                                &u[stride],
+                                                &u[stride]);
 
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
-              "integrate_value().\n");
-          }
-      }
+                  break;
+                }
+              default:
+                {
+                  // Do nothing. We should throw but we can't from a __device__
+                  // function.
+                  printf(
+                    "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
+                    "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
+                    "integrate_value().\n");
+                }
+            }
+        }
   }
 
 
@@ -2125,6 +2172,7 @@ namespace PSMF
                                                        Number *grad_u[dim])
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int tangent       = 3 * n_q_points_2d;
 
     const unsigned int shift = (face_number & 1) * n_q_points_2d;
     const unsigned int offset0 =
@@ -2137,103 +2185,133 @@ namespace PSMF
       compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
                                                     subface_number);
 
+    const unsigned int face_dir = face_number / 2;
 
     Number *shape_value_dir0 =
-      face_number / 2 == 0 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset0;
+      face_dir == 0 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
-      face_number / 2 == 1 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset1;
+      face_dir == 1 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
-      face_number / 2 == 2 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset2;
+      face_dir == 2 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset2;
 
     Number *shape_gradient_dir0 =
-      face_number / 2 == 0 ?
-        get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id) + offset0;
+      face_dir == 0 ? get_face_shape_gradients<Number>(mf_object_id) + shift :
+                      get_cell_shape_gradients<Number>(mf_object_id) + offset0;
 
     Number *shape_gradient_dir1 =
-      face_number / 2 == 1 ?
-        get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id) + offset1;
+      face_dir == 1 ? get_face_shape_gradients<Number>(mf_object_id) + shift :
+                      get_cell_shape_gradients<Number>(mf_object_id) + offset1;
 
     Number *shape_gradient_dir2 =
-      face_number / 2 == 2 ?
-        get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id) + offset2;
+      face_dir == 2 ? get_face_shape_gradients<Number>(mf_object_id) + shift :
+                      get_cell_shape_gradients<Number>(mf_object_id) + offset2;
 
-    switch (dim)
-      {
-        case 1:
-          {
-            gradients<0, true, false, false>(shape_gradient_dir0, u, grad_u[0]);
+    for (unsigned int c = 0; c < n_components_; ++c)
+      if (c != face_dir) // todo: only rt element now
+        {
+          auto stride = c * n_q_points;
+          switch (dim)
+            {
+              case 1:
+                {
+                  gradients<0, true, false, false>(shape_gradient_dir0,
+                                                   &u[stride],
+                                                   &grad_u[0][stride]);
 
-            break;
-          }
-        case 2:
-          {
-            gradients<0, true, false, false>(shape_gradient_dir0, u, grad_u[0]);
-            values<0, true, false, false>(shape_value_dir0, u, grad_u[1]);
+                  break;
+                }
+              case 2:
+                {
+                  gradients<0, true, false, false>(shape_gradient_dir0,
+                                                   &u[stride],
+                                                   &grad_u[0][stride]);
+                  values<0, true, false, false>(shape_value_dir0,
+                                                &u[stride],
+                                                &grad_u[1][stride]);
 
-            __syncthreads();
+                  __syncthreads();
 
-            values<1, true, false, true>(shape_value_dir1,
-                                         grad_u[0],
-                                         grad_u[0]);
-            gradients<1, true, false, true>(shape_gradient_dir1,
-                                            grad_u[1],
-                                            grad_u[1]);
+                  values<1, true, false, true>(shape_value_dir1,
+                                               &grad_u[0][stride],
+                                               &grad_u[0][stride]);
+                  gradients<1, true, false, true>(shape_gradient_dir1,
+                                                  &grad_u[1][stride],
+                                                  &grad_u[1][stride]);
 
-            break;
-          }
-        case 3:
-          {
-            gradients<0, true, false, false>(shape_gradient_dir0, u, grad_u[0]);
-            values<0, true, false, false>(shape_value_dir0, u, grad_u[1]);
-            values<0, true, false, false>(shape_value_dir0, u, grad_u[2]);
+                  break;
+                }
+              case 3:
+                {
+                  gradients<0, true, false, false>(shape_gradient_dir0 +
+                                                     (face_dir != 0 && c != 0) *
+                                                       tangent,
+                                                   &u[stride],
+                                                   &grad_u[0][stride]);
+                  values<0, true, false, false>(shape_value_dir0 +
+                                                  (face_dir != 0 && c != 0) *
+                                                    tangent,
+                                                &u[stride],
+                                                &grad_u[1][stride]);
+                  values<0, true, false, false>(shape_value_dir0 +
+                                                  (face_dir != 0 && c != 0) *
+                                                    tangent,
+                                                &u[stride],
+                                                &grad_u[2][stride]);
 
-            __syncthreads();
+                  __syncthreads();
 
-            values<1, true, false, true>(shape_value_dir1,
-                                         grad_u[0],
-                                         grad_u[0]);
-            gradients<1, true, false, true>(shape_gradient_dir1,
-                                            grad_u[1],
-                                            grad_u[1]);
-            values<1, true, false, true>(shape_value_dir1,
-                                         grad_u[2],
-                                         grad_u[2]);
+                  values<1, true, false, true>(shape_value_dir1 +
+                                                 (face_dir != 1 && c != 1) *
+                                                   tangent,
+                                               &grad_u[0][stride],
+                                               &grad_u[0][stride]);
+                  gradients<1, true, false, true>(shape_gradient_dir1 +
+                                                    (face_dir != 1 && c != 1) *
+                                                      tangent,
+                                                  &grad_u[1][stride],
+                                                  &grad_u[1][stride]);
+                  values<1, true, false, true>(shape_value_dir1 +
+                                                 (face_dir != 1 && c != 1) *
+                                                   tangent,
+                                               &grad_u[2][stride],
+                                               &grad_u[2][stride]);
 
-            __syncthreads();
+                  __syncthreads();
 
-            values<2, true, false, true>(shape_value_dir2,
-                                         grad_u[0],
-                                         grad_u[0]);
-            values<2, true, false, true>(shape_value_dir2,
-                                         grad_u[1],
-                                         grad_u[1]);
-            gradients<2, true, false, true>(shape_gradient_dir2,
-                                            grad_u[2],
-                                            grad_u[2]);
+                  values<2, true, false, true>(shape_value_dir2 +
+                                                 (face_dir != 2 && c != 2) *
+                                                   tangent,
+                                               &grad_u[0][stride],
+                                               &grad_u[0][stride]);
+                  values<2, true, false, true>(shape_value_dir2 +
+                                                 (face_dir != 2 && c != 2) *
+                                                   tangent,
+                                               &grad_u[1][stride],
+                                               &grad_u[1][stride]);
+                  gradients<2, true, false, true>(shape_gradient_dir2 +
+                                                    (face_dir != 2 && c != 2) *
+                                                      tangent,
+                                                  &grad_u[2][stride],
+                                                  &grad_u[2][stride]);
 
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
-              "gradient_at_quad_pts().\n");
-          }
-      }
+                  break;
+                }
+              default:
+                {
+                  // Do nothing. We should throw but we can't from a __device__
+                  // function.
+                  printf(
+                    "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
+                    "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
+                    "gradient_at_quad_pts().\n");
+                }
+            }
+        }
   }
 
 
@@ -2377,6 +2455,7 @@ namespace PSMF
                                                      Number *grad_u[dim])
   {
     constexpr unsigned int n_q_points_2d = n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int tangent       = 3 * n_q_points_2d;
 
     const unsigned int shift = (face_number & 1) * n_q_points_2d;
     const unsigned int offset0 =
@@ -2389,108 +2468,136 @@ namespace PSMF
       compute_subface_offset<dim, n_q_points_2d, 2>(face_number,
                                                     subface_number);
 
+    const unsigned int face_dir = face_number / 2;
 
     Number *shape_value_dir0 =
-      face_number / 2 == 0 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset0;
+      face_dir == 0 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset0;
 
     Number *shape_value_dir1 =
-      face_number / 2 == 1 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset1;
+      face_dir == 1 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset1;
 
     Number *shape_value_dir2 =
-      face_number / 2 == 2 ?
-        get_face_shape_values<Number>(mf_object_id) + shift :
-        get_cell_shape_values<Number>(mf_object_id) + offset2;
+      face_dir == 2 ? get_face_shape_values<Number>(mf_object_id) + shift :
+                      get_cell_shape_values<Number>(mf_object_id) + offset2;
 
     Number *shape_gradient_dir0 =
-      face_number / 2 == 0 ?
-        get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id) + offset0;
+      face_dir == 0 ? get_face_shape_gradients<Number>(mf_object_id) + shift :
+                      get_cell_shape_gradients<Number>(mf_object_id) + offset0;
 
     Number *shape_gradient_dir1 =
-      face_number / 2 == 1 ?
-        get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id) + offset1;
+      face_dir == 1 ? get_face_shape_gradients<Number>(mf_object_id) + shift :
+                      get_cell_shape_gradients<Number>(mf_object_id) + offset1;
 
     Number *shape_gradient_dir2 =
-      face_number / 2 == 2 ?
-        get_face_shape_gradients<Number>(mf_object_id) + shift :
-        get_cell_shape_gradients<Number>(mf_object_id) + offset2;
+      face_dir == 2 ? get_face_shape_gradients<Number>(mf_object_id) + shift :
+                      get_cell_shape_gradients<Number>(mf_object_id) + offset2;
 
-    switch (dim)
-      {
-        case 1:
-          {
-            gradients<0, false, add, false>(shape_gradient_dir0,
-                                            grad_u[dim],
-                                            u);
+    for (unsigned int c = 0; c < n_components_; ++c)
+      if (c != face_dir) // todo: only rt element now
+        {
+          auto stride = c * n_q_points;
+          switch (dim)
+            {
+              case 1:
+                {
+                  gradients<0, false, add, false>(shape_gradient_dir0,
+                                                  &grad_u[0][stride],
+                                                  &u[stride]);
 
-            break;
-          }
-        case 2:
-          {
-            gradients<0, false, false, true>(shape_gradient_dir0,
-                                             grad_u[0],
-                                             grad_u[0]);
-            values<0, false, false, true>(shape_value_dir0,
-                                          grad_u[1],
-                                          grad_u[1]);
+                  break;
+                }
+              case 2:
+                {
+                  gradients<0, false, false, true>(shape_gradient_dir0,
+                                                   &grad_u[0][stride],
+                                                   &grad_u[0][stride]);
+                  values<0, false, false, true>(shape_value_dir0,
+                                                &grad_u[1][stride],
+                                                &grad_u[1][stride]);
 
-            __syncthreads();
+                  __syncthreads();
 
-            values<1, false, add, false>(shape_value_dir1, grad_u[0], u);
-            __syncthreads();
-            gradients<1, false, true, false>(shape_gradient_dir1, grad_u[1], u);
+                  values<1, false, add, false>(shape_value_dir1,
+                                               &grad_u[0][stride],
+                                               &u[stride]);
+                  __syncthreads();
+                  gradients<1, false, true, false>(shape_gradient_dir1,
+                                                   &grad_u[1][stride],
+                                                   &u[stride]);
 
-            break;
-          }
-        case 3:
-          {
-            gradients<0, false, false, true>(shape_gradient_dir0,
-                                             grad_u[0],
-                                             grad_u[0]);
-            values<0, false, false, true>(shape_value_dir0,
-                                          grad_u[1],
-                                          grad_u[1]);
-            values<0, false, false, true>(shape_value_dir0,
-                                          grad_u[2],
-                                          grad_u[2]);
+                  break;
+                }
+              case 3:
+                {
+                  gradients<0, false, false, true>(shape_gradient_dir0 +
+                                                     (face_dir != 0 && c != 0) *
+                                                       tangent,
+                                                   &grad_u[0][stride],
+                                                   &grad_u[0][stride]);
+                  values<0, false, false, true>(shape_value_dir0 +
+                                                  (face_dir != 0 && c != 0) *
+                                                    tangent,
+                                                &grad_u[1][stride],
+                                                &grad_u[1][stride]);
+                  values<0, false, false, true>(shape_value_dir0 +
+                                                  (face_dir != 0 && c != 0) *
+                                                    tangent,
+                                                &grad_u[2][stride],
+                                                &grad_u[2][stride]);
 
-            __syncthreads();
+                  __syncthreads();
 
-            values<1, false, false, true>(shape_value_dir1,
-                                          grad_u[0],
-                                          grad_u[0]);
-            gradients<1, false, false, true>(shape_gradient_dir1,
-                                             grad_u[1],
-                                             grad_u[1]);
-            values<1, false, false, true>(shape_value_dir1,
-                                          grad_u[2],
-                                          grad_u[2]);
+                  values<1, false, false, true>(shape_value_dir1 +
+                                                  (face_dir != 1 && c != 1) *
+                                                    tangent,
+                                                &grad_u[0][stride],
+                                                &grad_u[0][stride]);
+                  gradients<1, false, false, true>(shape_gradient_dir1 +
+                                                     (face_dir != 1 && c != 1) *
+                                                       tangent,
+                                                   &grad_u[1][stride],
+                                                   &grad_u[1][stride]);
+                  values<1, false, false, true>(shape_value_dir1 +
+                                                  (face_dir != 1 && c != 1) *
+                                                    tangent,
+                                                &grad_u[2][stride],
+                                                &grad_u[2][stride]);
 
-            __syncthreads();
+                  __syncthreads();
 
-            values<2, false, add, false>(shape_value_dir2, grad_u[0], u);
-            __syncthreads();
-            values<2, false, true, false>(shape_value_dir2, grad_u[1], u);
-            __syncthreads();
-            gradients<2, false, true, false>(shape_gradient_dir2, grad_u[2], u);
+                  values<2, false, add, false>(shape_value_dir2 +
+                                                 (face_dir != 2 && c != 2) *
+                                                   tangent,
+                                               &grad_u[0][stride],
+                                               &u[stride]);
+                  __syncthreads();
+                  values<2, false, true, false>(shape_value_dir2 +
+                                                  (face_dir != 2 && c != 2) *
+                                                    tangent,
+                                                &grad_u[1][stride],
+                                                &u[stride]);
+                  __syncthreads();
+                  gradients<2, false, true, false>(shape_gradient_dir2 +
+                                                     (face_dir != 2 && c != 2) *
+                                                       tangent,
+                                                   &grad_u[2][stride],
+                                                   &u[stride]);
 
-            break;
-          }
-        default:
-          {
-            // Do nothing. We should throw but we can't from a __device__
-            // function.
-            printf(
-              "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
-              "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
-              "integrate_gradient().\n");
-          }
-      }
+                  break;
+                }
+              default:
+                {
+                  // Do nothing. We should throw but we can't from a __device__
+                  // function.
+                  printf(
+                    "Error: Invalid dimension.\n In file cuda_tensor_product_kernels.cuh: "
+                    "EvaluatorTensorProduct<evaluate_face, dim, fe_degree, n_q_points_1d, n_components_, Number>::"
+                    "integrate_gradient().\n");
+                }
+            }
+        }
   }
 
 
