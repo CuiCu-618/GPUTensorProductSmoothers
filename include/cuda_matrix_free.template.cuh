@@ -59,7 +59,7 @@ namespace PSMF
    * MatrixFree. Changing this number will affect the amount of
    * constant memory being used.
    */
-  constexpr unsigned int mf_max_elem_degree = 10;
+  constexpr unsigned int mf_max_elem_degree = 15;
 
   constexpr unsigned int data_array_size =
     (mf_max_elem_degree + 1) * (mf_max_elem_degree + 1);
@@ -362,6 +362,7 @@ namespace PSMF
     std::vector<dealii::internal::MatrixFreeFunctions::ConstraintKinds>
                                                  constraint_mask_host;
     std::vector<dealii::types::global_dof_index> constraint_range_host;
+    std::vector<dealii::types::global_dof_index> constraint_coarse_range_host;
     // Local buffer
     std::vector<dealii::types::global_dof_index> local_dof_indices;
     std::vector<dealii::types::global_dof_index> local_dof_indices_coarse;
@@ -371,6 +372,8 @@ namespace PSMF
     // Convert the default dof numbering to a lexicographic one
     std::vector<unsigned int>                    lexicographic_inv;
     std::vector<dealii::types::global_dof_index> lexicographic_dof_indices;
+    std::vector<unsigned int>                    constrained_indices;
+    std::vector<unsigned int>                    constrained_indices_coarse;
     const unsigned int                           fe_degree;
     const unsigned int                           n_components;
     const unsigned int                           dofs_per_cell;
@@ -448,12 +451,23 @@ namespace PSMF
     , n_boundary_faces(0)
     , hanging_nodes(dof_handler.get_triangulation())
   {
-    cudaError_t error_code = cudaMemcpyToSymbol(
-      dealii::CUDAWrappers::internal::constraint_weights,
-      shape_info.data.front().subface_interpolation_matrices[0].data(),
-      sizeof(double) *
-        shape_info.data.front().subface_interpolation_matrices[0].size());
-    AssertCuda(error_code);
+    // cudaError_t error_code = cudaMemcpyToSymbol(
+    //   dealii::CUDAWrappers::internal::constraint_weights,
+    //   shape_info.data.front().subface_interpolation_matrices[0].data(),
+    //   sizeof(double) *
+    //     shape_info.data.front().subface_interpolation_matrices[0].size());
+    // AssertCuda(error_code);
+
+    auto lines = constraints.get_lines();
+    for (auto &l : lines)
+      if (l.entries.size() > 0)
+        for (auto e : l.entries)
+          if (e.second < -100)
+            constrained_indices_coarse.push_back(e.first);
+          else
+            constrained_indices.push_back(l.index);
+      else
+        constrained_indices.push_back(l.index);
 
     if (is_primitive)
       {
@@ -470,6 +484,11 @@ namespace PSMF
     local_dof_indices.resize(data->dofs_per_cell);
     local_dof_indices_coarse.resize(data->dofs_per_cell);
     lexicographic_dof_indices.resize(data->dofs_per_cell);
+
+    // std::cout << "constrained_indices_coarse\n";
+    // for (auto c : constrained_indices_coarse)
+    //   std::cout << c << " ";
+    // std::cout << std::endl;
   }
 
   template <int dim, typename Number>
@@ -499,6 +518,7 @@ namespace PSMF
     data->face_orientation.resize(n_colors);
     data->constraint_mask.resize(n_colors);
     data->constraint_range.resize(n_colors);
+    data->constraint_coarse_range.resize(n_colors);
 
     data->row_start.resize(n_colors);
 
@@ -562,8 +582,27 @@ namespace PSMF
     else
       AssertThrow(false, dealii::ExcMessage("Invalid dimension."));
 
-    local_to_global_host.resize(n_cells * padding_length * n_components);
-    l_to_g_coarse_host.resize(n_cells * padding_length * n_components);
+
+    if (matrix_type == MatrixType::edge_up_matrix ||
+        matrix_type == MatrixType::edge_down_matrix)
+      {
+        local_to_global_host.resize(n_cells * padding_length * n_components *
+                                    (1 << dim - 1));
+        l_to_g_coarse_host.resize(n_cells * padding_length * n_components *
+                                  (1 << dim - 1));
+      }
+    else if (matrix_type == MatrixType::interface_matrix)
+      {
+        local_to_global_host.resize(n_cells * padding_length * n_components *
+                                    (1 << dim));
+        l_to_g_coarse_host.resize(n_cells * padding_length * n_components *
+                                  (1 << dim));
+      }
+    else
+      {
+        local_to_global_host.resize(n_cells * padding_length * n_components);
+        l_to_g_coarse_host.resize(n_cells * padding_length * n_components);
+      }
 
     if (update_flags & dealii::update_quadrature_points)
       q_points_host.resize(n_cells * padding_length);
@@ -582,7 +621,8 @@ namespace PSMF
       inv_jacobian_host.resize(n_cells * padding_length * dim * dim);
 
     constraint_mask_host.resize(n_cells * n_components);
-    constraint_range_host.resize(n_cells * 2);
+    constraint_range_host.resize(n_cells * 2 * (1 << dim - 1));
+    constraint_coarse_range_host.resize(n_cells * 2 * (1 << dim - 1));
   }
 
 
@@ -673,9 +713,11 @@ namespace PSMF
           index = partitioner->global_to_local(index);
 
 
-      constraint_range_host[2 * obj_id] =
-        obj_id == 0 ? 0 : constraint_range_host[2 * obj_id - 1];
-      constraint_range_host[2 * obj_id + 1] = constraint_range_host[2 * obj_id];
+      constraint_range_host[2 * obj_id]     = 0;
+      constraint_range_host[2 * obj_id + 1] = 0;
+
+      unsigned int begin_pos = constrained_indices.size() + 1;
+      unsigned int n_cons    = 0;
 
       for (unsigned int i = 0; i < dofs_per_cell; ++i)
         {
@@ -688,21 +730,40 @@ namespace PSMF
                 constraints
                   .get_constraint_entries(lexicographic_dof_indices[i])
                   ->size();
-              constraint_range_host[2 * obj_id + 1] +=
-                entries_size > 0 ? entries_size : 1;
+
+              auto         it   = std::find(constrained_indices.begin(),
+                                  constrained_indices.end(),
+                                  lexicographic_dof_indices[i]);
+              unsigned int diff = it - constrained_indices.begin();
+              begin_pos         = std::min(begin_pos, diff);
+              n_cons += (entries_size > 0 ? entries_size : 1);
+
+              constraint_range_host[2 * obj_id] = begin_pos;
             }
         }
+      constraint_range_host[2 * obj_id + 1] =
+        constraint_range_host[2 * obj_id] + n_cons;
 
-      const dealii::ArrayView<
-        dealii::internal::MatrixFreeFunctions::ConstraintKinds>
-        cell_id_view(&constraint_mask_host[obj_id * n_components],
-                     n_components);
+      // if (obj_id >= 5)
+      //   {
+      //     std::cout << obj_id << ": " << constraint_range_host[2 * obj_id]
+      //               << " " << constraint_range_host[2 * obj_id + 1]
+      //               << std::endl;
+      //   }
 
-      hanging_nodes.setup_constraints(c,
-                                      partitioner,
-                                      {lexicographic_inv},
-                                      lexicographic_dof_indices,
-                                      cell_id_view);
+      // std::cout << obj_id << ": " << constraint_range_host[2 * obj_id] << " "
+      //           << constraint_range_host[2 * obj_id + 1] << std::endl;
+
+      // const dealii::ArrayView<
+      //   dealii::internal::MatrixFreeFunctions::ConstraintKinds>
+      //   cell_id_view(&constraint_mask_host[obj_id * n_components],
+      //                n_components);
+
+      // hanging_nodes.setup_constraints(c,
+      //                                 partitioner,
+      //                                 {lexicographic_inv},
+      //                                 lexicographic_dof_indices,
+      //                                 cell_id_view);
 
       memcpy(&local_to_global_host[obj_id * padding_length * n_components],
              lexicographic_dof_indices.data(),
@@ -748,10 +809,13 @@ namespace PSMF
               static_cast<Number>(inv_jacobians[i].determinant());
 
           // quadrature weights
-          std::vector<double> quadrature_weights =
-            fe_value.get_quadrature().get_weights();
-          for (unsigned int i = 0; i < q_points_per_cell; ++i)
-            q_weights_host[i] = static_cast<Number>(quadrature_weights[i]);
+          if (obj_id == 0)
+            {
+              std::vector<double> quadrature_weights =
+                fe_value.get_quadrature().get_weights();
+              for (unsigned int i = 0; i < q_points_per_cell; ++i)
+                q_weights_host[i] = static_cast<Number>(quadrature_weights[i]);
+            }
         }
 
       if (update_flags & dealii::update_gradients)
@@ -769,7 +833,8 @@ namespace PSMF
 
 
     if (matrix_type == MatrixType::active_matrix ||
-        matrix_type == MatrixType::level_matrix)
+        matrix_type == MatrixType::level_matrix ||
+        matrix_type == MatrixType::interface_matrix)
       {
         auto cell_info = std::make_pair<int, int>(cell->level(), cell->index());
         cell2cell_id[color][cell_info] = cell_id;
@@ -810,9 +875,40 @@ namespace PSMF
 
                     neighbor->get_active_or_mg_dof_indices(
                       local_dof_indices_coarse);
+
+                    constraint_coarse_range_host[2 * cell_id]     = 0;
+                    constraint_coarse_range_host[2 * cell_id + 1] = 0;
+
+                    unsigned int begin_pos =
+                      constrained_indices_coarse.size() + 1;
+                    unsigned int n_cons = 0;
+
+                    for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                      {
+                        lexicographic_dof_indices[i] =
+                          local_dof_indices_coarse[lexicographic_inv[i]];
+
+                        auto it = std::find(constrained_indices_coarse.begin(),
+                                            constrained_indices_coarse.end(),
+                                            lexicographic_dof_indices[i]);
+
+                        if (it == constrained_indices_coarse.end())
+                          continue;
+
+                        unsigned int diff =
+                          it - constrained_indices_coarse.begin();
+                        begin_pos = std::min(begin_pos, diff);
+                        n_cons += 1;
+
+                        constraint_coarse_range_host[2 * cell_id] = begin_pos;
+                      }
+                    constraint_coarse_range_host[2 * cell_id + 1] =
+                      constraint_coarse_range_host[2 * cell_id] + n_cons;
+
                     // todo: mpi
-                    memcpy(&l_to_g_coarse_host[cell_id * padding_length],
-                           local_dof_indices_coarse.data(),
+                    memcpy(&l_to_g_coarse_host[cell_id * padding_length *
+                                               n_components],
+                           lexicographic_dof_indices.data(),
                            dofs_per_cell *
                              sizeof(dealii::types::global_dof_index));
 
@@ -938,7 +1034,8 @@ namespace PSMF
                 int cell_id1;
 
                 if (matrix_type == MatrixType::edge_up_matrix ||
-                    matrix_type == MatrixType::edge_down_matrix)
+                    matrix_type == MatrixType::edge_down_matrix ||
+                    matrix_type == MatrixType::interface_matrix)
                   cell_id1 = cell2cell_id_coarse[color][neighbor_info];
                 else
                   cell_id1 = cell2cell_id[color][neighbor_info];
@@ -1015,17 +1112,24 @@ namespace PSMF
   {
     const unsigned int n_cells = data->n_cells[color];
 
+    unsigned int nn_cells = n_cells;
+    if (matrix_type == MatrixType::edge_up_matrix ||
+        matrix_type == MatrixType::edge_down_matrix)
+      nn_cells *= 1 << dim - 1;
+    else if (matrix_type == MatrixType::interface_matrix)
+      nn_cells *= 1 << dim;
+
     // Local-to-global mapping
     alloc_and_copy(&data->local_to_global[color],
                    dealii::ArrayView<const dealii::types::global_dof_index>(
                      local_to_global_host.data(), local_to_global_host.size()),
-                   n_cells * padding_length * n_components);
+                   nn_cells * padding_length * n_components);
 
     // Local-to-global mapping
     alloc_and_copy(&data->l_to_g_coarse[color],
                    dealii::ArrayView<const dealii::types::global_dof_index>(
                      l_to_g_coarse_host.data(), l_to_g_coarse_host.size()),
-                   n_cells * padding_length * n_components);
+                   nn_cells * padding_length * n_components);
 
     // Quadrature points
     if (update_flags & dealii::update_quadrature_points)
@@ -1087,18 +1191,28 @@ namespace PSMF
                        n_cells * dim * dim * padding_length);
       }
 
-    alloc_and_copy(
-      &data->constraint_mask[color],
-      dealii::ArrayView<
-        const dealii::internal::MatrixFreeFunctions::ConstraintKinds>(
-        constraint_mask_host.data(), constraint_mask_host.size()),
-      n_cells * n_components);
+    // alloc_and_copy(
+    //   &data->constraint_mask[color],
+    //   dealii::ArrayView<
+    //     const dealii::internal::MatrixFreeFunctions::ConstraintKinds>(
+    //     constraint_mask_host.data(), constraint_mask_host.size()),
+    //   n_cells * n_components);
 
     alloc_and_copy(&data->constraint_range[color],
                    dealii::ArrayView<const dealii::types::global_dof_index>(
                      constraint_range_host.data(),
                      constraint_range_host.size()),
-                   n_cells * 2);
+                   n_cells * 2 * (1 << dim - 1));
+
+    alloc_and_copy(&data->constraint_coarse_range[color],
+                   dealii::ArrayView<const dealii::types::global_dof_index>(
+                     constraint_coarse_range_host.data(),
+                     constraint_coarse_range_host.size()),
+                   n_cells * 2 * (1 << dim - 1));
+
+    // for (auto c : constraint_coarse_range_host)
+    //   std::cout << c << " ";
+    // std::cout << std::endl;
   }
 
   template <int dim, typename Number>
@@ -1344,9 +1458,9 @@ namespace PSMF
       dealii::Utilities::CUDA::free(JxW_color_ptr);
     JxW.clear();
 
-    for (auto &constraint_mask_color_ptr : constraint_mask)
-      dealii::Utilities::CUDA::free(constraint_mask_color_ptr);
-    constraint_mask.clear();
+    // for (auto &constraint_mask_color_ptr : constraint_mask)
+    //   dealii::Utilities::CUDA::free(constraint_mask_color_ptr);
+    // constraint_mask.clear();
 
     dealii::Utilities::CUDA::free(constrained_dofs);
 
@@ -1494,7 +1608,8 @@ namespace PSMF
       data_copy.face_q_weights = face_q_weights[color];
 
     if (matrix_type == MatrixType::active_matrix ||
-        matrix_type == MatrixType::level_matrix)
+        matrix_type == MatrixType::level_matrix ||
+        matrix_type == MatrixType::interface_matrix)
       {
         data_copy.local_to_global = local_to_global[color];
         data_copy.l_to_g_coarse   = local_to_global[color];
@@ -1523,13 +1638,16 @@ namespace PSMF
     data_copy.use_coloring        = use_coloring;
     data_copy.is_primitive        = is_primitive;
 
-    data_copy.constraint_range = constraint_range[color];
+    data_copy.constraint_range        = constraint_range[color];
+    data_copy.constraint_coarse_range = constraint_coarse_range[color];
 
     data_copy.hanging_nodes_constraint = hanging_nodes_constraint;
     data_copy.hanging_nodes_constraint_indicator =
       hanging_nodes_constraint_indicator;
     data_copy.hanging_nodes_constraint_weights =
       hanging_nodes_constraint_weights;
+
+    data_copy.hanging_nodes_constraint_coarse = hanging_nodes_constraint_coarse;
 
     data_copy.face2cell_id = is_boundary_face ? boundary_face2cell_id[color] :
                                                 inner_face2cell_id[color];
@@ -1753,9 +1871,21 @@ namespace PSMF
       dealii::internal::MatrixFreeFunctions::UnivariateShapeData<Number>,
       2>
       shape_data;
-    for (auto d = 0U; d < 2; ++d)
-      shape_data[d] = shape_info.get_shape_data(d, 0);
+    std::array<
+      dealii::internal::MatrixFreeFunctions::UnivariateShapeData<Number>,
+      2>
+      sub_shape_data0;
+    std::array<
+      dealii::internal::MatrixFreeFunctions::UnivariateShapeData<Number>,
+      2>
+      sub_shape_data1;
 
+    for (auto d = 0U; d < 2; ++d)
+      {
+        shape_data[d]      = shape_info.get_shape_data(d, 0);
+        sub_shape_data0[d] = sub_shape_info0.get_shape_data(d, 0);
+        sub_shape_data1[d] = sub_shape_info1.get_shape_data(d, 0);
+      }
     // todo sub shape info for RT
 
     unsigned int size_shape_values = n_dofs_1d * n_q_points_1d * sizeof(Number);
@@ -1794,31 +1924,42 @@ namespace PSMF
     // // todo
     // my_id = 0;
 
+    std::vector<Number> empty(n_shape_values * 6, 0.0);
+
+    // todo: should init all constant memory to avoid nan.
+
     cudaError_t cuda_error =
-      cudaMemcpyToSymbol(get_cell_shape_values<Number>(
-                           0), // todo check (0) or (my_id)
-                         shape_data[0].shape_values.data(),
-                         size_shape_values,
+      cudaMemcpyToSymbol(get_cell_shape_values<Number>(0),
+                         empty.data(),
+                         size_shape_values * 6,
                          my_id * data_array_size * sizeof(Number),
                          cudaMemcpyHostToDevice);
     AssertCuda(cuda_error);
 
     cuda_error =
-      cudaMemcpyToSymbol(get_cell_shape_values<Number>(0),
-                         sub_shape_info0.data.front().shape_values.data(),
-                         size_shape_values,
-                         (my_id * data_array_size + n_shape_values) *
-                           sizeof(Number),
+      cudaMemcpyToSymbol(get_cell_shape_values<Number>(
+                           0), // todo check (0) or (my_id)
+                         shape_data[0].shape_values.data(),
+                         shape_data[0].shape_values.size() * sizeof(Number),
+                         my_id * data_array_size * sizeof(Number),
                          cudaMemcpyHostToDevice);
     AssertCuda(cuda_error);
 
-    cuda_error =
-      cudaMemcpyToSymbol(get_cell_shape_values<Number>(0),
-                         sub_shape_info1.data.front().shape_values.data(),
-                         size_shape_values,
-                         (my_id * data_array_size + n_shape_values * 2) *
-                           sizeof(Number),
-                         cudaMemcpyHostToDevice);
+    cuda_error = cudaMemcpyToSymbol(get_cell_shape_values<Number>(0),
+                                    sub_shape_data0[0].shape_values.data(),
+                                    sub_shape_data0[0].shape_values.size() *
+                                      sizeof(Number),
+                                    (my_id * data_array_size + n_shape_values) *
+                                      sizeof(Number),
+                                    cudaMemcpyHostToDevice);
+    AssertCuda(cuda_error);
+
+    cuda_error = cudaMemcpyToSymbol(
+      get_cell_shape_values<Number>(0),
+      sub_shape_data1[0].shape_values.data(),
+      sub_shape_data1[0].shape_values.size() * sizeof(Number),
+      (my_id * data_array_size + n_shape_values * 2) * sizeof(Number),
+      cudaMemcpyHostToDevice);
     AssertCuda(cuda_error);
 
     if (!is_primitive)
@@ -1826,10 +1967,26 @@ namespace PSMF
         cuda_error =
           cudaMemcpyToSymbol(get_cell_shape_values<Number>(0),
                              shape_data[1].shape_values.data(),
-                             size_shape_values,
+                             shape_data[1].shape_values.size() * sizeof(Number),
                              (my_id * data_array_size + n_shape_values * 3) *
                                sizeof(Number),
                              cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
+
+        cuda_error = cudaMemcpyToSymbol(
+          get_cell_shape_values<Number>(0),
+          sub_shape_data0[1].shape_values.data(),
+          sub_shape_data0[1].shape_values.size() * sizeof(Number),
+          (my_id * data_array_size + n_shape_values * 4) * sizeof(Number),
+          cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
+
+        cuda_error = cudaMemcpyToSymbol(
+          get_cell_shape_values<Number>(0),
+          sub_shape_data1[1].shape_values.data(),
+          sub_shape_data1[1].shape_values.size() * sizeof(Number),
+          (my_id * data_array_size + n_shape_values * 5) * sizeof(Number),
+          cudaMemcpyHostToDevice);
         AssertCuda(cuda_error);
       }
 
@@ -1837,24 +1994,33 @@ namespace PSMF
       {
         cuda_error =
           cudaMemcpyToSymbol(get_cell_shape_gradients<Number>(0),
-                             shape_info.data.front().shape_gradients.data(),
-                             size_shape_values,
+                             empty.data(),
+                             size_shape_values * 6,
+                             my_id * data_array_size * sizeof(Number),
+                             cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
+
+        cuda_error =
+          cudaMemcpyToSymbol(get_cell_shape_gradients<Number>(0),
+                             shape_data[0].shape_gradients.data(),
+                             shape_data[0].shape_gradients.size() *
+                               sizeof(Number),
                              my_id * data_array_size * sizeof(Number),
                              cudaMemcpyHostToDevice);
         AssertCuda(cuda_error);
 
         cuda_error = cudaMemcpyToSymbol(
           get_cell_shape_gradients<Number>(0),
-          sub_shape_info0.data.front().shape_gradients.data(),
-          size_shape_values,
+          sub_shape_data0[0].shape_gradients.data(),
+          sub_shape_data0[0].shape_gradients.size() * sizeof(Number),
           (my_id * data_array_size + n_shape_values) * sizeof(Number),
           cudaMemcpyHostToDevice);
         AssertCuda(cuda_error);
 
         cuda_error = cudaMemcpyToSymbol(
           get_cell_shape_gradients<Number>(0),
-          sub_shape_info1.data.front().shape_gradients.data(),
-          size_shape_values,
+          sub_shape_data1[0].shape_gradients.data(),
+          sub_shape_data1[0].shape_gradients.size() * sizeof(Number),
           (my_id * data_array_size + n_shape_values * 2) * sizeof(Number),
           cudaMemcpyHostToDevice);
         AssertCuda(cuda_error);
@@ -1864,8 +2030,24 @@ namespace PSMF
             cuda_error = cudaMemcpyToSymbol(
               get_cell_shape_gradients<Number>(0),
               shape_data[1].shape_gradients.data(),
-              size_shape_values,
+              shape_data[1].shape_gradients.size() * sizeof(Number),
               (my_id * data_array_size + n_shape_values * 3) * sizeof(Number),
+              cudaMemcpyHostToDevice);
+            AssertCuda(cuda_error);
+
+            cuda_error = cudaMemcpyToSymbol(
+              get_cell_shape_gradients<Number>(0),
+              sub_shape_data0[1].shape_gradients.data(),
+              sub_shape_data0[1].shape_gradients.size() * sizeof(Number),
+              (my_id * data_array_size + n_shape_values * 4) * sizeof(Number),
+              cudaMemcpyHostToDevice);
+            AssertCuda(cuda_error);
+
+            cuda_error = cudaMemcpyToSymbol(
+              get_cell_shape_gradients<Number>(0),
+              sub_shape_data1[1].shape_gradients.data(),
+              sub_shape_data1[1].shape_gradients.size() * sizeof(Number),
+              (my_id * data_array_size + n_shape_values * 5) * sizeof(Number),
               cudaMemcpyHostToDevice);
             AssertCuda(cuda_error);
           }
@@ -1898,8 +2080,8 @@ namespace PSMF
     // todo: use less constant memory
     if (update_flags_inner_faces & dealii::update_values)
       {
-        std::vector<Number> face_shape_value;
-        face_shape_value.resize(2 * n_shape_values);
+        std::vector<Number> face_shape_value(2 * n_shape_values, 0.0);
+        // face_shape_value.resize(2 * n_shape_values);
         // point 0
         auto shape_value_on_face0 =
           shape_data[!is_primitive].shape_data_on_face[0];
@@ -1912,6 +2094,13 @@ namespace PSMF
           face_shape_value[(i + n_q_points_1d) * n_q_points_1d] =
             shape_value_on_face1[i];
 
+        cuda_error =
+          cudaMemcpyToSymbol(get_face_shape_values<Number>(0),
+                             empty.data(),
+                             size_shape_values * 6,
+                             my_id * data_array_size * sizeof(Number),
+                             cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
 
         cuda_error =
           cudaMemcpyToSymbol(get_face_shape_values<Number>(0),
@@ -1924,8 +2113,8 @@ namespace PSMF
 
     if (update_flags_inner_faces & dealii::update_gradients)
       {
-        std::vector<Number> face_shape_gradients;
-        face_shape_gradients.resize(2 * n_shape_values);
+        std::vector<Number> face_shape_gradients(2 * n_shape_values, 0.0);
+        // face_shape_gradients.resize(2 * n_shape_values);
         // point 0
         auto shape_gradients_on_face0 =
           shape_data[!is_primitive].shape_data_on_face[0];
@@ -1938,6 +2127,14 @@ namespace PSMF
         for (unsigned int i = 0; i < n_q_points_1d - 1; ++i)
           face_shape_gradients[(i + n_q_points_1d) * n_q_points_1d] =
             shape_gradients_on_face1[i + n_q_points_1d - !is_primitive];
+
+        cuda_error =
+          cudaMemcpyToSymbol(get_face_shape_gradients<Number>(0),
+                             empty.data(),
+                             size_shape_values * 6,
+                             my_id * data_array_size * sizeof(Number),
+                             cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
 
         cuda_error =
           cudaMemcpyToSymbol(get_face_shape_gradients<Number>(0),
@@ -2137,45 +2334,64 @@ namespace PSMF
       row_start[i] = row_start[i - 1] + n_cells[i - 1] * get_padding_length();
 
 
-    // hanging node constraints
-    std::vector<dealii::types::global_dof_index> h_c;
-    std::vector<int>                             h_c_i;
-    std::vector<Number>                          h_c_w;
-
-    auto lines = constraints.get_lines();
-    for (auto &l : lines)
-      if (l.entries.size() > 0)
-        for (auto e : l.entries)
-          {
-            h_c.push_back(l.index);
-            h_c_i.push_back(e.first);
-            h_c_w.push_back(e.second);
-          }
-      else
-        {
-          h_c.push_back(l.index);
-          h_c_i.push_back(0);
-          h_c_w.push_back(0);
-        }
-
-    alloc_and_copy(&hanging_nodes_constraint,
-                   dealii::ArrayView<const dealii::types::global_dof_index>(
-                     h_c.data(), h_c.size()),
-                   h_c.size());
-
-    alloc_and_copy(&hanging_nodes_constraint_indicator,
-                   dealii::ArrayView<const int>(h_c_i.data(), h_c_i.size()),
-                   h_c_i.size());
-
-    alloc_and_copy(&hanging_nodes_constraint_weights,
-                   dealii::ArrayView<const Number>(h_c_w.data(), h_c_w.size()),
-                   h_c_w.size());
-
     // Constrained indices
     n_constrained_dofs = constraints.n_constraints();
 
     if (n_constrained_dofs != 0)
       {
+        // hanging node constraints
+        std::vector<dealii::types::global_dof_index> h_c;
+        std::vector<int>                             h_c_i;
+        std::vector<Number>                          h_c_w;
+
+        std::vector<dealii::types::global_dof_index> h_c_coarse;
+
+
+        auto lines = constraints.get_lines();
+        for (auto &l : lines)
+          if (l.entries.size() > 0)
+            for (auto e : l.entries)
+              {
+                if (e.second < -100)
+                  h_c_coarse.push_back(e.first);
+                else
+                  {
+                    h_c.push_back(l.index);
+                    h_c_i.push_back(e.first);
+                    h_c_w.push_back(e.second);
+                  }
+              }
+          else
+            {
+              h_c.push_back(l.index);
+              h_c_i.push_back(0);
+              h_c_w.push_back(0);
+            }
+
+        // for (auto h : h_c_coarse)
+        //   std::cout << h << " ";
+        // std::cout << std::endl << std::endl;
+
+        alloc_and_copy(&hanging_nodes_constraint,
+                       dealii::ArrayView<const dealii::types::global_dof_index>(
+                         h_c.data(), h_c.size()),
+                       h_c.size());
+
+        alloc_and_copy(&hanging_nodes_constraint_indicator,
+                       dealii::ArrayView<const int>(h_c_i.data(), h_c_i.size()),
+                       h_c_i.size());
+
+        alloc_and_copy(&hanging_nodes_constraint_weights,
+                       dealii::ArrayView<const Number>(h_c_w.data(),
+                                                       h_c_w.size()),
+                       h_c_w.size());
+
+
+        alloc_and_copy(&hanging_nodes_constraint_coarse,
+                       dealii::ArrayView<const dealii::types::global_dof_index>(
+                         h_c_coarse.data(), h_c_coarse.size()),
+                       h_c_coarse.size());
+
         const unsigned int constraint_n_blocks =
           std::ceil(static_cast<double>(n_constrained_dofs) /
                     static_cast<double>(block_size));

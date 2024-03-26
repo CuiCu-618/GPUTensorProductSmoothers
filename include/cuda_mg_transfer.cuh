@@ -357,7 +357,8 @@ namespace PSMF
      * Internal function to fill copy_indice.
      */
     void
-    fill_copy_indices(const DoFHandler<dim> &mg_dof);
+    fill_copy_indices(const DoFHandler<dim> &mg_dof_v,
+                      const DoFHandler<dim> &mg_dof_p);
 
     /**
      * Internal function to transfer data.
@@ -384,40 +385,6 @@ namespace PSMF
       Number                                                         val) const;
   };
 
-  template <typename Number, typename Number2>
-  __global__ void
-  copy_with_indices_kernel(Number             *dst,
-                           Number2            *src,
-                           const unsigned int *dst_indices,
-                           const unsigned int *src_indices,
-                           int                 n)
-  {
-    const int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i < n)
-      {
-        dst[dst_indices[i]] = src[src_indices[i]];
-      }
-  }
-
-  template <typename Number, typename Number2>
-  void
-  copy_with_indices(
-    LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>        &dst,
-    const LinearAlgebra::distributed::Vector<Number2, MemorySpace::CUDA> &src,
-    const CudaVector<unsigned int> &dst_indices,
-    const CudaVector<unsigned int> &src_indices)
-  {
-    const int  n         = dst_indices.size();
-    const int  blocksize = 256;
-    const dim3 block_dim = dim3(blocksize);
-    const dim3 grid_dim  = dim3(1 + (n - 1) / blocksize);
-    copy_with_indices_kernel<<<grid_dim, block_dim>>>(dst.get_values(),
-                                                      src.get_values(),
-                                                      dst_indices.get_values(),
-                                                      src_indices.get_values(),
-                                                      n);
-    AssertCudaKernel();
-  }
 
   namespace internal
   { // Sets up most of the internal data structures of the

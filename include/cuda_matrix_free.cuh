@@ -50,6 +50,7 @@ namespace PSMF
     level_matrix,
     edge_up_matrix,
     edge_down_matrix,
+    interface_matrix,
   };
 
   /**
@@ -358,6 +359,7 @@ namespace PSMF
        * Range of cell constrains.
        */
       dealii::types::global_dof_index *constraint_range;
+      dealii::types::global_dof_index *constraint_coarse_range;
 
       /**
        * If true, use graph coloring has been used and we can simply add into
@@ -369,6 +371,8 @@ namespace PSMF
        * Pointer to the hanging nodes constrained degrees of freedom.
        */
       dealii::types::global_dof_index *hanging_nodes_constraint;
+
+      dealii::types::global_dof_index *hanging_nodes_constraint_coarse;
 
       /**
        * Pointer to the hanging nodes constraint indicator.
@@ -587,6 +591,7 @@ namespace PSMF
     std::size_t
     memory_consumption() const;
 
+    MatrixType matrix_type;
 
   private:
     /**
@@ -836,6 +841,8 @@ namespace PSMF
      */
     dealii::types::global_dof_index *hanging_nodes_constraint;
 
+    dealii::types::global_dof_index *hanging_nodes_constraint_coarse;
+
     /**
      * Pointer to the hanging nodes constraint indicator.
      */
@@ -856,6 +863,7 @@ namespace PSMF
      * Range of cell constrains.
      */
     std::vector<dealii::types::global_dof_index *> constraint_range;
+    std::vector<dealii::types::global_dof_index *> constraint_coarse_range;
 
     /**
      * Grid dimensions associated to the different colors. The grid dimensions
@@ -948,7 +956,6 @@ namespace PSMF
      */
     const dealii::DoFHandler<dim> *dof_handler;
 
-    MatrixType matrix_type;
     /**
      * Colored graphed of locally owned active cells.
      */

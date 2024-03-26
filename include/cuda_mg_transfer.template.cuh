@@ -484,7 +484,7 @@ namespace PSMF
              "for multigrid transfers. You will need to call this function, "
              "probably close to where you already call distribute_dofs()."));
 
-    fill_copy_indices(mg_dof_velocity);
+    fill_copy_indices(mg_dof_velocity, mg_dof_pressure);
 
     const unsigned int n_levels =
       mg_dof_velocity.get_triangulation().n_global_levels();
@@ -1083,11 +1083,16 @@ namespace PSMF
 
   template <int dim, typename Number>
   void
-  MGTransferCUDA<dim, Number>::fill_copy_indices(const DoFHandler<dim> &mg_dof)
+  MGTransferCUDA<dim, Number>::fill_copy_indices(
+    const DoFHandler<dim> &mg_dof_v,
+    const DoFHandler<dim> &mg_dof_p)
   {
     std::vector<
       std::vector<std::pair<types::global_dof_index, types::global_dof_index>>>
       my_copy_indices;
+    std::vector<
+      std::vector<std::pair<types::global_dof_index, types::global_dof_index>>>
+      my_copy_indices_p;
     std::vector<
       std::vector<std::pair<types::global_dof_index, types::global_dof_index>>>
       my_copy_indices_global_mine;
@@ -1095,13 +1100,25 @@ namespace PSMF
       std::vector<std::pair<types::global_dof_index, types::global_dof_index>>>
       my_copy_indices_level_mine;
 
-    dealii::internal::MGTransfer::fill_copy_indices(mg_dof,
+    dealii::internal::MGTransfer::fill_copy_indices(mg_dof_v,
                                                     mg_constrained_dofs,
                                                     my_copy_indices,
                                                     my_copy_indices_global_mine,
                                                     my_copy_indices_level_mine);
 
-    const unsigned int nlevels = mg_dof.get_triangulation().n_global_levels();
+    std::set<types::boundary_id> dirichlet_boundary;
+    dirichlet_boundary.insert(0);
+    MGConstrainedDoFs mgc;
+    mgc.clear();
+    mgc.initialize(mg_dof_p);
+    // mgc.make_zero_boundary_constraints(mg_dof_p, dirichlet_boundary);
+    dealii::internal::MGTransfer::fill_copy_indices(mg_dof_p,
+                                                    &mgc,
+                                                    my_copy_indices_p,
+                                                    my_copy_indices_global_mine,
+                                                    my_copy_indices_level_mine);
+
+    const unsigned int nlevels = mg_dof_v.get_triangulation().n_global_levels();
 
     for (unsigned int level = 0; level < nlevels; ++level)
       {
@@ -1113,9 +1130,11 @@ namespace PSMF
     copy_indices.resize(nlevels);
     for (unsigned int i = 0; i < nlevels; ++i)
       {
-        const unsigned int nmappings = my_copy_indices[i].size();
-        std::vector<int>   global_indices(nmappings);
-        std::vector<int>   level_indices(nmappings);
+        const unsigned int nmappings   = my_copy_indices[i].size();
+        const unsigned int nmappings_p = my_copy_indices_p[i].size();
+
+        std::vector<int> global_indices(nmappings + nmappings_p);
+        std::vector<int> level_indices(nmappings + nmappings_p);
 
         for (unsigned int j = 0; j < nmappings; ++j)
           {
@@ -1123,17 +1142,25 @@ namespace PSMF
             level_indices[j]  = my_copy_indices[i][j].second;
           }
 
-        // copy_to_device(copy_indices[i].global_indices, global_indices);
-        // copy_to_device(copy_indices[i].level_indices, level_indices);
+        for (unsigned int j = 0; j < nmappings_p; ++j)
+          {
+            global_indices[j + nmappings] =
+              my_copy_indices_p[i][j].first + mg_dof_v.n_dofs();
+            level_indices[j + nmappings] =
+              my_copy_indices_p[i][j].second + mg_dof_v.n_dofs(i);
+          }
+
+        copy_to_device(copy_indices[i].global_indices, global_indices);
+        copy_to_device(copy_indices[i].level_indices, level_indices);
       }
 
     // check if we can run a plain copy operation between the global DoFs and
     // the finest level.
     perform_plain_copy =
       (my_copy_indices.back().size() ==
-       mg_dof.locally_owned_dofs().n_elements()) &&
-      (mg_dof.locally_owned_dofs().n_elements() ==
-       mg_dof.locally_owned_mg_dofs(nlevels - 1).n_elements());
+       mg_dof_v.locally_owned_dofs().n_elements()) &&
+      (mg_dof_v.locally_owned_dofs().n_elements() ==
+       mg_dof_v.locally_owned_mg_dofs(nlevels - 1).n_elements());
 
     if (perform_plain_copy)
       {
@@ -1151,7 +1178,7 @@ namespace PSMF
               break;
             }
       }
-    perform_plain_copy = true;
+    // perform_plain_copy = true;
   }
 } // namespace PSMF
 

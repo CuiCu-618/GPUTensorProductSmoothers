@@ -592,6 +592,9 @@ namespace PSMF
     const Number                          *hanging_nodes_constraint_weights;
     unsigned int                          *constraint_range;
 
+    unsigned int                          *constraint_coarse_range;
+    const dealii::types::global_dof_index *hanging_nodes_constraint_coarse;
+
     const unsigned int mf_object_id;
     const bool         use_coloring;
     const bool         is_primitive;
@@ -641,9 +644,8 @@ namespace PSMF
       gradients[i] = shdata->gradients[i];
 
 
-    const unsigned int idx = compute_index<dim, n_q_points_1d>();
-    const unsigned int stride =
-      is_primitive ? tensor_dofs_per_cell : rt_tensor_dofs_per_cell;
+    const unsigned int idx    = compute_index<dim, n_q_points_1d>();
+    const unsigned int stride = rt_tensor_dofs_per_cell;
     for (unsigned int c = 0; c < n_components_; ++c)
       {
         values[idx + c * stride] = 0.;
@@ -712,6 +714,15 @@ namespace PSMF
                   }
             }
         }
+
+    // if (blockIdx.x == 0)
+    //   printf("Read  %2d %d: %f, %f\n",
+    //          idx,
+    //          is_primitive,
+    //          values[idx],
+    //          values[idx + rt_tensor_dofs_per_cell]);
+
+
     __syncthreads();
   }
 
@@ -760,6 +771,8 @@ namespace PSMF
 
           if (is_active_idx)
             {
+              bool is_constrained = false;
+
               const dealii::types::global_dof_index destination_idx =
                 local_to_global[active_idx + c * offset];
 
@@ -770,14 +783,26 @@ namespace PSMF
                     atomicAdd(&dst[hanging_nodes_constraint_indicator[it]],
                               values[idx + c * stride] *
                                 hanging_nodes_constraint_weights[it]);
+
+                    is_constrained = true;
                   }
 
-              if (use_coloring)
-                dst[destination_idx] += values[idx + c * stride];
-              else
-                atomicAdd(&dst[destination_idx], values[idx + c * stride]);
+              if (!is_constrained)
+                {
+                  if (use_coloring)
+                    dst[destination_idx] += values[idx + c * stride];
+                  else
+                    atomicAdd(&dst[destination_idx], values[idx + c * stride]);
+                }
             }
         }
+
+    // if (blockIdx.x == 0)
+    //   printf("Store %2d %d: %f, %f\n",
+    //          idx,
+    //          is_primitive,
+    //          values[idx],
+    //          values[idx + rt_tensor_dofs_per_cell]);
 
     // if (blockIdx.x == 0)
     //   printf("0-%d: %f, %f\n", idx, values[idx], values[idx + stride]);
@@ -899,6 +924,17 @@ namespace PSMF
                                                                gradients);
             __syncthreads();
           }
+
+        // auto idx   = compute_index<dim, n_q_points_1d>();
+        // auto shape = get_cell_shape_values<Number>(mf_object_id);
+
+        // if (blockIdx.x == 0)
+        //   printf("Int   %2d %d: %f, %f, %f\n",
+        //          idx,
+        //          is_primitive,
+        //          values[idx],
+        //          values[idx + rt_tensor_dofs_per_cell],
+        //          shape[idx]);
       }
     else
       {
@@ -1037,6 +1073,13 @@ namespace PSMF
           }
       }
     __syncthreads();
+
+    // if (blockIdx.x == 0)
+    //   printf("Sub V %2d %d: %f, %f\n",
+    //          q_point,
+    //          is_primitive,
+    //          values[q_point],
+    //          values[q_point + rt_tensor_dofs_per_cell]);
   }
 
 
@@ -1182,6 +1225,14 @@ namespace PSMF
     for (unsigned int d = 1; d < dim; ++d)
       div += gradients[d][q_point + d * n_q_points] * inv_det[q_point];
 
+    // if (blockIdx.x == 0)
+    //   printf("Get D %2d %d: %f, %f, %f\n",
+    //          q_point,
+    //          is_primitive,
+    //          gradients[0][q_point],
+    //          gradients[1][q_point],
+    //          div);
+
     return div;
   }
 
@@ -1251,6 +1302,7 @@ namespace PSMF
     , hanging_nodes_constraint_indicator(
         data.hanging_nodes_constraint_indicator)
     , hanging_nodes_constraint_weights(data.hanging_nodes_constraint_weights)
+    , hanging_nodes_constraint_coarse(data.hanging_nodes_constraint_coarse)
     , use_coloring(data.use_coloring)
     , is_interior_face(is_interior_face)
     , is_primitive(data.is_primitive)
@@ -1261,6 +1313,8 @@ namespace PSMF
     cell_id = data.face2cell_id[face_no];
 
     constraint_range = data.constraint_range + cell_id * 2;
+    constraint_coarse_range =
+      data.constraint_coarse_range + data.face2cell_id[face_id] * 2;
 
     local_to_global =
       data.local_to_global + padding_length * n_components_ * cell_id;
@@ -1276,27 +1330,39 @@ namespace PSMF
     face_number    = data.face_number[face_no];
     subface_number = data.subface_number[face_no];
 
-    ignore_read  = false;
-    ignore_write = false;
-
-    if (matrix_type == MatrixType::level_matrix)
+    if (matrix_type == MatrixType::active_matrix)
+      {
+        ignore_read  = false;
+        ignore_write = false;
+      }
+    else if (matrix_type == MatrixType::level_matrix)
       {
         ignore_read  = !is_interior_face && subface_number != -1;
         ignore_write = ignore_read;
       }
     else if (matrix_type == MatrixType::edge_down_matrix)
       {
+        constraint_range =
+          data.constraint_range + data.face2cell_id[face_id] * 2;
+
         ignore_read  = !is_interior_face || subface_number == -1;
         ignore_write = is_interior_face || subface_number == -1;
       }
     else if (matrix_type == MatrixType::edge_up_matrix)
       {
+        constraint_range =
+          data.constraint_range + data.face2cell_id[face_id] * 2;
+
         ignore_read  = is_interior_face || subface_number == -1;
         ignore_write = !is_interior_face || subface_number == -1;
       }
-
+    else if (matrix_type == MatrixType::interface_matrix)
+      {
+        ignore_read  = !is_interior_face && subface_number != -1;
+        ignore_write = !is_interior_face && subface_number != -1;
+      }
     const unsigned int stride =
-      is_primitive ? tensor_dofs_per_cell : rt_tensor_dofs_per_cell;
+      is_primitive ? rt_tensor_dofs_per_cell : rt_tensor_dofs_per_cell;
     const unsigned int shift = is_interior_face ? 0 : n_components_ * stride;
 
     values = &shdata->values[shift];
@@ -1357,15 +1423,20 @@ namespace PSMF
                 {
                   values[idx + c * stride] = __ldg(&src[src_idx]);
 
-                  Number tmp = 0;
-                  for (auto it = constraint_range[0]; it < constraint_range[1];
-                       ++it)
-                    if (src_idx == hanging_nodes_constraint[it])
-                      {
-                        tmp += src[hanging_nodes_constraint_indicator[it]] *
-                               hanging_nodes_constraint_weights[it];
-                        values[idx + c * stride] = tmp;
-                      }
+                  if (matrix_type == MatrixType::active_matrix ||
+                      matrix_type == MatrixType::level_matrix)
+                    {
+                      Number tmp = 0;
+                      for (auto it = constraint_range[0];
+                           it < constraint_range[1];
+                           ++it)
+                        if (src_idx == hanging_nodes_constraint[it])
+                          {
+                            tmp += src[hanging_nodes_constraint_indicator[it]] *
+                                   hanging_nodes_constraint_weights[it];
+                            values[idx + c * stride] = tmp;
+                          }
+                    }
                 }
             }
         }
@@ -1400,7 +1471,7 @@ namespace PSMF
       for (unsigned int c = 0; c < n_components_; ++c)
         {
           const dealii::types::global_dof_index destination_idx =
-            local_to_global[idx + c * offset];
+            l_to_g_coarse[idx + c * offset];
 
           if (use_coloring && !ignore_write)
             dst[destination_idx] += values[idx + c * stride];
@@ -1419,21 +1490,31 @@ namespace PSMF
           if (is_active_idx)
             {
               const dealii::types::global_dof_index destination_idx =
-                local_to_global[active_idx + c * offset];
+                l_to_g_coarse[active_idx + c * offset];
 
-              for (auto it = constraint_range[0]; it < constraint_range[1];
-                   ++it)
-                if (destination_idx == hanging_nodes_constraint[it])
-                  {
-                    atomicAdd(&dst[hanging_nodes_constraint_indicator[it]],
-                              values[idx + c * stride] *
-                                hanging_nodes_constraint_weights[it]);
-                  }
+              bool is_constrained = false;
 
-              if (use_coloring && !ignore_write)
-                dst[destination_idx] += values[idx + c * stride];
-              else if (!use_coloring && !ignore_write)
-                atomicAdd(&dst[destination_idx], values[idx + c * stride]);
+              if (matrix_type == MatrixType::active_matrix ||
+                  matrix_type == MatrixType::level_matrix)
+                for (auto it = constraint_range[0]; it < constraint_range[1];
+                     ++it)
+                  if (!ignore_write &&
+                      destination_idx == hanging_nodes_constraint[it])
+                    {
+                      atomicAdd(&dst[hanging_nodes_constraint_indicator[it]],
+                                values[idx + c * stride] *
+                                  hanging_nodes_constraint_weights[it]);
+
+                      is_constrained = true;
+                    }
+
+              if (!is_constrained)
+                {
+                  if (use_coloring && !ignore_write)
+                    dst[destination_idx] += values[idx + c * stride];
+                  else if (!use_coloring && !ignore_write)
+                    atomicAdd(&dst[destination_idx], values[idx + c * stride]);
+                }
             }
         }
 
@@ -1565,6 +1646,7 @@ namespace PSMF
 
         for (unsigned int c = 0; c < n_components_; ++c)
           val[c] = values[q_point + c * rt_tensor_dofs_per_cell] *
+                   jacobian[face_padding_length * n_cells * (dim * c + c)] *
                    inv_det[q_point_face];
       }
 
@@ -1626,7 +1708,7 @@ namespace PSMF
     else
       {
         const Number *jacobian = &jac[q_point_face];
-        const Number  fac      = weights[q_point_face];
+        const Number  fac      = JxW[q_point_face] * inv_det[q_point_face];
 
         for (unsigned int c = 0; c < n_components_; ++c)
           {
@@ -1705,11 +1787,12 @@ namespace PSMF
         // cartesian mesh only
         const Number *jacobian = &jac[q_point_face];
 
-        // (J?) * grad_quad * J^-1 * det(J^-1)
+        // J * grad_quad * J^-1 * det(J^-1)
         for (unsigned int c = 0; c < n_components_; ++c)
           for (unsigned int d = 0; d < dim; ++d)
             {
               grad[d][c] =
+                jacobian[face_padding_length * n_cells * (dim * c + c)] *
                 inv_jacobian[face_padding_length * n_cells * (dim * d + d)] *
                 gradients[d][q_point + c * rt_tensor_dofs_per_cell] *
                 inv_det[q_point_face];
@@ -1753,8 +1836,7 @@ namespace PSMF
       {
         // Cartesian cell
         const Number *jacobian = &jac[q_point_face];
-        const Number  fac =
-          weights[q_point_face] * (dim == 2 ? 1. : inv_jacobian[0]);
+        const Number  fac      = JxW[q_point_face] * inv_det[q_point_face];
 
         for (unsigned int c = 0; c < n_components_; ++c)
           for (unsigned int d = 0; d < dim; ++d)
@@ -1848,10 +1930,13 @@ namespace PSMF
         normal_x_jacobian[d_1][0] = coe * tmp;
       }
 
+    const Number fac =
+      JxW[q_point_face] * inv_det[q_point_face] * (is_interior_face ? 1. : -1.);
+
     for (unsigned int c = 0; c < n_components_; ++c)
       for (unsigned int d = 0; d < dim; ++d)
         gradients[d][q_point + c * rt_tensor_dofs_per_cell] =
-          grad_in[c] * normal_x_jacobian[d][0] * JxW[q_point_face];
+          grad_in[c] * normal_vector[n_cells * face_padding_length * d] * fac;
 
     // if (blockIdx.x == 1)
     //   printf("grad: 0-%d: %f, %f, %f, %f\n", q_point_face,

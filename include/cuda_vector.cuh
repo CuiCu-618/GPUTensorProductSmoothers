@@ -117,6 +117,63 @@ namespace PSMF
     AssertCudaKernel();
   }
 
+
+  template <typename Number, typename Number2>
+  __global__ void
+  copy_with_indices_kernel(Number             *dst,
+                           Number2            *src,
+                           const unsigned int *dst_indices,
+                           const unsigned int *src_indices,
+                           int                 n)
+  {
+    const int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n)
+      {
+        dst[dst_indices[i]] = src[src_indices[i]];
+      }
+    __syncthreads();
+  }
+
+  template <typename Number, typename Number2>
+  void
+  copy_with_indices(
+    LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>        &dst,
+    const LinearAlgebra::distributed::Vector<Number2, MemorySpace::CUDA> &src,
+    const CudaVector<unsigned int> &dst_indices,
+    const CudaVector<unsigned int> &src_indices)
+  {
+    const int  n         = dst_indices.size();
+    const int  blocksize = 256;
+    const dim3 block_dim = dim3(blocksize);
+    const dim3 grid_dim  = dim3(1 + (n - 1) / blocksize);
+    copy_with_indices_kernel<<<grid_dim, block_dim>>>(dst.get_values(),
+                                                      src.get_values(),
+                                                      dst_indices.get_values(),
+                                                      src_indices.get_values(),
+                                                      n);
+    AssertCudaKernel();
+  }
+
+  template <typename Number, typename Number2>
+  void
+  copy_with_indices(
+    LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>        &dst,
+    const LinearAlgebra::distributed::Vector<Number2, MemorySpace::CUDA> &src,
+    const unsigned int *dst_indices,
+    const unsigned int *src_indices,
+    const unsigned int  n)
+  {
+    if (n == 0)
+      return;
+
+    const int  blocksize = 256;
+    const dim3 block_dim = dim3(blocksize);
+    const dim3 grid_dim  = dim3(1 + (n - 1) / blocksize);
+    copy_with_indices_kernel<<<grid_dim, block_dim>>>(
+      dst.get_values(), src.get_values(), dst_indices, src_indices, n);
+    AssertCudaKernel();
+  }
+
 } // namespace PSMF
 
 
