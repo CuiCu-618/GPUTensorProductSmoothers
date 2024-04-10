@@ -44,6 +44,8 @@
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -222,18 +224,22 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   system_rhs_dp = 1.;
   solution_dp   = 0.;
 
+  std::srand(0);
+  
+  LinearAlgebra::ReadWriteVector<double> rw_vector_dp(dof_handler.n_dofs());
   {
-    LinearAlgebra::ReadWriteVector<double> rw_vector(dof_handler.n_dofs());
-    for (unsigned int i = 0; i < rw_vector.size(); ++i)
-      rw_vector[i] = (i & 63) * 0.1;
-    system_rhs_dp.import(rw_vector, VectorOperation::insert);
+    for (unsigned int i = 0; i < rw_vector_dp.size(); ++i)
+      rw_vector_dp[i] = ((double)std::rand()) / RAND_MAX;
+    system_rhs_dp.import(rw_vector_dp, VectorOperation::insert);
   }
 
   Timer  time;
   double best_time = 1e10;
 
-  double max_cycles = 0;
-  double min_cycles = 0;
+#if TIMING != 0
+  float max_cycles = 0;
+  float min_cycles = 0;
+#endif
 
   LinearAlgebra::distributed::Vector<double, MemorySpace::Host> solution_host(
     solution_dp.size());
@@ -267,9 +273,9 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
 
-  std::cout << min_cycles << " " << max_cycles << std::endl;
-  std::cout << std::fixed << std::setprecision(10) << solution_dp.l2_norm()
-            << std::endl;
+    // std::cout << min_cycles << " " << max_cycles << std::endl;
+    // std::cout << std::fixed << std::setprecision(10) << solution_dp.l2_norm()
+    //           << std::endl;
 
 #if TIMING != 0
   for (unsigned int i = 0; i < n_patches; ++i)
@@ -279,6 +285,7 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
 
   // solution_dp.print(std::cout);
 
+  info_table[0].add_value("dofs", dof_handler.n_dofs());
   info_table[0].add_value("Name", std::string(LaplaceToString(kernel)) + " DP");
   info_table[0].add_value("Time[s]", best_time);
   info_table[0].add_value("Perf[Dof/s]", n_dofs / best_time);
@@ -295,7 +302,7 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   {
     LinearAlgebra::ReadWriteVector<float> rw_vector(dof_handler.n_dofs());
     for (unsigned int i = 0; i < rw_vector.size(); ++i)
-      rw_vector[i] = (i & 63) * 0.1;
+      rw_vector[i] = rw_vector_dp[i];
     system_rhs_sp.import(rw_vector, VectorOperation::insert);
   }
 
@@ -308,8 +315,10 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
     solution_hosts.import(rw_vector, VectorOperation::insert);
   };
 
+#if TIMING != 0
   float max_cycless = 0;
   float min_cycless = 0;
+#endif
 
   for (unsigned int i = 0; i < N; ++i)
     {
@@ -334,9 +343,9 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
 
-  std::cout << min_cycless << " " << max_cycless << std::endl;
-  std::cout << std::fixed << std::setprecision(10) << solution_sp.l2_norm()
-            << std::endl;
+    // std::cout << min_cycless << " " << max_cycless << std::endl;
+    // std::cout << std::fixed << std::setprecision(10) << solution_sp.l2_norm()
+    //           << std::endl;
 
 #if TIMING != 0
   for (unsigned int i = 0; i < n_patches; ++i)
@@ -344,9 +353,29 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   std::cout << "\n";
 #endif
 
+  info_table[1].add_value("dofs", dof_handler.n_dofs());
   info_table[1].add_value("Name", std::string(LaplaceToString(kernel)) + " SP");
   info_table[1].add_value("Time[s]", best_time);
   info_table[1].add_value("Perf[Dof/s]", n_dofs / best_time);
+
+
+  if (fe_degree == 7)
+    {
+      copy_back();
+      copy_back_sp();
+
+      std::cout << solution_hosts.l2_norm() << " " << solution_host.l2_norm() << std::endl;
+
+      for (unsigned int i = 0; i < solution_dp.size(); ++i)
+        {
+          auto abs_error = std::abs(solution_hosts[i] - solution_host[i]);
+          solution_hosts[i] = abs_error;
+          solution_host[i]  = abs_error / solution_host[i];
+        }
+
+      info_table[1].add_value("abs error", solution_hosts.l2_norm());
+      info_table[1].add_value("rel error", solution_host.l2_norm());
+    }
 }
 template <int dim, int fe_degree>
 void
@@ -410,6 +439,7 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
 
+  info_table[2].add_value("dofs", dof_handler.n_dofs());
   info_table[2].add_value("Name", "Transfer DP");
   info_table[2].add_value("Time[s]", best_time);
   info_table[2].add_value("Perf[Dof/s]", n_dofs / best_time);
@@ -431,6 +461,7 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
       best_time2 = std::min(time.wall_time() / n_mv, best_time2);
     }
 
+  info_table[2].add_value("dofs", dof_handler.n_dofs());
   info_table[2].add_value("Name", "Transfer SP");
   info_table[2].add_value("Time[s]", best_time2);
   info_table[2].add_value("Perf[Dof/s]", n_dofs / best_time2);
@@ -471,6 +502,7 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
 
+  info_table[3].add_value("dofs", dof_handler.n_dofs());
   info_table[3].add_value("Name",
                           std::string(LaplaceToString(smooth_vmult)) + " " +
                             std::string(SmootherToString(smooth_inv)) + " DP");
@@ -504,6 +536,7 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
 
+  info_table[4].add_value("dofs", dof_handler.n_dofs());
   info_table[4].add_value("Name",
                           std::string(LaplaceToString(smooth_vmult)) + " " +
                             std::string(SmootherToString(smooth_inv)) + " SP");
@@ -612,12 +645,16 @@ LaplaceProblem<dim, fe_degree>::run()
 
   auto n_refinement =
     static_cast<unsigned int>(std::log2(n_dofs_1d / (fe_degree + 1)));
-  triangulation.refine_global(n_refinement);
+  // triangulation.refine_global(n_refinement);
 
-  setup_system();
-  bench_Ax();
-  bench_transfer();
-  bench_smooth();
+  for (unsigned int cycle = 0; cycle < n_refinement; ++cycle)
+    {
+      triangulation.refine_global(1);
+      setup_system();
+      bench_Ax();
+      bench_transfer();
+      bench_smooth();
+    }
 
   *pcout << std::endl;
 
@@ -629,6 +666,10 @@ LaplaceProblem<dim, fe_degree>::run()
       info_table[k].set_precision("Time[s]", 3);
       info_table[k].set_scientific("Perf[Dof/s]", true);
       info_table[k].set_precision("Perf[Dof/s]", 3);
+      info_table[k].set_scientific("abs error", true);
+      info_table[k].set_precision("abs error", 3);
+      info_table[k].set_scientific("rel error", true);
+      info_table[k].set_precision("rel error", 3);
 
       info_table[k].write_text(oss);
       *pcout << oss.str() << std::endl;
