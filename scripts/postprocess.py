@@ -36,9 +36,9 @@ def write_convergence_table(filename, dataset, deg_start, sm, it_type, n_kernels
     n_l = int(dataset[0].shape[0] / n_kernels)
 
     if it_type == "it":
-        col = 9
+        col = 7
     elif it_type == "frac":
-        col = 10
+        col = 8
 
     file1 = filename + ".txt"
     
