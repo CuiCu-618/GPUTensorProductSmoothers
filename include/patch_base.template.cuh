@@ -159,7 +159,7 @@ namespace PSMF
                 collection.resize(patch_size);
               if (patch_size == regular_vpatch_size) // regular patch
                 collection[regular_vpatch_size - 1 - v] = cell;
-              else                                   // irregular patch
+              else // irregular patch
                 AssertThrow(false, ExcMessage("TODO irregular vertex patches"));
             }
         }
@@ -187,19 +187,44 @@ namespace PSMF
 
     // patch_type. TODO: Fix: only works on [0,1]^d
     // TODO: level == 1, one patch only.
-    const double h            = 1. / Util::pow(2, level);
-    auto         first_center = (*patch)[0]->center();
+    std::vector<double>       h(dim, 1. / Util::pow(2, level));
+    std::vector<unsigned int> c(dim, 1);
+#ifdef DUPLICATE
+    c[0] = 2;
+    c[1] = 2;
+#endif
 
+    auto first_center = (*patch)[0]->center();
+
+#ifdef DUPLICATE
     if (level == 1)
       for (unsigned int d = 0; d < dim; ++d)
-        patch_type_host[patch_id * dim + d] = 2;
+        {
+          auto pos = std::floor(first_center[d] / h[d] + 1 / 3);
+          patch_type_host[patch_id * dim + d] =
+            (pos > 0) + (pos == (Util::pow(2, level) * c[d] - 2));
+          if (d == 2)
+            patch_type_host[patch_id * dim + d] = 3;
+        }
     else
       for (unsigned int d = 0; d < dim; ++d)
         {
-          auto pos = std::floor(first_center[d] / h + 1 / 3);
+          auto pos = std::floor(first_center[d] / h[d] + 1 / 3);
           patch_type_host[patch_id * dim + d] =
-            (pos > 0) + (pos == (Util::pow(2, level) - 2));
+            (pos > 0) + (pos == (Util::pow(2, level) * c[d] - 2));
         }
+#else
+    if (level == 1)
+      for (unsigned int d = 0; d < dim; ++d)
+        patch_type_host[patch_id * dim + d] = 3;
+    else
+      for (unsigned int d = 0; d < dim; ++d)
+        {
+          auto pos = std::floor(first_center[d] / h[d] + 1 / 3);
+          patch_type_host[patch_id * dim + d] =
+            (pos > 0) + (pos == (Util::pow(2, level) * c[d] - 2));
+        }
+#endif
 
 
     // patch_id
@@ -438,8 +463,8 @@ namespace PSMF
     alloc_arrays(&eigenvectors, n_dofs_2d * 3);
     alloc_arrays(&smooth_mass_1d, n_dofs_2d);
     alloc_arrays(&smooth_stiff_1d, n_dofs_2d);
-    alloc_arrays(&laplace_mass_1d, n_dofs_2d * 3);
-    alloc_arrays(&laplace_stiff_1d, n_dofs_2d * 3);
+    alloc_arrays(&laplace_mass_1d, n_dofs_2d * 4);
+    alloc_arrays(&laplace_stiff_1d, n_dofs_2d * 4);
 
     std::vector<unsigned int> permutation_host;
     permutation_host.resize(Util::pow(n_dofs_1d, dim));
@@ -974,14 +999,15 @@ namespace PSMF
     auto patch_laplace_1 =
       get_patch_laplace(laplace_middle_0, laplace_middle_1);
     auto patch_laplace_2 = get_patch_laplace(laplace_middle_0, laplace_right);
+    auto patch_laplace_3 = get_patch_laplace(laplace_left, laplace_right);
 
-    if (level == 1)
-      patch_laplace_2 = get_patch_laplace(laplace_left, laplace_right);
+    // if (level == 1)
+    //   patch_laplace_2 = get_patch_laplace(laplace_left, laplace_right);
 
     constexpr unsigned int n_dofs_2d = Util::pow(2 * fe_degree + 2, 2);
 
-    auto *mass    = new Number[n_dofs_2d * 3];
-    auto *laplace = new Number[n_dofs_2d * 3];
+    auto *mass    = new Number[n_dofs_2d * 4];
+    auto *laplace = new Number[n_dofs_2d * 4];
 
     std::transform(patch_mass_0.begin(),
                    patch_mass_0.end(),
@@ -996,6 +1022,11 @@ namespace PSMF
     std::transform(patch_mass_1.begin(),
                    patch_mass_1.end(),
                    &mass[n_dofs_2d * 2],
+                   [](const Number m) -> Number { return m; });
+
+    std::transform(patch_mass_1.begin(),
+                   patch_mass_1.end(),
+                   &mass[n_dofs_2d * 3],
                    [](const Number m) -> Number { return m; });
 
     std::transform(patch_laplace_0.begin(),
@@ -1013,16 +1044,21 @@ namespace PSMF
                    &laplace[n_dofs_2d * 2],
                    [](const Number m) -> Number { return m; });
 
+    std::transform(patch_laplace_3.begin(),
+                   patch_laplace_3.end(),
+                   &laplace[n_dofs_2d * 3],
+                   [](const Number m) -> Number { return m; });
+
 
     cudaError_t error_code = cudaMemcpy(laplace_mass_1d,
                                         mass,
-                                        3 * n_dofs_2d * sizeof(Number),
+                                        4 * n_dofs_2d * sizeof(Number),
                                         cudaMemcpyHostToDevice);
     AssertCuda(error_code);
 
     error_code = cudaMemcpy(laplace_stiff_1d,
                             laplace,
-                            3 * n_dofs_2d * sizeof(Number),
+                            4 * n_dofs_2d * sizeof(Number),
                             cudaMemcpyHostToDevice);
     AssertCuda(error_code);
 
@@ -1090,7 +1126,7 @@ namespace PSMF
 
 } // namespace PSMF
 
-  /**
-   * \page patch_base.template
-   * \include patch_base.template.cuh
-   */
+/**
+ * \page patch_base.template
+ * \include patch_base.template.cuh
+ */

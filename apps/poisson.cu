@@ -718,8 +718,16 @@ namespace Step64
       {
         *pcout << "Cycle " << cycle << std::endl;
 
+#ifdef DUPLICATE
+        long long unsigned int n_dofs =
+          std::pow(std::pow(2, triangulation.n_global_levels()) *
+                     (fe_degree + 1),
+                   dim) *
+          4;
+#else
         long long unsigned int n_dofs = std::pow(
           std::pow(2, triangulation.n_global_levels()) * (fe_degree + 1), dim);
+#endif
 
         if (n_dofs > CT::MAX_SIZES_)
           {
@@ -749,8 +757,24 @@ namespace Step64
 
         if (cycle == 0)
           {
-            GridGenerator::hyper_cube(triangulation, 0., 1.);
-            triangulation.refine_global(2);
+#ifdef DUPLICATE
+            Triangulation<dim> tria(
+              Triangulation<dim>::limit_level_difference_at_vertices);
+
+            GridGenerator::hyper_cube(tria, 0, 1);
+            if (dim == 2)
+              GridGenerator::replicate_triangulation(tria,
+                                                     {2, 2},
+                                                     triangulation);
+            else if (dim == 3)
+              GridGenerator::replicate_triangulation(tria,
+                                                     {2, 2, 1},
+                                                     triangulation);
+#else
+            GridGenerator::hyper_cube(triangulation, 0, 1);
+            triangulation.refine_global(1);
+#endif
+            triangulation.refine_global(1);
           }
         else
           triangulation.refine_global(1);

@@ -70,7 +70,13 @@ LA_MACRO(Laplace,
          ConflictFreeMem,
          TensorCore,
          TensorCoreMMA);
-LA_MACRO(Smoother, AllPatch, GLOBAL, FUSED_L, ConflictFree, TensorCore, ExactRes);
+LA_MACRO(Smoother,
+         AllPatch,
+         GLOBAL,
+         FUSED_L,
+         ConflictFree,
+         TensorCore,
+         ExactRes);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);
 ENUM_MACRO(Granularity, none, user_define, multiple);
 
@@ -123,6 +129,9 @@ namespace Util
     oss << "_" << value_type;
     oss << "_K" << MMAKERNEL;
     oss << "_E" << ERRCOR;
+#ifdef DUPLICATE
+    oss << "_DUPLICATE";
+#endif
 
     return oss.str();
   }
@@ -187,6 +196,9 @@ namespace Util
         << "Number of MG cycles in V-cycle  " << 1 << std::endl
         << "MMAKERNEL                       " << MMAKERNEL << std::endl
         << "Error Correction                " << ERRCOR << std::endl
+#ifdef DUPLICATE
+        << "Duplicate" << std::endl
+#endif
         << std::endl;
 
 

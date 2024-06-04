@@ -63,6 +63,10 @@ using namespace dealii;
 #  define TIMING 1
 #endif
 
+#define MODE 0
+// 0 - ncu
+// 1 - perf
+
 template <int dim, int fe_degree>
 class LaplaceProblem
 {
@@ -161,8 +165,13 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   dof_handler.distribute_mg_dofs();
 
   n_dofs = dof_handler.n_dofs();
-  N      = 5;
-  n_mv   = 20; // dof_handler.n_dofs() < 10000000 ? 100 : 20;
+#if MODE == 0
+  N    = 1;
+  n_mv = 1;
+#elif MODE == 1
+  N    = 5;
+  n_mv = n_dofs < 10000000 ? 100 : 20;
+#endif
 
   const unsigned int nlevels = triangulation.n_global_levels();
 
@@ -225,7 +234,7 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   solution_dp   = 0.;
 
   std::srand(0);
-  
+
   LinearAlgebra::ReadWriteVector<double> rw_vector_dp(dof_handler.n_dofs());
   {
     for (unsigned int i = 0; i < rw_vector_dp.size(); ++i)
@@ -364,11 +373,12 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
       copy_back();
       copy_back_sp();
 
-      std::cout << solution_hosts.l2_norm() << " " << solution_host.l2_norm() << std::endl;
+      std::cout << solution_hosts.l2_norm() << " " << solution_host.l2_norm()
+                << std::endl;
 
       for (unsigned int i = 0; i < solution_dp.size(); ++i)
         {
-          auto abs_error = std::abs(solution_hosts[i] - solution_host[i]);
+          auto abs_error    = std::abs(solution_hosts[i] - solution_host[i]);
           solution_hosts[i] = abs_error;
           solution_host[i]  = abs_error / solution_host[i];
         }
@@ -496,7 +506,7 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
       time.restart();
       for (unsigned int i = 0; i < n_mv; ++i)
         {
-          smooth_dp.step(solution_dp, system_rhs_dp);
+          // smooth_dp.step(solution_dp, system_rhs_dp);
           cudaDeviceSynchronize();
         }
       best_time = std::min(time.wall_time() / n_mv, best_time);
@@ -530,7 +540,7 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
       time.restart();
       for (unsigned int i = 0; i < n_mv; ++i)
         {
-          smooth_sp.step(solution_sp, system_rhs_sp);
+          // smooth_sp.step(solution_sp, system_rhs_sp);
           cudaDeviceSynchronize();
         }
       best_time = std::min(time.wall_time() / n_mv, best_time);
@@ -635,7 +645,18 @@ LaplaceProblem<dim, fe_degree>::run()
 {
   *pcout << Util::generic_info_to_fstring() << std::endl;
 
-  GridGenerator::hyper_cube(triangulation, 0., 1.);
+#ifdef DUPLICATE
+  Triangulation<dim> tria(
+    Triangulation<dim>::limit_level_difference_at_vertices);
+
+  GridGenerator::hyper_cube(tria, 0, 1);
+  if (dim == 2)
+    GridGenerator::replicate_triangulation(tria, {2, 2}, triangulation);
+  else if (dim == 3)
+    GridGenerator::replicate_triangulation(tria, {2, 2, 1}, triangulation);
+#else
+  GridGenerator::hyper_cube(triangulation, 0, 1);
+#endif
 
   double n_dofs_1d = 0;
   if (dim == 2)
@@ -645,8 +666,14 @@ LaplaceProblem<dim, fe_degree>::run()
 
   auto n_refinement =
     static_cast<unsigned int>(std::log2(n_dofs_1d / (fe_degree + 1)));
-  // triangulation.refine_global(n_refinement);
 
+#if MODE == 0
+  triangulation.refine_global(n_refinement);
+  setup_system();
+  bench_Ax();
+  bench_transfer();
+  bench_smooth();
+#elif MODE == 1
   for (unsigned int cycle = 0; cycle < n_refinement; ++cycle)
     {
       triangulation.refine_global(1);
@@ -655,6 +682,7 @@ LaplaceProblem<dim, fe_degree>::run()
       bench_transfer();
       bench_smooth();
     }
+#endif
 
   *pcout << std::endl;
 
