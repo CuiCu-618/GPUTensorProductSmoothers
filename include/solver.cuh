@@ -858,10 +858,10 @@ namespace PSMF
     using SmootherType =
       PatchSmoother<MatrixType, dim, fe_degree, smooth_vmult, smooth_inverse>;
     using SmootherType2  = PatchSmoother<MatrixType,
-                                        dim,
-                                        fe_degree,
-                                        smooth_vmult,
-                                        PSMF::SmootherVariant::AllPatch>;
+                                         dim,
+                                         fe_degree,
+                                         smooth_vmult,
+                                         PSMF::SmootherVariant::AllPatch>;
     using MatrixFreeType = LevelVertexPatch<dim, fe_degree, Number>;
 
     MultigridSolver(
@@ -1136,7 +1136,7 @@ namespace PSMF
       solver_control.enable_history_data();
       solver_control.log_history(true);
 
-      SolverFGMRES<VectorType> solver(solver_control);
+      SolverGMRES<VectorType> solver(solver_control);
 
       Timer              time;
       const unsigned int N         = 10;

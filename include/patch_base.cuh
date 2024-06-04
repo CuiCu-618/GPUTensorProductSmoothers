@@ -42,14 +42,16 @@
 // 4 - Conflict Free, 16 warps ILP = 1
 // 5 - Conflict Free, 4 warps ILP = 1
 // mma.m16n8k16.f16
-// 0 - Basic, without permutation_d, WIP
+// 0 - Basic, without permutation_d
 // 6 - Conflict Free, 8 warps ILP = 1, ld
 // 7 - Conflict Free, 8 warps ILP = 1
 // 8 - Conflict Free, 16 warps ILP = 1
 
-#define ERRCOR 1
+#define ERRCOR 0
 // 0 - basic
 // 1 - error correction
+
+#define DUPLICATE
 
 using namespace dealii;
 

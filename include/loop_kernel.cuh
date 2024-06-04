@@ -573,7 +573,7 @@ namespace PSMF
                   shared_data.der_half[ind]  = __float2half(tmp_der);
 
 #    if ERRCOR == 1
-                  constexpr int scale        = 1 << 11;
+                  constexpr int scale = 1 << 11;
 
                   shared_data.mass_half[dim * n_dofs_1d * n_dofs_1d + ind] =
                     __float2half(
@@ -667,7 +667,7 @@ namespace PSMF
                   z);
               atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
 #  elif GACCESS == 2
-              const int index              = z * n_dofs_1d * n_dofs_1d + tid;
+              const int index = z * n_dofs_1d * n_dofs_1d + tid;
               const int global_dof_indices =
                 index + gpu_data.first_dof[patch * (1 << dim)];
               atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
@@ -836,7 +836,7 @@ namespace PSMF
             atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
             atomicAdd(&dst[global_dof_indices2], shared_data.local_dst[index2]);
 #  elif GACCESS == 2
-            const int index               = z * n_dofs_1d * n_dofs_1d + tid;
+            const int index = z * n_dofs_1d * n_dofs_1d + tid;
             const int global_dof_indices =
               index + gpu_data.first_dof[patch * (1 << dim)];
             atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
