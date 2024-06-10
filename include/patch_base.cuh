@@ -26,7 +26,7 @@
 // 0 - No timing
 // 1 - Instruction level
 // 2 - Component level, e.g. load, store, vmult.
-#define MMAKERNEL 8
+#define MMAKERNEL 1
 // mma.m8n8k4.f64
 // 0 - Basic, without permutation_d
 // 1 - Conflict Free, 2 warps ILP = 1
@@ -46,12 +46,21 @@
 // 6 - Conflict Free, 8 warps ILP = 1, ld
 // 7 - Conflict Free, 8 warps ILP = 1
 // 8 - Conflict Free, 16 warps ILP = 1
+// TODO: wmma api Q7 half
 
 #define ERRCOR 0
 // 0 - basic
 // 1 - error correction
 
-#define DUPLICATE
+// #define DUPLICATE
+// root cell = 2 x 2 in 2D and 2 x 2 x 1 in 3D
+
+// #define LOOPUNROLL
+// loop unroll, WIP
+
+// #define SKIPZERO
+// ignore mat mul with zeros
+
 
 using namespace dealii;
 
@@ -627,7 +636,7 @@ namespace PSMF
       constexpr unsigned int n = is_laplace ? 3 : 1;
 
       if constexpr (n == 1 || std::is_same_v<Number, double> ||
-                    (MMAKERNEL != 7 && MMAKERNEL != 8))
+                    (MMAKERNEL != 0 && MMAKERNEL != 7 && MMAKERNEL != 8))
         {
           local_src = data;
           local_dst = local_src + n_buff * local_dim;

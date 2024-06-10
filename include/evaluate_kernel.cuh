@@ -1554,7 +1554,12 @@ namespace PSMF
                   cycle,
                   elapsed);
 #  endif
-#  pragma unroll
+
+#  ifdef SKIPZERO
+              if (abs(shape_data[cycle * (n_dofs_1d * 4 + 4)]) < 1e-10)
+                continue;
+#  endif
+
               for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
 #  if TIMING == 1
@@ -1640,6 +1645,11 @@ namespace PSMF
                                 Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = shape_data[a_idx];
 
+#  ifdef SKIPZERO
+              if (abs(shape_data[cycle * (n_dofs_1d * 4 + 4)]) < 1e-10)
+                continue;
+#  endif
+
               for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
                   const int b_idx =
@@ -1686,6 +1696,11 @@ namespace PSMF
               const int a_idx = (row * n_dofs_1d + col + cycle * 4) ^
                                 Util::get_base<n_dofs_1d>(row, 0);
               auto a0 = shape_data[a_idx];
+
+#  ifdef SKIPZERO
+              if (abs(shape_data[cycle * (n_dofs_1d * 4 + 4)]) < 1e-10)
+                continue;
+#  endif
 
               for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
@@ -3432,6 +3447,10 @@ namespace PSMF
 
           for (int cycle = 0; cycle < 4; ++cycle)
             {
+#  ifdef SKIPZERO
+              if ((shape_data[(cycle / 2) * (n_dofs_1d * 8 + 8)]) < 1e-10)
+                continue;
+#  endif
               const int b_idx =
                 ((col + cycle * 4) * n_dofs_1d + row + colId * 8) ^
                 Util::get_base<n_dofs_1d>(col + cycle * 4);
@@ -3483,6 +3502,11 @@ namespace PSMF
 
           for (int cycle = 0; cycle < 4; ++cycle)
             {
+#  ifdef SKIPZERO
+              if ((shape_data[(cycle / 2) * (n_dofs_1d * 8 + 8)]) < 1e-10)
+                continue;
+#  endif
+
               const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
@@ -3534,6 +3558,11 @@ namespace PSMF
 
           for (int cycle = 0; cycle < 4; ++cycle)
             {
+#  ifdef SKIPZERO
+              if ((shape_data[(cycle / 2) * (n_dofs_1d * 8 + 8)]) < 1e-10)
+                continue;
+#  endif
+
               const int a_idx =
                 ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
                 Util::get_base<n_dofs_1d>(rowId * 8 + row);
@@ -8496,6 +8525,11 @@ namespace PSMF
 
           for (int i = 0; i < 4; ++i)
             {
+#ifdef SKIPZERO
+              if ((shape_data[(i / 2) * (n_dofs_1d * 8 + 8)]) < 1e-10)
+                continue;
+#endif
+
               wmma::load_matrix_sync(
                 b_frag,
                 &shape_data[subId / 2 * 8 + i * 4 * (16 + skew_double)],
@@ -8550,6 +8584,10 @@ namespace PSMF
 
           for (int i = 0; i < 4; ++i)
             {
+#ifdef SKIPZERO
+              if ((shape_data[(i / 2) * (n_dofs_1d * 8 + 8)]) < 1e-10)
+                continue;
+#endif
               wmma::load_matrix_sync(
                 a_frag,
                 &shape_data[subId / 2 * (16 + skew_double) * 8 + i * 4],

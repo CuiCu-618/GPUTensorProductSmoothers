@@ -160,8 +160,12 @@ if __name__ == "__main__":
 
     Bsh = 17.145
     if L1_flag == 1:
+        sh_peak = (shared_ld[0] + shared_st[0]) / 100
+        sh_peak1 = (shared_ld[1] + shared_st[1]) / 100
         print(
             "Sh AI [FLOP/byte] :",
-            perf[0] / L1_peak[0] / L1_peak[0] / Bsh,
-            perf[1] / L1_peak[1] / L1_peak[0] / Bsh,
+            perf[0] / sh_peak / Bsh,
+            perf[1] / sh_peak1 / Bsh,
+            # perf[0] / L1_peak[0] / Bsh,
+            # perf[1] / L1_peak[1] / Bsh,
         )
