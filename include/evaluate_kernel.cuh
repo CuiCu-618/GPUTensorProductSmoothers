@@ -323,7 +323,11 @@ namespace PSMF
                 (direction == 1) ? (k * n_dofs_1d + col + z * stride) :
                                    (row * n_dofs_1d + col + k * stride);
 
+#ifdef USETEXTURE
+              pval[z] += tex1Dfetch(stiff_data_d, shape_idx) * in[source_idx];
+#else
               pval[z] += shape_data[shape_idx] * in[source_idx];
+#endif
             }
         }
 
@@ -3452,9 +3456,14 @@ namespace PSMF
                 continue;
 #  endif
               const int b_idx =
-                ((col + cycle * 4) * n_dofs_1d + row + colId * 8) ^
-                Util::get_base<n_dofs_1d>(col + cycle * 4);
+                ((col + cycle * 4) * n_dofs_1d + row + colId * 8);
+              // ^
+              //   Util::get_base<n_dofs_1d>(col + cycle * 4);
+#  ifdef USETEXTURE
+              double b0 = tex1Dfetch(stiff_data_d, b_idx);
+#  else
               auto b0 = shape_data[b_idx];
+#  endif
 
               for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
@@ -3508,9 +3517,15 @@ namespace PSMF
 #  endif
 
               const int a_idx =
-                ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
-                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+                ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4);
+              // ^
+              //   Util::get_base<n_dofs_1d>(rowId * 8 + row);
+
+#  ifdef USETEXTURE
+              double a0 = tex1Dfetch(stiff_data_d, a_idx);
+#  else
               auto a0 = shape_data[a_idx];
+#  endif
 
               for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
@@ -3564,9 +3579,15 @@ namespace PSMF
 #  endif
 
               const int a_idx =
-                ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4) ^
-                Util::get_base<n_dofs_1d>(rowId * 8 + row);
+                ((rowId * 8 + row) * n_dofs_1d + col + cycle * 4);
+              // ^
+              //   Util::get_base<n_dofs_1d>(rowId * 8 + row);
+
+#  ifdef USETEXTURE
+              double a0 = tex1Dfetch(stiff_data_d, a_idx);
+#  else
               auto a0 = shape_data[a_idx];
+#  endif
 
               for (int z = 0; z < n_dofs_1d / 2; ++z)
                 {
@@ -9116,7 +9137,24 @@ namespace PSMF
           (n_dofs_1d <= 8 ? 8 : 16) :
           n_dofs_1d;
       constexpr int local_dim = Util::pow(n_dofs_1d_p, 2) * n_dofs_1d;
-      constexpr int offset    = n_dofs_1d_p * n_dofs_1d_p;
+
+#ifdef USECONSTMEM
+
+      apply<0, false>(mass_matrix, src, &tmp[local_dim]);
+      __syncthreads();
+      apply<1, false>(mass_matrix, &tmp[local_dim], tmp);
+      __syncthreads();
+      apply<2, false>(derivative_matrix, tmp, dst);
+      __syncthreads();
+      apply<1, false>(derivative_matrix, &tmp[local_dim], tmp);
+      __syncthreads();
+      apply<0, false>(derivative_matrix, src, &tmp[local_dim]);
+      __syncthreads();
+      apply<1, true>(mass_matrix, &tmp[local_dim], tmp);
+      __syncthreads();
+      apply<2, true>(mass_matrix, tmp, dst);
+#else
+      constexpr int offset = n_dofs_1d_p * n_dofs_1d_p;
 
       apply<0, false>(mass_matrix, src, &tmp[local_dim]);
       __syncthreads();
@@ -9131,6 +9169,7 @@ namespace PSMF
       apply<1, true>(&mass_matrix[offset], &tmp[local_dim], tmp);
       __syncthreads();
       apply<2, true>(&mass_matrix[offset * 2], tmp, dst);
+#endif
     }
   };
 
@@ -9942,12 +9981,19 @@ namespace PSMF
       {
         TPEvaluatorLaplace<laplace, Number, Number, n_dofs_1d, dim> eval;
         __syncthreads();
-
+#ifdef USECONSTMEM
+        eval.vmult(shared_data->local_dst,
+                   shared_data->local_src,
+                   shared_data->const_mass,
+                   shared_data->const_stiff,
+                   shared_data->tmp);
+#else
         eval.vmult(shared_data->local_dst,
                    shared_data->local_src,
                    shared_data->local_mass,
                    shared_data->local_derivative,
                    shared_data->tmp);
+#endif
         __syncthreads();
       }
     else

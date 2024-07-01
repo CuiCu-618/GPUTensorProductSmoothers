@@ -68,6 +68,13 @@ namespace PSMF
 
     if (patch < gpu_data.n_patches)
       {
+#ifdef USECONSTMEM
+        auto m = get_mass_data<Number>();
+        auto s = get_stiff_data<Number>();
+
+        shared_data.const_mass  = get_mass_data<Number>();
+        shared_data.const_stiff = get_stiff_data<Number>();
+#else
         for (unsigned int d = 0; d < dim; ++d)
           {
             shared_data.local_mass[d * n_dofs_1d * n_dofs_1d + tid] =
@@ -80,6 +87,7 @@ namespace PSMF
                                           n_dofs_1d * n_dofs_1d +
                                         tid];
           }
+#endif
 
         for (unsigned int z = 0; z < n_dofs_z; ++z)
           {
@@ -557,9 +565,17 @@ namespace PSMF
                     d * n_dofs_1d * n_dofs_1d +
                     (tid ^ Util::get_base<n_dofs_1d, Number>(threadIdx.y));
 
+#    ifdef USECONSTMEM
+                  auto m = get_mass_data<Number>();
+                  auto s = get_stiff_data<Number>();
+
+                  shared_data.const_mass  = &m[inds - tid];
+                  shared_data.const_stiff = &s[inds - tid];
+#    else
                   shared_data.local_mass[ind] = gpu_data.laplace_mass_1d[inds];
                   shared_data.local_derivative[ind] =
                     gpu_data.laplace_stiff_1d[inds];
+#    endif
                 }
               else
                 {
@@ -1084,10 +1100,11 @@ namespace PSMF
             //     {
             //       const unsigned int index =
             //         local_patch * local_dim_p +
-            //         ((z * n_dofs_1d_p * n_dofs_1d_p + threadIdx.y *
-            //         n_dofs_1d_p +
+            //         ((z * n_dofs_1d_p * n_dofs_1d_p + threadIdx.y
+            //         * n_dofs_1d_p +
             //           local_tid_x) ^
-            //          Util::get_base<n_dofs_1d, Number>(threadIdx.y, z));
+            //          Util::get_base<n_dofs_1d,
+            //          Number>(threadIdx.y, z));
 
             //       shared_data.local_src[index] = 0.;
 

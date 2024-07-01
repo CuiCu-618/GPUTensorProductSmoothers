@@ -61,6 +61,11 @@
 // #define SKIPZERO
 // ignore mat mul with zeros
 
+// #define USECONSTMEM
+// stote shape data into constant memory
+
+#define USETEXTURE
+// stote shape data into texture memory
 
 using namespace dealii;
 
@@ -614,8 +619,61 @@ namespace PSMF
     Number *eigenvectors;
   };
 
-  __constant__ unsigned int permutation_d[16 * 16 * 16];
-  __constant__ unsigned int permutation_f[16 * 16 * 16];
+  // __constant__ unsigned int permutation_d[16 * 16 * 16];
+  // __constant__ unsigned int permutation_f[16 * 16 * 16];
+
+#ifdef USECONSTMEM
+  __constant__ double mass_data_d[16 * 16 * 4];
+  __constant__ double stiff_data_d[16 * 16 * 4];
+
+  __constant__ float mass_data_f[16 * 16 * 4];
+  __constant__ float stiff_data_f[16 * 16 * 4];
+
+  template <typename NumberType>
+  using DataArray = NumberType[16 * 16 * 4];
+
+  template <typename Number>
+  __host__ __device__ inline DataArray<Number>          &
+  get_mass_data();
+
+  template <>
+  __host__ __device__ inline DataArray<double>          &
+  get_mass_data<double>()
+  {
+    return mass_data_d;
+  }
+
+  template <>
+  __host__ __device__ inline DataArray<float>          &
+  get_mass_data<float>()
+  {
+    return mass_data_f;
+  }
+
+  template <typename Number>
+  __host__ __device__ inline DataArray<Number>          &
+  get_stiff_data();
+
+  template <>
+  __host__ __device__ inline DataArray<double>          &
+  get_stiff_data<double>()
+  {
+    return stiff_data_d;
+  }
+
+  template <>
+  __host__ __device__ inline DataArray<float>          &
+  get_stiff_data<float>()
+  {
+    return stiff_data_f;
+  }
+#endif
+
+#ifdef USETEXTURE
+  texture<float, 1, cudaReadModeElementType> mass_data_d;
+
+  texture<float, 1, cudaReadModeElementType> stiff_data_d;
+#endif
 
   /**
    * Structure to pass the shared memory into a general user function.
@@ -685,6 +743,11 @@ namespace PSMF
 
     half *mass_half;
     half *der_half;
+
+#ifdef USECONSTMEM
+    Number *const_mass;
+    Number *const_stiff;
+#endif
   };
 
   /**

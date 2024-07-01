@@ -478,21 +478,21 @@ namespace PSMF
             permutation_host[ind] = new_ind;
           }
 
-    if (sizeof(Number) == 8)
-      error_code =
-        cudaMemcpyToSymbol(permutation_d,
-                           permutation_host.data(),
-                           permutation_host.size() * sizeof(unsigned int),
-                           0,
-                           cudaMemcpyHostToDevice);
-    else
-      error_code =
-        cudaMemcpyToSymbol(permutation_f,
-                           permutation_host.data(),
-                           permutation_host.size() * sizeof(unsigned int),
-                           0,
-                           cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
+    // if (sizeof(Number) == 8)
+    //   error_code =
+    //     cudaMemcpyToSymbol(permutation_d,
+    //                        permutation_host.data(),
+    //                        permutation_host.size() * sizeof(unsigned int),
+    //                        0,
+    //                        cudaMemcpyHostToDevice);
+    // else
+    //   error_code =
+    //     cudaMemcpyToSymbol(permutation_f,
+    //                        permutation_host.data(),
+    //                        permutation_host.size() * sizeof(unsigned int),
+    //                        0,
+    //                        cudaMemcpyHostToDevice);
+    // AssertCuda(error_code);
 
 
     reinit_tensor_product_laplace();
@@ -1061,6 +1061,36 @@ namespace PSMF
                             4 * n_dofs_2d * sizeof(Number),
                             cudaMemcpyHostToDevice);
     AssertCuda(error_code);
+
+#ifdef USECONSTMEM
+    error_code = cudaMemcpyToSymbol(get_mass_data<Number>(),
+                                    mass,
+                                    4 * n_dofs_2d * sizeof(Number),
+                                    0,
+                                    cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+
+    error_code = cudaMemcpyToSymbol(get_stiff_data<Number>(),
+                                    laplace,
+                                    4 * n_dofs_2d * sizeof(Number),
+                                    0,
+                                    cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+#endif
+
+#ifdef USETEXTURE
+    error_code = cudaBindTexture(NULL,
+                                 mass_data_d,
+                                 laplace_mass_1d,
+                                 4 * n_dofs_2d * sizeof(Number));
+    AssertCuda(error_code);
+
+    error_code = cudaBindTexture(NULL,
+                                 stiff_data_d,
+                                 laplace_mass_1d,
+                                 4 * n_dofs_2d * sizeof(Number));
+    AssertCuda(error_code);
+#endif
 
     delete[] mass;
     delete[] laplace;
