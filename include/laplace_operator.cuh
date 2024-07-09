@@ -15,7 +15,6 @@ using namespace dealii;
 
 namespace PSMF
 {
-
   template <int dim, int fe_degree, typename Number>
   class LaplaceOperatorQuad
   {
@@ -148,10 +147,10 @@ namespace PSMF
                                 update_JxW_values);
       const unsigned int dofs_per_cell =
         mf_data->get_dof_handler().get_fe().n_dofs_per_cell();
-      const unsigned int        n_q_points = quadrature_formula.size();
-      Vector<Number>            cell_rhs(dofs_per_cell);
-      std::vector<unsigned int> local_dof_indices(dofs_per_cell);
-      std::vector<Number>       rhs_values(n_q_points);
+      const unsigned int n_q_points = quadrature_formula.size();
+      Vector<Number>     cell_rhs(dofs_per_cell);
+      std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+      std::vector<Number>                  rhs_values(n_q_points);
 
       auto begin = mf_data->get_dof_handler().begin_mg(mg_level);
       auto end   = mf_data->get_dof_handler().end_mg(mg_level);
