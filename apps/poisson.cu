@@ -39,41 +39,50 @@ namespace Step64
 {
   using namespace dealii;
 
-  template <int dim, typename Number>
+  const double wave_number = 3.;
+
+  template <int dim, typename Number = double>
   class Solution : public Function<dim, Number>
   {
   public:
     virtual Number
-    value(const Point<dim> &, const unsigned int = 0) const override final
+    value(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      return 0.;
+      double val = 1;
+      for (unsigned int d = 0; d < dim; ++d)
+        val *= std::sin(numbers::PI * p[d] * wave_number);
+      return val;
     }
 
     virtual Tensor<1, dim, Number>
     gradient(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      Tensor<1, dim, Number> grad;
+      Tensor<1, dim> return_value;
       for (unsigned int d = 0; d < dim; ++d)
         {
-          grad[d] = 1.;
+          return_value[d] = 1.;
           for (unsigned int e = 0; e < dim; ++e)
             if (d == e)
-              grad[d] *= -numbers::PI * std::cos(numbers::PI * p[e]);
+              return_value[d] *= -numbers::PI * wave_number *
+                                 std::cos(numbers::PI * p[e] * wave_number);
             else
-              grad[d] *= std::sin(numbers::PI * p[e]);
+              return_value[d] *= std::sin(numbers::PI * p[e] * wave_number);
         }
-      return grad;
+
+      return -return_value;
     }
   };
 
-  template <int dim, typename Number>
+  template <int dim, typename Number = double>
   class RightHandSide : public Function<dim, Number>
   {
   public:
     virtual Number
-    value(const Point<dim> &, const unsigned int = 0) const override final
+    value(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      return 1.;
+      Solution<dim> sol;
+      return dim * numbers::PI * wave_number * numbers::PI * wave_number *
+             sol.value(p);
     }
   };
 
@@ -83,10 +92,6 @@ namespace Step64
   public:
     using full_number   = double;
     using vcycle_number = CT::VCYCLE_NUMBER_;
-    using MatrixTypeDP =
-      PSMF::LaplaceOperator<dim, fe_degree, full_number, CT::DOF_LAYOUT_>;
-    using MatrixTypeSP =
-      PSMF::LaplaceOperator<dim, fe_degree, vcycle_number, CT::DOF_LAYOUT_>;
 
     LaplaceProblem();
     ~LaplaceProblem();
@@ -97,9 +102,10 @@ namespace Step64
     void
     setup_system();
     void
-    assemble_mg();
-    void
-    solve_mg(unsigned int n_mg_cycles);
+    solve(unsigned int n_mg_cycles);
+
+    std::pair<double, double>
+    compute_error();
 
     Triangulation<dim>                  triangulation;
     std::shared_ptr<FiniteElement<dim>> fe;
@@ -107,14 +113,15 @@ namespace Step64
     MappingQ1<dim>                      mapping;
     double                              setup_time;
 
-    std::vector<ConvergenceTable> info_table;
+    ConvergenceTable convergence_table;
 
     std::fstream                        fout;
     std::shared_ptr<ConditionalOStream> pcout;
 
-    MGLevelObject<MatrixTypeDP> matrix_dp;
-    MGLevelObject<MatrixTypeSP> matrix;
-    MGConstrainedDoFs           mg_constrained_dofs;
+    AffineConstraints<double> constraints;
+
+    LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+      ghost_solution_host;
   };
 
   template <int dim, int fe_degree>
@@ -134,8 +141,6 @@ namespace Step64
     const auto filename = Util::get_filename();
     fout.open(filename + ".log", std::ios_base::out);
     pcout = std::make_shared<ConditionalOStream>(fout, true);
-
-    info_table.resize(CT::KERNEL_TYPE_.size());
   }
 
   template <int dim, int fe_degree>
@@ -165,347 +170,209 @@ namespace Step64
 
     setup_time += time.wall_time();
 
-    *pcout << "DoF setup time:         " << setup_time << "s" << std::endl;
+    *pcout << "DoF setup time:           " << setup_time << "s" << std::endl;
+
+    constraints.clear();
+    VectorTools::interpolate_boundary_values(dof_handler,
+                                             0,
+                                             Solution<dim>(),
+                                             constraints);
+    constraints.close();
   }
+
   template <int dim, int fe_degree>
   void
-  LaplaceProblem<dim, fe_degree>::assemble_mg()
+  LaplaceProblem<dim, fe_degree>::solve(unsigned int n_mg_cycles)
   {
-    // Initialization of Dirichlet boundaries
-    std::set<types::boundary_id> dirichlet_boundary;
-    dirichlet_boundary.insert(0);
-    mg_constrained_dofs.initialize(dof_handler);
-    mg_constrained_dofs.make_zero_boundary_constraints(dof_handler,
-                                                       dirichlet_boundary);
-
-    // set up a mapping for the geometry representation
-    MappingQ1<dim> mapping;
-
-    unsigned int minlevel = 1;
-    unsigned int maxlevel = triangulation.n_global_levels() - 1;
-
-    matrix_dp.resize(1, maxlevel);
-
-    if (std::is_same_v<vcycle_number, float>)
-      matrix.resize(1, maxlevel);
+    Solution<dim> analytic_solution;
+    PSMF::MultigridSolvers<dim, fe_degree, vcycle_number, full_number> solver(
+      dof_handler,
+      analytic_solution,
+      RightHandSide<dim>(),
+      Functions::ConstantFunction<dim>(1.),
+      pcout,
+      n_mg_cycles);
 
     Timer time;
-    for (unsigned int level = minlevel; level <= maxlevel; ++level)
+
+    Utilities::System::MemoryStats stats;
+    Utilities::System::get_memory_stats(stats);
+    Utilities::MPI::MinMaxAvg memory =
+      Utilities::MPI::min_max_avg(stats.VmRSS / 1024., MPI_COMM_WORLD);
+
+    *pcout << "CPU Memory stats [MB]: " << memory.min << " [p"
+           << memory.min_index << "] " << memory.avg << " " << memory.max
+           << " [p" << memory.max_index << "]" << std::endl;
+
+    size_t free_mem, total_mem;
+    AssertCuda(cudaMemGetInfo(&free_mem, &total_mem));
+
+    int mem_usage = (total_mem - free_mem) / 1024 / 1024;
+    *pcout << "GPU Memory stats [MB]: " << mem_usage << "\n\n";
+
+    double best_time = 1e10, tot_time = 0;
+    for (unsigned int i = 0; i < 7; ++i)
       {
-        IndexSet relevant_dofs;
-        DoFTools::extract_locally_relevant_level_dofs(dof_handler,
-                                                      level,
-                                                      relevant_dofs);
-        // double-precision matrix-free data
-        {
-          AffineConstraints<full_number> level_constraints;
-          level_constraints.reinit(relevant_dofs);
-          level_constraints.add_lines(
-            mg_constrained_dofs.get_boundary_indices(level));
-          level_constraints.close();
-
-          using MatrixFreeType = PSMF::MatrixFree<dim, full_number>;
-
-          typename MatrixFreeType::AdditionalData additional_data;
-          additional_data.mapping_update_flags =
-            (update_values | update_gradients | update_JxW_values);
-          additional_data.mg_level = level;
-          std::shared_ptr<MatrixFreeType> mg_mf_storage_level(
-            new MatrixFreeType());
-          mg_mf_storage_level->reinit(mapping,
-                                      dof_handler,
-                                      level_constraints,
-                                      QGauss<1>(fe_degree + 1),
-                                      additional_data);
-
-          matrix_dp[level].initialize(mg_mf_storage_level);
-        }
-
-        // single-precision matrix-free data
-        if (std::is_same_v<vcycle_number, float>)
-          {
-            AffineConstraints<vcycle_number> level_constraints;
-            level_constraints.reinit(relevant_dofs);
-            level_constraints.add_lines(
-              mg_constrained_dofs.get_boundary_indices(level));
-            level_constraints.close();
-
-            using MatrixFreeType = PSMF::MatrixFree<dim, vcycle_number>;
-
-            typename MatrixFreeType::AdditionalData additional_data;
-            additional_data.mapping_update_flags =
-              update_gradients | update_JxW_values;
-            additional_data.mg_level = level;
-            std::shared_ptr<MatrixFreeType> mg_mf_storage_level(
-              new MatrixFreeType());
-            mg_mf_storage_level->reinit(mapping,
-                                        dof_handler,
-                                        level_constraints,
-                                        QGauss<1>(fe_degree + 1),
-                                        additional_data);
-
-            matrix[level].initialize(mg_mf_storage_level);
-          }
+        time.reset();
+        time.start();
+        solver.solve(false);
+        cudaDeviceSynchronize();
+        best_time = std::min(time.wall_time(), best_time);
+        tot_time += time.wall_time();
+        *pcout << "Time solve FMG              " << time.wall_time() << "\n";
       }
 
-    *pcout << "Matrix-free setup time: " << time.wall_time() << "s"
+    solver.print_wall_times();
+    {
+      auto solution = solver.get_solution();
+
+      LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+                                             solution_host(solution.size());
+      LinearAlgebra::ReadWriteVector<double> rw_vector(solution.size());
+      rw_vector.import(solution, VectorOperation::insert);
+      solution_host.import(rw_vector, VectorOperation::insert);
+      ghost_solution_host = solution_host;
+      constraints.distribute(ghost_solution_host);
+    }
+    const auto [l2_error, H1_error] = compute_error();
+
+    *pcout << "L2 error: " << l2_error << std::endl
+           << "H1 error: " << H1_error << std::endl
            << std::endl;
+
+
+    double time_gmres = 1e10;
+    for (unsigned int i = 0; i < 10; ++i)
+      {
+        time.restart();
+        solver.solve_gmres(false);
+        cudaDeviceSynchronize();
+        time_gmres = std::min(time.wall_time(), time_gmres);
+        *pcout << "Time solve GMRES           " << time.wall_time() << "\n";
+      }
+
+    std::optional<ReductionControl> solver_control = solver.solve_gmres(true);
+
+    auto       n_iter     = solver_control->last_step();
+    auto       residual_0 = solver_control->initial_value();
+    auto       residual_n = solver_control->last_value();
+    auto       reduction  = solver_control->reduction();
+    const auto rho =
+      std::pow(residual_n / residual_0, static_cast<double>(1. / n_iter));
+    const auto n_frac = std::log(reduction) / std::log(rho);
+
+    solver.print_wall_times();
+    {
+      auto solution = solver.get_solution();
+
+      LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+                                             solution_host(solution.size());
+      LinearAlgebra::ReadWriteVector<double> rw_vector(solution.size());
+      rw_vector.import(solution, VectorOperation::insert);
+      solution_host.import(rw_vector, VectorOperation::insert);
+      ghost_solution_host = solution_host;
+      constraints.distribute(ghost_solution_host);
+    }
+    const auto [l2_error_gmres, H1_error_gmres] = compute_error();
+
+    *pcout << "Iterations: " << n_iter << std::endl
+           << "frac Its. : " << n_frac << std::endl
+           << std::endl;
+
+
+    *pcout << "L2 error: " << l2_error_gmres << std::endl
+           << "H1 error: " << H1_error_gmres << std::endl
+           << std::endl;
+
+
+    double best_mv = 1e10;
+    for (unsigned int i = 0; i < 5; ++i)
+      {
+        const unsigned int n_mv = dof_handler.n_dofs() < 10000000 ? 100 : 20;
+
+        time.restart();
+        for (unsigned int i = 0; i < n_mv; ++i)
+          solver.do_matvec();
+        cudaDeviceSynchronize();
+
+        Utilities::MPI::MinMaxAvg stat =
+          Utilities::MPI::min_max_avg(time.wall_time() / n_mv, MPI_COMM_WORLD);
+        best_mv = std::min(best_mv, stat.max);
+        *pcout << "matvec time dp " << stat.min << " [p" << stat.min_index
+               << "] " << stat.avg << " " << stat.max << " [p" << stat.max_index
+               << "]" << " DoFs/s: " << dof_handler.n_dofs() / stat.max
+               << std::endl;
+      }
+    double best_mvs = 1e10;
+    for (unsigned int i = 0; i < 5; ++i)
+      {
+        const unsigned int n_mv = dof_handler.n_dofs() < 10000000 ? 100 : 20;
+
+        time.restart();
+        for (unsigned int i = 0; i < n_mv; ++i)
+          solver.do_matvec_smoother();
+        cudaDeviceSynchronize();
+
+        Utilities::MPI::MinMaxAvg stat =
+          Utilities::MPI::min_max_avg(time.wall_time() / n_mv, MPI_COMM_WORLD);
+        best_mvs = std::min(best_mvs, stat.max);
+        *pcout << "smoother time " << stat.min << " [p" << stat.min_index
+               << "] " << stat.avg << " " << stat.max << " [p" << stat.max_index
+               << "]" << " DoFs/s: " << dof_handler.n_dofs() / stat.max
+               << std::endl;
+      }
+    *pcout << "Best timings for ndof = " << dof_handler.n_dofs() << "   mv "
+           << best_mv << "    mv smooth " << best_mvs << "   fmg " << best_time
+           << "   gmres-mg " << time_gmres << std::endl;
+
+    *pcout << "L2 error with ndof = " << dof_handler.n_dofs() << "  "
+           << l2_error << "  with GMRES " << l2_error_gmres << std::endl;
+
+    convergence_table.add_value("cells", triangulation.n_global_active_cells());
+    convergence_table.add_value("dofs", dof_handler.n_dofs());
+    convergence_table.add_value("mat-vec", dof_handler.n_dofs() / best_mv);
+    convergence_table.add_value("smoother", dof_handler.n_dofs() / best_mvs);
+    convergence_table.add_value("fmg_L2error", l2_error);
+    convergence_table.add_value("fmg_H1error", H1_error);
+    convergence_table.add_value("fmg_time", best_time);
+    convergence_table.add_value("gmres_L2error", l2_error_gmres);
+    convergence_table.add_value("gmres_H1error", H1_error_gmres);
+    convergence_table.add_value("gmres_time", time_gmres);
+    convergence_table.add_value("gmres_its", n_iter);
+    convergence_table.add_value("frac_its", n_frac);
+    convergence_table.add_value("gmres_reduction", rho);
   }
+
+
   template <int dim, int fe_degree>
-  void
-  LaplaceProblem<dim, fe_degree>::solve_mg(unsigned int n_mg_cycles)
+  std::pair<double, double>
+  LaplaceProblem<dim, fe_degree>::compute_error()
   {
-    Timer time;
+    Vector<double> cellwise_norm(triangulation.n_active_cells());
+    VectorTools::integrate_difference(dof_handler,
+                                      ghost_solution_host,
+                                      Solution<dim>(),
+                                      cellwise_norm,
+                                      QGauss<dim>(fe->degree + 1),
+                                      VectorTools::L2_norm);
+    const double global_norm =
+      VectorTools::compute_global_error(triangulation,
+                                        cellwise_norm,
+                                        VectorTools::L2_norm);
 
-    PSMF::MGTransferCUDA<dim, vcycle_number, CT::DOF_LAYOUT_> transfer;
+    Vector<double> cellwise_h1norm(triangulation.n_active_cells());
+    VectorTools::integrate_difference(dof_handler,
+                                      ghost_solution_host,
+                                      Solution<dim>(),
+                                      cellwise_h1norm,
+                                      QGauss<dim>(fe->degree + 1),
+                                      VectorTools::H1_seminorm);
+    const double global_h1norm =
+      VectorTools::compute_global_error(triangulation,
+                                        cellwise_h1norm,
+                                        VectorTools::H1_seminorm);
 
-    transfer.initialize_constraints(mg_constrained_dofs);
-    transfer.build(dof_handler);
-
-    *pcout << "MG transfer setup time: " << time.wall_time() << "s"
-           << std::endl;
-
-    static unsigned int call_count = 0;
-
-    auto do_solver = [&](auto solver, unsigned int k) {
-      *pcout << "\nMG with smooth variant ["
-             << SmootherToString(CT::KERNEL_TYPE_[k]) << "]\n";
-
-      info_table[k].add_value("level", triangulation.n_global_levels());
-      info_table[k].add_value("cells", triangulation.n_global_active_cells());
-      info_table[k].add_value("dofs", dof_handler.n_dofs());
-
-      std::vector<PSMF::SolverData> comp_data = solver.static_comp();
-      for (auto &data : comp_data)
-        {
-          *pcout << data.print_comp();
-
-          auto times = data.solver_name + "[s]";
-          auto perfs = data.solver_name + "Perf[Dof/s]";
-
-          info_table[k].add_value(times, data.timing);
-          info_table[k].add_value(perfs, data.perf);
-
-          if (call_count == 0)
-            {
-              info_table[k].set_scientific(times, true);
-              info_table[k].set_precision(times, 3);
-              info_table[k].set_scientific(perfs, true);
-              info_table[k].set_precision(perfs, 3);
-
-              info_table[k].add_column_to_supercolumn(times, data.solver_name);
-              info_table[k].add_column_to_supercolumn(perfs, data.solver_name);
-            }
-        }
-
-      *pcout << std::endl;
-
-      std::vector<PSMF::SolverData> solver_data = solver.solve();
-      for (auto &data : solver_data)
-        {
-          *pcout << data.print_solver();
-
-          auto it    = data.solver_name + "it";
-          auto times = data.solver_name + "[s]";
-          auto mem   = data.solver_name + "Mem Usage[MB]";
-
-          info_table[k].add_value(it, data.n_iteration);
-          info_table[k].add_value(times, data.timing);
-          info_table[k].add_value(mem, data.mem_usage);
-
-          if (call_count == 0)
-            {
-              info_table[k].set_scientific(times, true);
-              info_table[k].set_precision(times, 3);
-
-              info_table[k].add_column_to_supercolumn(it, data.solver_name);
-              info_table[k].add_column_to_supercolumn(times, data.solver_name);
-              info_table[k].add_column_to_supercolumn(mem, data.solver_name);
-            }
-        }
-    };
-
-    for (unsigned int k = 0; k < CT::KERNEL_TYPE_.size(); ++k)
-      {
-        switch (CT::KERNEL_TYPE_[k])
-          {
-            case PSMF::SmootherVariant::NN:
-              {
-                PSMF::MultigridSolver<dim,
-                                      fe_degree,
-                                      CT::DOF_LAYOUT_,
-                                      full_number,
-                                      PSMF::SmootherVariant::NN,
-                                      vcycle_number>
-                  solver(dof_handler,
-                         matrix_dp,
-                         matrix,
-                         transfer,
-                         Functions::ZeroFunction<dim, full_number>(),
-                         Functions::ConstantFunction<dim, full_number>(1.),
-                         pcout,
-                         n_mg_cycles);
-                do_solver(solver, k);
-                break;
-              }
-            case PSMF::SmootherVariant::Exact:
-              {
-                PSMF::MultigridSolver<dim,
-                                      fe_degree,
-                                      CT::DOF_LAYOUT_,
-                                      full_number,
-                                      PSMF::SmootherVariant::Exact,
-                                      vcycle_number>
-                  solver(dof_handler,
-                         matrix_dp,
-                         matrix,
-                         transfer,
-                         Functions::ZeroFunction<dim, full_number>(),
-                         Functions::ConstantFunction<dim, full_number>(1.),
-                         pcout,
-                         n_mg_cycles);
-                do_solver(solver, k);
-                break;
-              }
-            case PSMF::SmootherVariant::GLOBAL:
-              {
-                PSMF::MultigridSolver<dim,
-                                      fe_degree,
-                                      CT::DOF_LAYOUT_,
-                                      full_number,
-                                      PSMF::SmootherVariant::GLOBAL,
-                                      vcycle_number>
-                  solver(dof_handler,
-                         matrix_dp,
-                         matrix,
-                         transfer,
-                         Functions::ZeroFunction<dim, full_number>(),
-                         Functions::ConstantFunction<dim, full_number>(1.),
-                         pcout,
-                         n_mg_cycles);
-                do_solver(solver, k);
-                break;
-              }
-            case PSMF::SmootherVariant::SEPERATE:
-              {
-                PSMF::MultigridSolver<dim,
-                                      fe_degree,
-                                      CT::DOF_LAYOUT_,
-                                      full_number,
-                                      PSMF::SmootherVariant::SEPERATE,
-                                      vcycle_number>
-                  solver(dof_handler,
-                         matrix_dp,
-                         matrix,
-                         transfer,
-                         Functions::ZeroFunction<dim, full_number>(),
-                         Functions::ConstantFunction<dim, full_number>(1.),
-                         pcout,
-                         n_mg_cycles);
-                do_solver(solver, k);
-                break;
-              }
-            case PSMF::SmootherVariant::FUSED_BASE:
-              {
-                PSMF::MultigridSolver<dim,
-                                      fe_degree,
-                                      CT::DOF_LAYOUT_,
-                                      full_number,
-                                      PSMF::SmootherVariant::FUSED_BASE,
-                                      vcycle_number>
-                  solver(dof_handler,
-                         matrix_dp,
-                         matrix,
-                         transfer,
-                         Functions::ZeroFunction<dim, full_number>(),
-                         Functions::ConstantFunction<dim, full_number>(1.),
-                         pcout,
-                         n_mg_cycles);
-                do_solver(solver, k);
-                break;
-              }
-            case PSMF::SmootherVariant::FUSED_L:
-              {
-                PSMF::MultigridSolver<dim,
-                                      fe_degree,
-                                      CT::DOF_LAYOUT_,
-                                      full_number,
-                                      PSMF::SmootherVariant::FUSED_L,
-                                      vcycle_number>
-                  solver(dof_handler,
-                         matrix_dp,
-                         matrix,
-                         transfer,
-                         Functions::ZeroFunction<dim, full_number>(),
-                         Functions::ConstantFunction<dim, full_number>(1.),
-                         pcout,
-                         n_mg_cycles);
-                do_solver(solver, k);
-                break;
-              }
-            case PSMF::SmootherVariant::FUSED_3D:
-              {
-                PSMF::MultigridSolver<dim,
-                                      fe_degree,
-                                      CT::DOF_LAYOUT_,
-                                      full_number,
-                                      PSMF::SmootherVariant::FUSED_3D,
-                                      vcycle_number>
-                  solver(dof_handler,
-                         matrix_dp,
-                         matrix,
-                         transfer,
-                         Functions::ZeroFunction<dim, full_number>(),
-                         Functions::ConstantFunction<dim, full_number>(1.),
-                         pcout,
-                         n_mg_cycles);
-                do_solver(solver, k);
-                break;
-              }
-            case PSMF::SmootherVariant::FUSED_CF:
-              {
-                PSMF::MultigridSolver<dim,
-                                      fe_degree,
-                                      CT::DOF_LAYOUT_,
-                                      full_number,
-                                      PSMF::SmootherVariant::FUSED_CF,
-                                      vcycle_number>
-                  solver(dof_handler,
-                         matrix_dp,
-                         matrix,
-                         transfer,
-                         Functions::ZeroFunction<dim, full_number>(),
-                         Functions::ConstantFunction<dim, full_number>(1.),
-                         pcout,
-                         n_mg_cycles);
-                do_solver(solver, k);
-                break;
-              }
-            case PSMF::SmootherVariant::FUSED_BD:
-              {
-                PSMF::MultigridSolver<dim,
-                                      fe_degree,
-                                      CT::DOF_LAYOUT_,
-                                      full_number,
-                                      PSMF::SmootherVariant::FUSED_BD,
-                                      vcycle_number>
-                  solver(dof_handler,
-                         matrix_dp,
-                         matrix,
-                         transfer,
-                         Functions::ZeroFunction<dim, full_number>(),
-                         Functions::ConstantFunction<dim, full_number>(1.),
-                         pcout,
-                         n_mg_cycles);
-                do_solver(solver, k);
-                break;
-              }
-            default:
-              AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
-          }
-      }
-
-    call_count++;
+    return std::make_pair(global_norm, global_h1norm);
   }
 
   template <int dim, int fe_degree>
@@ -529,17 +396,7 @@ namespace Step64
             *pcout << "Max size reached, terminating." << std::endl;
             *pcout << std::endl;
 
-            for (unsigned int k = 0; k < CT::KERNEL_TYPE_.size(); ++k)
-              {
-                std::ostringstream oss;
-
-                oss << "\n[" << SmootherToString(CT::KERNEL_TYPE_[k]) << "]\n";
-                info_table[k].write_text(oss);
-
-                *pcout << oss.str() << std::endl;
-              }
-
-            return;
+            break;
           }
 
         if (cycle == 0)
@@ -551,10 +408,50 @@ namespace Step64
           triangulation.refine_global(1);
 
         setup_system();
-        assemble_mg();
+        solve(1);
 
-        solve_mg(1);
         *pcout << std::endl;
+      }
+
+    if (true)
+      {
+        convergence_table.set_scientific("fmg_L2error", true);
+        convergence_table.set_precision("fmg_L2error", 3);
+        convergence_table.evaluate_convergence_rates(
+          "fmg_L2error", "cells", ConvergenceTable::reduction_rate_log2, dim);
+        convergence_table.set_scientific("fmg_H1error", true);
+        convergence_table.set_precision("fmg_H1error", 3);
+        convergence_table.evaluate_convergence_rates(
+          "fmg_H1error", "cells", ConvergenceTable::reduction_rate_log2, dim);
+        convergence_table.set_scientific("mat-vec", true);
+        convergence_table.set_precision("mat-vec", 3);
+        convergence_table.set_scientific("smoother", true);
+        convergence_table.set_precision("smoother", 3);
+        convergence_table.set_scientific("fmg_time", true);
+        convergence_table.set_precision("fmg_time", 3);
+
+        convergence_table.set_scientific("gmres_L2error", true);
+        convergence_table.set_precision("gmres_L2error", 3);
+        convergence_table.evaluate_convergence_rates(
+          "gmres_L2error", "cells", ConvergenceTable::reduction_rate_log2, dim);
+        convergence_table.set_scientific("gmres_H1error", true);
+        convergence_table.set_precision("gmres_H1error", 3);
+        convergence_table.evaluate_convergence_rates(
+          "gmres_H1error", "cells", ConvergenceTable::reduction_rate_log2, dim);
+        convergence_table.set_scientific("gmres_reduction", true);
+        convergence_table.set_precision("gmres_reduction", 3);
+        convergence_table.set_scientific("gmres_time", true);
+        convergence_table.set_precision("gmres_time", 3);
+
+        std::ostringstream oss;
+
+        oss << "\n[" << SmootherToString(CT::KERNEL_TYPE_[0]) << "]\n";
+        convergence_table.write_text(oss);
+
+        *pcout << oss.str() << std::endl;
+
+
+        *pcout << std::endl << std::endl;
       }
   }
 } // namespace Step64

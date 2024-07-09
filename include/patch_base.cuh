@@ -13,7 +13,7 @@
 
 using namespace dealii;
 
-#define OPTIMIZE
+// #define OPTIMIZE
 
 /**
  * Namespace for the Patch Smoother Matrix-Free

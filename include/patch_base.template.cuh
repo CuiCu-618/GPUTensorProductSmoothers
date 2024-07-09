@@ -713,7 +713,7 @@ namespace PSMF
     AssertCuda(error_code);
 
     // Neural Network
-    if (dim == 2)
+    if (dim == 2 && false)
       {
         // TODO: 3d
         std::string filenamea0 =
@@ -1253,7 +1253,7 @@ namespace PSMF
 
 } // namespace PSMF
 
-  /**
-   * \page patch_base.template
-   * \include patch_base.template.cuh
-   */
+/**
+ * \page patch_base.template
+ * \include patch_base.template.cuh
+ */
