@@ -39,7 +39,9 @@ namespace Step64
 {
   using namespace dealii;
 
-  const double wave_number = 3.;
+  const double wave_number = 2;
+  const double a_t         = 0.5;
+  const double tau         = 0.01;
 
   template <int dim, typename Number = double>
   class Solution : public Function<dim, Number>
@@ -48,7 +50,8 @@ namespace Step64
     virtual Number
     value(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      double val = 1;
+      const double T   = 0;
+      double       val = (1 + std::sin(numbers::PI * T)) * std::exp(-a_t * T);
       for (unsigned int d = 0; d < dim; ++d)
         val *= std::sin(numbers::PI * p[d] * wave_number);
       return val;
@@ -57,19 +60,56 @@ namespace Step64
     virtual Tensor<1, dim, Number>
     gradient(const Point<dim> &p, const unsigned int = 0) const override final
     {
+      const double   T = 0;
       Tensor<1, dim> return_value;
       for (unsigned int d = 0; d < dim; ++d)
         {
-          return_value[d] = 1.;
+          return_value[d] =
+            (1 + std::sin(numbers::PI * T)) * std::exp(-a_t * T);
           for (unsigned int e = 0; e < dim; ++e)
             if (d == e)
-              return_value[d] *= -numbers::PI * wave_number *
+              return_value[d] *= numbers::PI * wave_number *
                                  std::cos(numbers::PI * p[e] * wave_number);
             else
               return_value[d] *= std::sin(numbers::PI * p[e] * wave_number);
         }
 
-      return -return_value;
+      return return_value;
+    }
+  };
+
+  template <int dim, typename Number = double>
+  class Solution1 : public Function<dim, Number>
+  {
+  public:
+    virtual Number
+    value(const Point<dim> &p, const unsigned int = 0) const override final
+    {
+      const double T   = tau;
+      double       val = (1 + std::sin(numbers::PI * T)) * std::exp(-a_t * T);
+      for (unsigned int d = 0; d < dim; ++d)
+        val *= std::sin(numbers::PI * p[d] * wave_number);
+      return val;
+    }
+
+    virtual Tensor<1, dim, Number>
+    gradient(const Point<dim> &p, const unsigned int = 0) const override final
+    {
+      const double   T = tau;
+      Tensor<1, dim> return_value;
+      for (unsigned int d = 0; d < dim; ++d)
+        {
+          return_value[d] =
+            (1 + std::sin(numbers::PI * T)) * std::exp(-a_t * T);
+          for (unsigned int e = 0; e < dim; ++e)
+            if (d == e)
+              return_value[d] *= numbers::PI * wave_number *
+                                 std::cos(numbers::PI * p[e] * wave_number);
+            else
+              return_value[d] *= std::sin(numbers::PI * p[e] * wave_number);
+        }
+
+      return return_value;
     }
   };
 
@@ -80,9 +120,16 @@ namespace Step64
     virtual Number
     value(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      Solution<dim> sol;
-      return dim * numbers::PI * wave_number * numbers::PI * wave_number *
-             sol.value(p);
+      const double T   = tau;
+      double       val = std::exp(-a_t * T) * tau;
+      for (unsigned int d = 0; d < dim; ++d)
+        val *= std::sin(numbers::PI * p[d] * wave_number);
+      return val *
+             (numbers::PI * std::cos(numbers::PI * T) - a_t -
+              a_t * std::sin(numbers::PI * T) +
+              dim * numbers::PI * wave_number * numbers::PI * wave_number +
+              dim * numbers::PI * wave_number * numbers::PI * wave_number *
+                std::sin(numbers::PI * T));
     }
   };
 
@@ -210,37 +257,6 @@ namespace Step64
     int mem_usage = (total_mem - free_mem) / 1024 / 1024;
     *pcout << "GPU Memory stats [MB]: " << mem_usage << "\n\n";
 
-    double best_time = 1e10, tot_time = 0;
-    for (unsigned int i = 0; i < 7; ++i)
-      {
-        time.reset();
-        time.start();
-        solver.solve(false);
-        cudaDeviceSynchronize();
-        best_time = std::min(time.wall_time(), best_time);
-        tot_time += time.wall_time();
-        *pcout << "Time solve FMG              " << time.wall_time() << "\n";
-      }
-
-    solver.print_wall_times();
-    {
-      auto solution = solver.get_solution();
-
-      LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
-                                             solution_host(solution.size());
-      LinearAlgebra::ReadWriteVector<double> rw_vector(solution.size());
-      rw_vector.import(solution, VectorOperation::insert);
-      solution_host.import(rw_vector, VectorOperation::insert);
-      ghost_solution_host = solution_host;
-      constraints.distribute(ghost_solution_host);
-    }
-    const auto [l2_error, H1_error] = compute_error();
-
-    *pcout << "L2 error: " << l2_error << std::endl
-           << "H1 error: " << H1_error << std::endl
-           << std::endl;
-
-
     double time_gmres = 1e10;
     for (unsigned int i = 0; i < 10; ++i)
       {
@@ -322,19 +338,16 @@ namespace Step64
                << std::endl;
       }
     *pcout << "Best timings for ndof = " << dof_handler.n_dofs() << "   mv "
-           << best_mv << "    mv smooth " << best_mvs << "   fmg " << best_time
-           << "   gmres-mg " << time_gmres << std::endl;
+           << best_mv << "    mv smooth " << best_mvs << "   gmres-mg "
+           << time_gmres << std::endl;
 
-    *pcout << "L2 error with ndof = " << dof_handler.n_dofs() << "  "
-           << l2_error << "  with GMRES " << l2_error_gmres << std::endl;
+    *pcout << "GMRES L2 error with ndof = " << dof_handler.n_dofs() << "  "
+           << l2_error_gmres << std::endl;
 
     convergence_table.add_value("cells", triangulation.n_global_active_cells());
     convergence_table.add_value("dofs", dof_handler.n_dofs());
     convergence_table.add_value("mat-vec", dof_handler.n_dofs() / best_mv);
     convergence_table.add_value("smoother", dof_handler.n_dofs() / best_mvs);
-    convergence_table.add_value("fmg_L2error", l2_error);
-    convergence_table.add_value("fmg_H1error", H1_error);
-    convergence_table.add_value("fmg_time", best_time);
     convergence_table.add_value("gmres_L2error", l2_error_gmres);
     convergence_table.add_value("gmres_H1error", H1_error_gmres);
     convergence_table.add_value("gmres_time", time_gmres);
@@ -351,7 +364,7 @@ namespace Step64
     Vector<double> cellwise_norm(triangulation.n_active_cells());
     VectorTools::integrate_difference(dof_handler,
                                       ghost_solution_host,
-                                      Solution<dim>(),
+                                      Solution1<dim>(),
                                       cellwise_norm,
                                       QGauss<dim>(fe->degree + 1),
                                       VectorTools::L2_norm);
@@ -363,7 +376,7 @@ namespace Step64
     Vector<double> cellwise_h1norm(triangulation.n_active_cells());
     VectorTools::integrate_difference(dof_handler,
                                       ghost_solution_host,
-                                      Solution<dim>(),
+                                      Solution1<dim>(),
                                       cellwise_h1norm,
                                       QGauss<dim>(fe->degree + 1),
                                       VectorTools::H1_seminorm);
@@ -402,7 +415,7 @@ namespace Step64
         if (cycle == 0)
           {
             GridGenerator::hyper_cube(triangulation, 0., 1.);
-            triangulation.refine_global(2);
+            triangulation.refine_global(3);
           }
         else
           triangulation.refine_global(1);
@@ -415,20 +428,10 @@ namespace Step64
 
     if (true)
       {
-        convergence_table.set_scientific("fmg_L2error", true);
-        convergence_table.set_precision("fmg_L2error", 3);
-        convergence_table.evaluate_convergence_rates(
-          "fmg_L2error", "cells", ConvergenceTable::reduction_rate_log2, dim);
-        convergence_table.set_scientific("fmg_H1error", true);
-        convergence_table.set_precision("fmg_H1error", 3);
-        convergence_table.evaluate_convergence_rates(
-          "fmg_H1error", "cells", ConvergenceTable::reduction_rate_log2, dim);
         convergence_table.set_scientific("mat-vec", true);
         convergence_table.set_precision("mat-vec", 3);
         convergence_table.set_scientific("smoother", true);
         convergence_table.set_precision("smoother", 3);
-        convergence_table.set_scientific("fmg_time", true);
-        convergence_table.set_precision("fmg_time", 3);
 
         convergence_table.set_scientific("gmres_L2error", true);
         convergence_table.set_precision("gmres_L2error", 3);

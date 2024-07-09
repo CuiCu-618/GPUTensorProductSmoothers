@@ -535,8 +535,10 @@ namespace PSMF
   {
     FE_DGQ<1> fe_1d(fe_degree);
 
-    constexpr unsigned int N    = fe_degree + 1;
-    const Number scaling_factor = dim == 2 ? 1 : 1. / Util::pow(2, level);
+    constexpr unsigned int N              = fe_degree + 1;
+    const Number           tau            = 0.01;
+    const Number           h              = 1. / Util::pow(2, level);
+    const Number           scaling_factor = dim == 2 ? 1 : h;
 
     QGauss<1> quadrature(N);
 
@@ -556,9 +558,14 @@ namespace PSMF
             double sum_laplace = 0;
             for (unsigned int q = 0; q < quadrature.size(); ++q)
               {
-                sum_laplace += (fe_1d.shape_grad(i, quadrature.point(q))[0] *
+                sum_laplace += tau *
+                               (fe_1d.shape_grad(i, quadrature.point(q))[0] *
                                 fe_1d.shape_grad(j, quadrature.point(q))[0]) *
                                quadrature.weight(q);
+
+                sum_laplace += (fe_1d.shape_value(i, quadrature.point(q)) *
+                                fe_1d.shape_value(j, quadrature.point(q))) *
+                               quadrature.weight(q) * h * h / dim;
               }
 
             // scaling to real cells
@@ -610,24 +617,32 @@ namespace PSMF
     auto patch_laplace = get_patch_laplace(laplace_middle, laplace_middle);
 
     // eigenvalue, eigenvector
-    TensorProductData<dim, fe_degree, Number> tensor_product;
-    if (level == 0)
-      tensor_product.generate_1d_mf(1);
-    else
-      tensor_product.generate_1d_mf(level);
-    std::array<std::array<unsigned int, 2>, dim> cell_indices;
-    for (int d = 0; d < dim; ++d)
+    std::array<Table<2, Number>, dim> patch_mass_inv;
+    std::array<Table<2, Number>, dim> patch_laplace_inv;
+
+    for (unsigned int d = 0; d < dim; ++d)
       {
-        cell_indices[d][0] = 0;
-        cell_indices[d][1] = 1;
+        patch_mass_inv[d].reinit(2 * N - 3, 2 * N - 3);
+        patch_laplace_inv[d].reinit(2 * N - 3, 2 * N - 3);
       }
-    tensor_product.template compute_tensor_product<true>(cell_indices);
+
+    for (unsigned int d = 0; d < dim; ++d)
+      for (unsigned int i = 0; i < 2 * N - 3; ++i)
+        for (unsigned int j = 0; j < 2 * N - 3; ++j)
+          {
+            patch_mass_inv[d](i, j)    = patch_mass[d](i + 1, j + 1);
+            patch_laplace_inv[d](i, j) = patch_laplace[d](i + 1, j + 1);
+          }
+
+    TensorProductData<dim, fe_degree, Number> tensor_product;
+    tensor_product.reinit(patch_mass_inv, patch_laplace_inv);
+
     std::array<AlignedVector<Number>, dim> eigenval;
     std::array<Table<2, Number>, dim>      eigenvec;
     tensor_product.get_eigenvalues(eigenval);
     tensor_product.get_eigenvectors(eigenvec);
 
-    auto exact_inverse = tensor_product.inverse_matrix_to_table();
+    // auto exact_inverse = tensor_product.inverse_matrix_to_table();
 
     // auto print_matrices = [](auto matrix) {
     //   for (auto m = 0U; m < matrix.size(1); ++m)
@@ -677,22 +692,22 @@ namespace PSMF
                                         cudaMemcpyHostToDevice);
     AssertCuda(error_code);
 
-    {
-      auto *vals = new Number[exact_inverse.n_elements()];
-
-      std::transform(exact_inverse.begin(),
-                     exact_inverse.end(),
-                     vals,
-                     [](const Number m) -> Number { return m; });
-
-      error_code = cudaMemcpy(eigenvalues + n_dofs_1d - 2,
-                              vals,
-                              exact_inverse.n_elements() * sizeof(Number),
-                              cudaMemcpyHostToDevice);
-      AssertCuda(error_code);
-
-      delete[] vals;
-    }
+    // {
+    //   auto *vals = new Number[exact_inverse.n_elements()];
+    //
+    //   std::transform(exact_inverse.begin(),
+    //                  exact_inverse.end(),
+    //                  vals,
+    //                  [](const Number m) -> Number { return m; });
+    //
+    //   error_code = cudaMemcpy(eigenvalues + n_dofs_1d - 2,
+    //                           vals,
+    //                           exact_inverse.n_elements() * sizeof(Number),
+    //                           cudaMemcpyHostToDevice);
+    //   AssertCuda(error_code);
+    //
+    //   delete[] vals;
+    // }
 
     error_code = cudaMemcpy(eigenvectors,
                             vectors,

@@ -252,7 +252,7 @@ namespace PSMF
                  const data_type             *data,
                  SharedDataCuda<dim, Number> *shdata,
                  const unsigned int           dofs_per_dim)
-    : n_cells(data->n_cells)
+    : n_cells(data -> n_cells)
     , padding_length(data->padding_length)
     , mf_object_id(data->id)
     , dofs_per_dim(dofs_per_dim)
@@ -453,6 +453,7 @@ namespace PSMF
   {
     const unsigned int q_point = internal::compute_index<dim, n_q_points_1d>();
     values[q_point]            = val_in * JxW[q_point];
+    __syncthreads();
   }
 
 
@@ -526,6 +527,7 @@ namespace PSMF
             inv_jacobian[1 * padding_length * (dim * d_1 + d_2)] * grad_in[d_2];
         gradients[d_1][q_point] = tmp * JxW[q_point];
       }
+    __syncthreads();
   }
 
 

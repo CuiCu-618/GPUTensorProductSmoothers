@@ -19,6 +19,8 @@ namespace PSMF
   class LaplaceOperatorQuad
   {
   public:
+    const double tau = 0.01;
+
     __device__
     LaplaceOperatorQuad()
     {}
@@ -26,7 +28,12 @@ namespace PSMF
     operator()(
       FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> *fe_eval) const
     {
-      fe_eval->submit_gradient(fe_eval->get_gradient());
+      fe_eval->submit_value(fe_eval->get_value());
+
+      auto grad = fe_eval->get_gradient();
+      for (unsigned int d = 0; d < dim; ++d)
+        grad[d] *= tau;
+      fe_eval->submit_gradient(grad);
     }
   };
 
@@ -56,13 +63,48 @@ namespace PSMF
       FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> fe_eval(
         cell, gpu_data, shared_data, dofs_per_dim);
       fe_eval.read_dof_values(src);
-      fe_eval.evaluate(false, true);
+      fe_eval.evaluate(true, true);
       fe_eval.apply_for_each_quad_point(
         LaplaceOperatorQuad<dim, fe_degree, Number>());
-      fe_eval.integrate(false, true);
+      fe_eval.integrate(true, true);
       fe_eval.distribute_local_to_global(dst);
     }
   };
+
+  template <int dim, int fe_degree, typename Number>
+  class LocalMassOperator
+  {
+  public:
+    static const unsigned int n_dofs_1d    = fe_degree + 1;
+    static const unsigned int n_local_dofs = Utilities::pow(fe_degree + 1, dim);
+    static const unsigned int n_q_points   = Utilities::pow(fe_degree + 1, dim);
+
+    const unsigned int dofs_per_dim;
+
+    LocalMassOperator(const unsigned int dofs_per_dim)
+      : dofs_per_dim(dofs_per_dim)
+    {}
+
+    __device__ void
+    operator()(const unsigned int                            cell,
+               const typename MatrixFree<dim, Number>::Data *gpu_data,
+               SharedDataCuda<dim, Number>                  *shared_data,
+               const Number                                 *src,
+               Number                                       *dst) const
+    {
+      const unsigned int pos =
+        local_q_point_id<dim, Number>(cell, gpu_data, n_dofs_1d, n_q_points);
+      FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> fe_eval(
+        cell, gpu_data, shared_data, dofs_per_dim);
+      fe_eval.read_dof_values(src);
+      fe_eval.evaluate(true, false);
+      fe_eval.submit_value(fe_eval.get_value());
+      __syncthreads();
+      fe_eval.integrate(true, false);
+      fe_eval.distribute_local_to_global(dst);
+    }
+  };
+
 
   template <int dim, int fe_degree, typename Number, DoFLayout dof_layout>
   class LaplaceOperator;
@@ -101,6 +143,25 @@ namespace PSMF
     }
 
     void
+    vmult_mass(
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>       &dst,
+      const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &src)
+      const
+    {
+      dst = 0.;
+
+      unsigned int level          = mf_data->get_mg_level();
+      unsigned int n_dofs_per_dim = (1 << level) * fe_degree + 1;
+
+      LocalMassOperator<dim, fe_degree, Number> Laplace_operator(
+        n_dofs_per_dim);
+
+      mf_data->cell_loop(Laplace_operator, src, dst);
+      mf_data->copy_constrained_values(src, dst);
+    }
+
+
+    void
     Tvmult(LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
            const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
              &src) const
@@ -123,6 +184,7 @@ namespace PSMF
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &src,
       const Function<dim, Number> &rhs_function,
+      const Function<dim, Number> &analytic_solution,
       const unsigned int           mg_level) const
     {
       dst = 0.;
@@ -132,14 +194,32 @@ namespace PSMF
 
       LinearAlgebra::distributed::Vector<Number, MemorySpace::Host>
         system_rhs_host(n_dofs);
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::Host>
+        system_u_host(n_dofs);
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
         system_rhs_dev(n_dofs);
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
+        system_u_dev(n_dofs);
 
       LinearAlgebra::ReadWriteVector<Number> rw_vector(n_dofs);
 
       AffineConstraints<Number> constraints;
       constraints.close();
 
+      // U
+      std::map<types::global_dof_index, Point<dim>> current_point_map;
+      DoFTools::map_dofs_to_support_points<dim>(MappingQGeneric<dim>(fe_degree +
+                                                                     1),
+                                                mf_data->get_dof_handler(),
+                                                current_point_map);
+      for (unsigned int i = 0; i < n_dofs; ++i)
+        system_u_host[i] = analytic_solution.value(current_point_map[i]);
+
+      rw_vector.import(system_u_host, VectorOperation::insert);
+      system_u_dev.import(rw_vector, VectorOperation::insert);
+      vmult_mass(system_rhs_dev, system_u_dev);
+
+      // rhs
       const QGauss<dim>  quadrature_formula(fe_degree + 1);
       FEValues<dim>      fe_values(mf_data->get_dof_handler().get_fe(),
                               quadrature_formula,
@@ -177,7 +257,7 @@ namespace PSMF
 
       system_rhs_host.compress(VectorOperation::add);
       rw_vector.import(system_rhs_host, VectorOperation::insert);
-      system_rhs_dev.import(rw_vector, VectorOperation::insert);
+      system_rhs_dev.import(rw_vector, VectorOperation::add);
 
       vmult(dst, src);
       dst.sadd(-1., system_rhs_dev);

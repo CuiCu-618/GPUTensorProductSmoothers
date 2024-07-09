@@ -373,7 +373,7 @@ namespace PSMF
   template <int dim, typename Number>
   template <template <int, int, typename> class loop_body, int degree>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::coarse_cell_loop(
+  MGTransferCUDA<dim, Number, >::coarse_cell_loop(
     const unsigned int                                             fine_level,
     LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
     const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &src)
@@ -406,7 +406,7 @@ namespace PSMF
   }
 
   template <int dim, typename Number>
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::MGTransferCUDA()
+  MGTransferCUDA<dim, Number, >::MGTransferCUDA()
     : fe_degree(0)
     , element_is_continuous(true)
     , n_components(0)
@@ -414,8 +414,7 @@ namespace PSMF
   {}
 
   template <int dim, typename Number>
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::MGTransferCUDA(
-    const MGConstrainedDoFs &mg_c)
+  MGTransferCUDA<dim, Number, >::MGTransferCUDA(const MGConstrainedDoFs &mg_c)
     : fe_degree(0)
     , element_is_continuous(true)
     , n_components(0)
@@ -425,12 +424,12 @@ namespace PSMF
   }
 
   template <int dim, typename Number>
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::~MGTransferCUDA()
+  MGTransferCUDA<dim, Number, >::~MGTransferCUDA()
   {}
 
   template <int dim, typename Number>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::initialize_constraints(
+  MGTransferCUDA<dim, Number, >::initialize_constraints(
     const MGConstrainedDoFs &mg_c)
   {
     this->mg_constrained_dofs = &mg_c;
@@ -438,7 +437,7 @@ namespace PSMF
 
   template <int dim, typename Number>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::clear()
+  MGTransferCUDA<dim, Number, >::clear()
   {
     fe_degree             = 0;
     element_is_continuous = false;
@@ -452,7 +451,7 @@ namespace PSMF
 
   template <int dim, typename Number>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::build(
+  MGTransferCUDA<dim, Number, >::build(
     const DoFHandler<dim, dim> &mg_dof,
     const std::vector<std::shared_ptr<const Utilities::MPI::Partitioner>>
       &external_partitioners)
@@ -560,7 +559,7 @@ namespace PSMF
 
   template <int dim, typename Number>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::prolongate(
+  MGTransferCUDA<dim, Number, >::prolongate(
     const unsigned int                                             to_level,
     LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
     const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &src)
@@ -572,7 +571,7 @@ namespace PSMF
 
   template <int dim, typename Number>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::prolongate_and_add(
+  MGTransferCUDA<dim, Number, >::prolongate_and_add(
     const unsigned int                                             to_level,
     LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
     const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &src)
@@ -622,7 +621,7 @@ namespace PSMF
 
   template <int dim, typename Number>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::restrict_and_add(
+  MGTransferCUDA<dim, Number, >::restrict_and_add(
     const unsigned int                                             from_level,
     LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
     const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &src)
@@ -686,7 +685,7 @@ namespace PSMF
 
   template <int dim, typename Number>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::set_mg_constrained_dofs(
+  MGTransferCUDA<dim, Number, >::set_mg_constrained_dofs(
     LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &vec,
     unsigned int                                                   level,
     Number                                                         val) const
@@ -708,7 +707,7 @@ namespace PSMF
   template <int dim, typename Number>
   template <int spacedim, typename Number2>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::copy_to_mg(
+  MGTransferCUDA<dim, Number, >::copy_to_mg(
     const DoFHandler<dim, spacedim> &mg_dof,
     MGLevelObject<LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>>
                                                                          &dst,
@@ -753,7 +752,7 @@ namespace PSMF
   template <int dim, typename Number>
   template <int spacedim, typename Number2>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::copy_from_mg(
+  MGTransferCUDA<dim, Number, >::copy_from_mg(
     const DoFHandler<dim, spacedim>                                &mg_dof,
     LinearAlgebra::distributed::Vector<Number2, MemorySpace::CUDA> &dst,
     const MGLevelObject<
@@ -787,7 +786,7 @@ namespace PSMF
   template <int dim, typename Number>
   template <int spacedim, typename Number2>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::copy_from_mg_add(
+  MGTransferCUDA<dim, Number, >::copy_from_mg_add(
     const DoFHandler<dim, spacedim>                                &mg_dof,
     LinearAlgebra::distributed::Vector<Number2, MemorySpace::CUDA> &dst,
     const MGLevelObject<
@@ -822,7 +821,7 @@ namespace PSMF
 
   template <int dim, typename Number>
   std::size_t
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::memory_consumption() const
+  MGTransferCUDA<dim, Number, >::memory_consumption() const
   {
     std::size_t memory = 0;
     memory += MemoryConsumption::memory_consumption(copy_indices);
@@ -838,9 +837,8 @@ namespace PSMF
   template <int dim, typename Number>
   template <typename VectorType, typename VectorType2>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::copy_to_device(
-    VectorType        &device,
-    const VectorType2 &host)
+  MGTransferCUDA<dim, Number, >::copy_to_device(VectorType        &device,
+                                                const VectorType2 &host)
   {
     LinearAlgebra::ReadWriteVector<typename VectorType::value_type> rw_vector(
       host.size());
@@ -852,7 +850,7 @@ namespace PSMF
 
   template <int dim, typename Number>
   void
-  MGTransferCUDA<dim, Number, DoFLayout::Q>::fill_copy_indices(
+  MGTransferCUDA<dim, Number, >::fill_copy_indices(
     const DoFHandler<dim> &mg_dof)
   {
     std::vector<

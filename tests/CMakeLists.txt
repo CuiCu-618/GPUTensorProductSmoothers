@@ -11,6 +11,7 @@ INCLUDE_DIRECTORIES(
 )
 
 SET( SOURCE_FILES
+        tensor_op.cu
         mf_dg.cu
         mf_cg_vector.cu
         )
