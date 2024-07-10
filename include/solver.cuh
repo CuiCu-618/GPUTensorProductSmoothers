@@ -462,7 +462,10 @@ namespace PSMF
     std::optional<ReductionControl>
     solve_gmres(const bool do_analyze)
     {
-      ReductionControl         solver_control(1000, 1e-16, CT::REDUCE_);
+      ReductionControl solver_control(1000, 1e-16, CT::REDUCE_);
+      solver_control.enable_history_data();
+      solver_control.log_history(true);
+
       SolverGMRES<VectorType2> solver_gmres(solver_control);
       solution[maxlevel] = 0;
       solver_gmres.solve(matrix_dp[maxlevel],

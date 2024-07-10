@@ -278,6 +278,10 @@ namespace Step64
     const auto n_frac = std::log(reduction) / std::log(rho);
 
     solver.print_wall_times();
+    auto history_data = solver_control->get_history_data();
+    for (auto i = 1U; i < n_iter + 1; ++i)
+      *pcout << "step " << i << ": " << history_data[i] / residual_0 << "\n";
+
     {
       auto solution = solver.get_solution();
 
