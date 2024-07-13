@@ -457,14 +457,99 @@ test_mixed()
   // -kron(M2,D1)
 }
 
+template <int dim, int degree, typename Number = double>
+void
+test_mass()
+{
+  FE_RaviartThomas_new<dim> fe_v(degree);
+  FE_DGQLegendre<dim>       fe_p(degree);
+  QGauss<1>                 quadrature(degree + 2);
+
+  const unsigned int n_quadrature    = quadrature.size();
+  const unsigned int n_dofs_per_cell = fe_v.n_dofs_per_cell();
+
+  std::array<unsigned int, dim> n_cell_dofs_1d, n_patch_dofs_1d;
+
+  for (unsigned int d = 0; d < dim; ++d)
+    {
+      n_cell_dofs_1d[d] = d == 0 ? degree + 2 : degree + 1;
+      n_patch_dofs_1d[d] =
+        d == 0 ? 2 * n_cell_dofs_1d[d] - 1 : 2 * n_cell_dofs_1d[d];
+    }
+  internal::MatrixFreeFunctions::ShapeInfo<double> shape_info_v;
+  internal::MatrixFreeFunctions::ShapeInfo<double> shape_info_p;
+  shape_info_v.reinit(quadrature, fe_v);
+  shape_info_p.reinit(quadrature, fe_p);
+
+  std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+    shape_data_v;
+  std::array<internal::MatrixFreeFunctions::UnivariateShapeData<Number>, dim>
+    shape_data_p;
+  for (auto d = 0U; d < dim; ++d)
+    {
+      shape_data_v[d] = shape_info_v.get_shape_data(d, 0);
+      shape_data_p[d] = shape_info_p.get_shape_data(d, 0);
+    }
+
+  const Number h = 2.0;
+
+  auto cell_mass = [&](unsigned int pos) {
+    std::array<Table<2, Number>, dim> mass_matrices;
+
+    for (unsigned int d = 0; d < dim; ++d)
+      mass_matrices[d].reinit(degree + 1, degree + 1);
+
+    unsigned int is_first = pos == 0 ? 1 : 0;
+
+    // dir0, mass & laplace
+    for (unsigned int d = 0; d < dim; ++d)
+      for (unsigned int i = 0; i < degree + 1; ++i)
+        for (unsigned int j = 0; j < degree + 1; ++j)
+          {
+            Number sum_mass = 0;
+            for (unsigned int q = 0; q < n_quadrature; ++q)
+              {
+                sum_mass += shape_data_p[d].shape_values[i * n_quadrature + q] *
+                            shape_data_p[d].shape_values[j * n_quadrature + q] *
+                            quadrature.weight(q) * is_first;
+              }
+
+            mass_matrices[d](i, j) += sum_mass;
+          }
+
+    return mass_matrices;
+  };
+
+  auto print_matrices = [](auto matrix) {
+    for (auto i = 0U; i < matrix.size(); ++i)
+      {
+        for (auto m = 0U; m < matrix[i].size(0); ++m)
+          {
+            for (auto n = 0U; n < matrix[i].size(1); ++n)
+              std::cout << matrix[i](m, n) << " ";
+            std::cout << std::endl;
+          }
+        std::cout << std::endl;
+      }
+    std::cout << std::endl;
+  };
+
+  auto mass_matrices = cell_mass(0);
+
+  print_matrices(mass_matrices);
+}
+
+
 int
 main()
 {
-  test<3, 2>();
+  // test<3, 2>();
 
   // test_mixed<3, 2>();
 
   // test_mixed<2, 6>();
 
   // test<2, 5>();
+
+  test_mass<2, 4>();
 }

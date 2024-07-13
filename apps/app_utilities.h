@@ -48,6 +48,22 @@
     return name##Strings[static_cast<int>(value)];    \
   }
 
+#define SOL_MACRO(name, v1, v2, v3, v4, v5)                \
+  enum class name                                          \
+  {                                                        \
+    v1,                                                    \
+    v2,                                                    \
+    v3,                                                    \
+    v4,                                                    \
+    v5,                                                    \
+  };                                                       \
+  const char *name##Strings[] = {#v1, #v2, #v3, #v4, #v5}; \
+  template <typename T>                                    \
+  constexpr const char *name##ToString(T value)            \
+  {                                                        \
+    return name##Strings[static_cast<int>(value)];         \
+  }
+
 #define ENUM_MACRO(name, v1, v2, v3)               \
   enum class name                                  \
   {                                                \
@@ -64,7 +80,12 @@
 
 SMO_MACRO(Smoother, GLOBAL, FUSED_L, ConflictFree, TensorCore);
 LA_MACRO(Laplace, Basic, BasicCell, ConflictFree, TensorCore, MatrixStruct);
-SMO_MACRO(LocalSolver, Direct, SchurDirect, SchurIter, SchurTensorProduct);
+SOL_MACRO(LocalSolver,
+          Direct,
+          SchurDirect,
+          SchurIter,
+          SchurTensorProduct,
+          Uzawa);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);
 ENUM_MACRO(Granularity, none, user_define, multiple);
 
@@ -199,8 +220,7 @@ namespace Util
         << "Number of MG cycles in V-cycle: " << 1 << std::endl
         << "Number of smoothing steps:      " << CT::N_SMOOTH_STEPS_
         << std::endl
-        << "Build type:                     "
-        <<
+        << "Build type:                     " <<
 #ifdef DEBUG
       "Debug"
 #else

@@ -97,7 +97,8 @@ namespace PSMF
     Direct,
     SchurDirect,
     SchurIter,
-    SchurTensorProduct
+    SchurTensorProduct,
+    Uzawa
   };
 
 
@@ -986,6 +987,43 @@ namespace PSMF
 
     Number *local_vars;
   };
+
+  template <int dim, typename Number, SmootherVariant smoother>
+  struct SharedDataSmoother<dim, Number, smoother, LocalSolverVariant::Uzawa>
+    : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+    using SharedDataBase<Number>::local_mass;
+    using SharedDataBase<Number>::local_laplace;
+    using SharedDataBase<Number>::local_mix_mass;
+    using SharedDataBase<Number>::local_mix_der;
+    using SharedDataBase<Number>::tmp;
+
+    __device__
+    SharedDataSmoother(Number      *data,
+                       unsigned int n_buff,
+                       unsigned int n_dofs_1d,
+                       unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+
+      local_mass    = local_dst + n_buff * local_dim;
+      local_laplace = local_mass + n_buff * n_dofs_1d * dim * dim;
+      local_mix_mass =
+        local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_der =
+        local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * (dim - 1);
+
+      tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * 1;
+
+      local_vars = tmp + n_buff * 4 * local_dim;
+    }
+
+    Number *local_vars;
+  };
+
 
   /**
    * Bila or KSVD12 local solver.

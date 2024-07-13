@@ -18,6 +18,7 @@
 
 using namespace nvcuda;
 
+#define PRINTINFO
 
 namespace PSMF
 {
@@ -1705,7 +1706,7 @@ namespace PSMF
         VecSadd<n_patch_dofs_dg, Number, false>(tid, block_size, x, p, *alpha);
         __syncthreads();
 
-        if (local_flag < 0 && *norm_min < 1e-15)
+        if (local_flag < 0 && *norm_min < 1e-12)
           {
             // if (tid == 0 && blockIdx.x == 0)
             //   printf("# it: %d, #it min: %f, residual: %e\n", it, *it_min,
@@ -1729,8 +1730,13 @@ namespace PSMF
         __syncthreads();
 
         if (*convergenced > 0)
-          return;
-
+          {
+#ifdef PRINTINFO
+            if (tid == 0 && blockIdx.x == 0)
+              printf("# it: %d, residual: %e\n", it, *norm_min);
+#endif
+            return;
+          }
         VecSadd<n_patch_dofs_dg, Number, true>(tid, block_size, p, r, *beta);
         __syncthreads();
 
@@ -1738,6 +1744,184 @@ namespace PSMF
           *rsold = *rsnew;
       }
   }
+
+  template <int dim, int fe_degree, typename Number, typename SharedData>
+  __device__ void
+  evaluate_smooth_Uzawa(const unsigned int local_patch, SharedData *shared_data)
+  {
+    constexpr int n_dofs_1d = 2 * fe_degree + 3;
+    constexpr int n_dofs_2d = n_dofs_1d * n_dofs_1d;
+
+    constexpr int n_patch_dofs_rt =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * fe_degree + 1);
+    constexpr int n_patch_dofs_dg = Util::pow(2 * fe_degree + 2, dim);
+    constexpr int n_patch_dofs    = n_patch_dofs_rt + n_patch_dofs_dg;
+    constexpr int block_size      = n_dofs_1d * n_dofs_1d * dim;
+
+    const int tid = (threadIdx.y % (n_dofs_1d * dim)) * n_dofs_1d + threadIdx.x;
+    const int tid_c = (threadIdx.y % n_dofs_1d) * n_dofs_1d + threadIdx.x;
+
+    const int component = (threadIdx.y / n_dofs_1d) % dim;
+
+    TPEvaluatorStokes<LaplaceVariant::Basic, Number, fe_degree, dim> eval;
+    __syncthreads();
+
+    const unsigned int *mapping = component == 0 ? ltoh_dgn :
+                                  component == 1 ? ltoh_dgt :
+                                                   ltoh_dgz;
+
+    Number *u = &shared_data->local_dst[local_patch * n_patch_dofs];
+    Number *p =
+      &shared_data->local_dst[local_patch * n_patch_dofs + n_patch_dofs_rt];
+    Number *r = &shared_data->local_src[local_patch * n_patch_dofs];
+
+    Number *Ax =
+      &shared_data->tmp[local_patch * n_patch_dofs * 4 + 1 * n_patch_dofs];
+    Number *tmp =
+      &shared_data->tmp[local_patch * n_patch_dofs * 4 + 2 * n_patch_dofs];
+
+    using shapeB = Shape<2 * fe_degree + 1, 2 * fe_degree + 2>;
+    using shapeU =
+      Shape<2 * fe_degree + 2, 2 * fe_degree + 1, 2 * fe_degree + 2>;
+    using shapeP =
+      Shape<2 * fe_degree + 2, 2 * fe_degree + 2, 2 * fe_degree + 2>;
+
+    constexpr int MAX_IT = 100;
+
+    Number *norm       = &shared_data->local_vars[7 * local_patch + 0];
+    Number *converged  = &shared_data->local_vars[7 * local_patch + 1];
+    Number  rho        = 6;
+    Number  local_flag = -1;
+
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+      *converged = 1;
+
+    if (tid == 0)
+      atomicAdd(converged, -2);
+
+    for (int it = 0; it < MAX_IT; ++it)
+      {
+        // B * p_k
+        for (int i = 0; i < n_patch_dofs_dg / n_dofs_2d + 1; ++i)
+          if (tid_c + i * n_dofs_2d < n_patch_dofs_dg)
+            {
+              tmp[component * n_patch_dofs_dg +
+                  mapping[tid_c + i * n_dofs_2d]] =
+                p[ltoh_dgn[tid_c + i * n_dofs_2d]];
+            }
+        __syncthreads();
+
+        eval.template vmult_mixed<shapeB, shapeP, false, false>(
+          &Ax[component * n_patch_dofs_rt / dim],
+          &tmp[component * n_patch_dofs_dg],
+          &shared_data->local_mix_mass[local_patch * n_dofs_2d * (dim - 1)],
+          &shared_data->local_mix_der[local_patch * n_dofs_2d],
+          &tmp[n_patch_dofs + component * n_patch_dofs_dg]);
+        __syncthreads();
+
+        // {
+        //   innerProd<n_patch_dofs_rt, Number>(tid, block_size, Ax, Ax, norm);
+        //   __syncthreads();
+        //   Number n3 = sqrt(*norm);
+        //
+        //   if (tid == 0 && blockIdx.x == 0)
+        //     {
+        //       printf("# it: %d, %f\n", it, n3);
+        //     }
+        // }
+
+        // F - B * p_k
+        VecSadd<n_patch_dofs_rt, Number, true>(tid, block_size, Ax, r, -1);
+        __syncthreads();
+
+        // {
+        //   innerProd<n_patch_dofs_rt, Number>(tid, block_size, Ax, Ax, norm);
+        //   __syncthreads();
+        //   Number n3 = sqrt(*norm);
+        //
+        //   if (tid == 0 && blockIdx.x == 0)
+        //     {
+        //       printf("# it: %d, %f\n", it, n3);
+        //     }
+        // }
+
+        // M u_k+1 = F - B * p_k
+        eval.template inverse<false>(
+          &u[component * n_patch_dofs_rt / dim],
+          &Ax[component * n_patch_dofs_rt / dim],
+          &shared_data->local_mass[local_patch * n_dofs_1d * dim * dim +
+                                   component * n_dofs_1d * dim],
+          &shared_data->local_laplace[local_patch * n_dofs_2d * dim * dim +
+                                      component * n_dofs_2d * dim],
+          &tmp[component * n_patch_dofs_dg]);
+        __syncthreads();
+
+        // rho * B^T * u_k+1
+        eval.template vmult_mixed<shapeB, shapeU, true, false>(
+          &Ax[component * n_patch_dofs_dg],
+          &u[component * n_patch_dofs_rt / dim],
+          &shared_data->local_mix_mass[local_patch * n_dofs_2d * (dim - 1)],
+          &shared_data->local_mix_der[local_patch * n_dofs_2d],
+          &tmp[component * n_patch_dofs_dg]);
+        __syncthreads();
+
+        for (unsigned int i = 0; i < n_patch_dofs_dg / n_dofs_2d + 1; ++i)
+          if (tid_c + i * n_dofs_2d < n_patch_dofs_dg && component != 0)
+            {
+              atomicAdd(&Ax[ltoh_dgn[tid_c + i * n_dofs_2d]],
+                        Ax[component * n_patch_dofs_dg +
+                           mapping[tid_c + i * n_dofs_2d]]);
+            }
+        __syncthreads();
+
+        // p_k+1 = rho * (B^T * u_k+1 - G) + p_k
+        VecSadd<n_patch_dofs_dg, Number, false>(tid, block_size, p, Ax, rho);
+
+        VecSadd<n_patch_dofs_dg, Number, false>(
+          tid, block_size, p, &r[n_patch_dofs_rt], -rho);
+
+        innerProd<n_patch_dofs_dg, Number>(tid, block_size, Ax, Ax, norm);
+        __syncthreads();
+
+        // {
+        //   innerProd<n_patch_dofs_dg, Number>(tid, block_size, p, p, norm);
+        //   __syncthreads();
+        //   Number n1 = sqrt(*norm);
+        //
+        //   innerProd<n_patch_dofs_rt, Number>(tid, block_size, u, u, norm);
+        //   __syncthreads();
+        //   Number n2 = sqrt(*norm);
+        //
+        //   innerProd<n_patch_dofs_dg, Number>(tid, block_size, Ax, Ax, norm);
+        //   __syncthreads();
+        //   Number n3 = rho * sqrt(*norm);
+        //
+        //   if (tid == 0 && blockIdx.x == 0)
+        //     {
+        //       printf("# it: %d, %f %f %f\n", it, n1, n2, n3);
+        //     }
+        // }
+
+        if (local_flag < 0 && sqrt(*norm * rho * rho) < 1e-12)
+          {
+            // return;
+            local_flag = 1;
+            if (tid == 0)
+              atomicAdd(converged, 2);
+          }
+
+        __syncthreads();
+        if (*converged > 0)
+          {
+#ifdef PRINTINFO
+            if (tid == 0 && blockIdx.x == 0)
+              printf("# it: %d, residual: %e\n", it, sqrt(*norm));
+#endif
+            return;
+          }
+      }
+  }
+
 
   // template <int dim,
   //           int fe_degree,

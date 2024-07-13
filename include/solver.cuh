@@ -149,11 +149,11 @@ namespace PSMF
     using MatrixType2 =
       LaplaceOperator<dim, fe_degree, Number2, lapalace_kernel>;
     using SmootherType       = PatchSmoother<MatrixType2,
-                                       dim,
-                                       fe_degree,
-                                       local_solver,
-                                       smooth_vmult,
-                                       smooth_inverse>;
+                                             dim,
+                                             fe_degree,
+                                             local_solver,
+                                             smooth_vmult,
+                                             smooth_inverse>;
     using SmootherTypeCoarse = PatchSmoother<MatrixType2,
                                              dim,
                                              fe_degree,
@@ -601,15 +601,15 @@ namespace PSMF
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>;
     using MatrixType = LaplaceOperator<dim, fe_degree, Number, lapalace_kernel>;
     using SmootherType       = PatchSmoother<MatrixType,
-                                       dim,
-                                       fe_degree,
-                                       local_solver,
-                                       smooth_vmult,
-                                       smooth_inverse>;
+                                             dim,
+                                             fe_degree,
+                                             local_solver,
+                                             smooth_vmult,
+                                             smooth_inverse>;
     using SmootherTypeCoarse = PatchSmoother<MatrixType,
                                              dim,
                                              fe_degree,
-                                             LocalSolverVariant::Direct,
+                                             local_solver,
                                              smooth_vmult,
                                              smooth_inverse>;
     using MatrixFreeType     = LevelVertexPatch<dim, fe_degree, Number>;

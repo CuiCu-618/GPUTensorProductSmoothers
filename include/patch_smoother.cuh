@@ -142,6 +142,39 @@ namespace PSMF
           block_dim = dim3(2 * fe_degree + 3,
                            patch_per_block * dim * (2 * fe_degree + 3));
         }
+      else if (solver == LocalSolverVariant::Uzawa)
+        {
+          constexpr unsigned int n_patch_dofs_inv =
+            dim * Util::pow(2 * fe_degree + 2, dim - 1) *
+              (2 * (fe_degree + 2) - 3) +
+            Util::pow(2 * fe_degree + 2, dim);
+
+          // local_src, local_dst, tmp
+          shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
+
+          // CG
+          shared_mem += 3 * patch_per_block * n_patch_dofs_inv * sizeof(Number);
+          shared_mem += 7 * patch_per_block * sizeof(Number);
+
+          // local_eigenvectors, local_eigenvalues
+          shared_mem +=
+            dim * patch_per_block * n_dofs_1d * dim * sizeof(Number);
+
+          shared_mem += dim * patch_per_block * n_dofs_1d * n_dofs_1d * dim *
+                        sizeof(Number);
+
+          // M D
+          shared_mem += patch_per_block * Util::pow(2 * fe_degree + 3, 2) *
+                        dim * sizeof(Number);
+
+          AssertCuda(cudaFuncSetAttribute(
+            loop_kernel_global<dim, fe_degree, Number, solver>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            shared_mem));
+
+          block_dim = dim3(2 * fe_degree + 3,
+                           patch_per_block * dim * (2 * fe_degree + 3));
+        }
       else
         {
           const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
@@ -174,11 +207,13 @@ namespace PSMF
       A->vmult(tmp, dst);
       tmp.sadd(-1., src);
 
+      int solver_type =
+        solver == LocalSolverVariant::Uzawa ? 3 : static_cast<int>(solver);
+
       loop_kernel_global<dim, fe_degree, Number, solver>
-        <<<grid_dim, block_dim, shared_mem>>>(
-          tmp.get_values(),
-          dst.get_values(),
-          gpu_data[static_cast<int>(solver)]);
+        <<<grid_dim, block_dim, shared_mem>>>(tmp.get_values(),
+                                              dst.get_values(),
+                                              gpu_data[solver_type]);
     }
     mutable std::size_t                  shared_mem;
     mutable dim3                         block_dim;

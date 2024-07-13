@@ -193,7 +193,7 @@ namespace PSMF
                 collection.resize(patch_size);
               if (patch_size == regular_vpatch_size) // regular patch
                 collection[regular_vpatch_size - 1 - v] = cell;
-              else                                   // irregular patch
+              else // irregular patch
                 AssertThrow(false, ExcMessage("TODO irregular vertex patches"));
             }
         }
@@ -2302,7 +2302,7 @@ namespace PSMF
 
 } // namespace PSMF
 
-  /**
-   * \page patch_base.template
-   * \include patch_base.template.cuh
-   */
+/**
+ * \page patch_base.template
+ * \include patch_base.template.cuh
+ */

@@ -712,6 +712,218 @@ namespace PSMF
       }
   }
 
+  template <int dim,
+            int fe_degree,
+            typename Number,
+            LocalSolverVariant local_solver>
+  __global__
+    typename std::enable_if<local_solver == LocalSolverVariant::Uzawa>::type
+    loop_kernel_global(
+      const Number                                                 *src,
+      Number                                                       *dst,
+      const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
+  {
+    constexpr int n_dofs_1d = 2 * fe_degree + 3;
+    constexpr int n_dofs_2d = n_dofs_1d * n_dofs_1d;
+
+    constexpr int n_patch_dofs_rt =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * fe_degree + 1);
+    constexpr int n_patch_dofs_dg = Util::pow(2 * fe_degree + 2, dim);
+    constexpr int n_patch_dofs    = n_patch_dofs_rt + n_patch_dofs_dg;
+    constexpr int n_patch_dofs_rt_all =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * fe_degree + 3);
+    constexpr int n_patch_dofs_all =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * (fe_degree + 2) - 1) +
+      Util::pow(2 * fe_degree + 2, dim);
+    constexpr int block_size = n_dofs_2d * dim;
+
+    const int patch_per_block = gpu_data.patch_per_block;
+    const int local_patch     = threadIdx.y / (n_dofs_1d * dim);
+    const int patch           = local_patch + patch_per_block * blockIdx.x;
+
+    const int tid_y = threadIdx.y % (n_dofs_1d * dim);
+    const int tid_x = threadIdx.x;
+    const int tid   = tid_y * n_dofs_1d + tid_x;
+
+    SharedDataSmoother<dim, Number, SmootherVariant::GLOBAL, local_solver>
+      shared_data(get_shared_data_ptr<Number>(),
+                  patch_per_block,
+                  n_dofs_1d,
+                  n_patch_dofs);
+
+    if (patch < gpu_data.n_patches)
+      {
+        unsigned int patch_type = 0;
+        for (unsigned int d = 0; d < dim; ++d)
+          patch_type += gpu_data.patch_type[patch * dim + d] * Util::pow(3, d);
+
+        // eigs
+        for (int dir = 0; dir < dim; ++dir)
+          for (int d = 0; d < dim; ++d)
+            if ((d == 0 && tid < (n_dofs_1d - 2) * (n_dofs_1d - 1)) ||
+                (d != 0 && tid < (n_dofs_1d - 1) * (n_dofs_1d - 1)))
+              {
+                if ((d == 0 && tid < n_dofs_1d - 2) ||
+                    (d != 0 && tid < n_dofs_1d - 1))
+                  {
+                    const int shift = local_patch * n_dofs_1d * dim * dim;
+                    shared_data
+                      .local_mass[shift + (dir * dim + d) * n_dofs_1d + tid] =
+                      gpu_data.eigvals[dir][patch_type * n_dofs_1d * dim +
+                                            d * n_dofs_1d + tid];
+                  }
+                const int shift2 = local_patch * n_dofs_2d * dim * dim;
+                shared_data
+                  .local_laplace[shift2 + (dir * dim + d) * n_dofs_2d + tid] =
+                  gpu_data.eigvecs[dir][patch_type * n_dofs_2d * dim +
+                                        d * n_dofs_2d + tid];
+              }
+
+        {
+          // D
+          const int shift1 = local_patch * n_dofs_2d * 1;
+          if (tid < (n_dofs_1d - 2) * (n_dofs_1d - 1))
+            shared_data.local_mix_der[shift1 + tid] =
+              -gpu_data.smooth_mixder_1d[0][tid];
+          // M
+          const int shift2 = local_patch * n_dofs_2d * (dim - 1);
+          if (tid < (n_dofs_1d - 1) * (n_dofs_1d - 1))
+            shared_data.local_mix_mass[shift2 + tid] =
+              gpu_data.smooth_mixmass_1d[1][tid];
+
+          if (dim == 3)
+            {
+              if (tid < (n_dofs_1d - 1) * (n_dofs_1d - 1))
+                shared_data.local_mix_mass[shift2 + n_dofs_2d + tid] =
+                  gpu_data.smooth_mixmass_1d[2][tid];
+            }
+        }
+
+        for (unsigned int i = 0; i < n_patch_dofs_rt / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_rt)
+            {
+              unsigned int global_dof_index =
+                gpu_data
+                  .patch_dof_smooth[patch * n_patch_dofs_all +
+                                    htol_rt_interior[tid + i * block_size]];
+
+              shared_data
+                .local_src[local_patch * n_patch_dofs + tid + i * block_size] =
+                src[global_dof_index];
+              shared_data
+                .local_dst[local_patch * n_patch_dofs + tid + i * block_size] =
+                0;
+            }
+
+        for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_dg)
+            {
+              unsigned int global_dof_index =
+                gpu_data.patch_dof_smooth[patch * n_patch_dofs_all +
+                                          n_patch_dofs_rt_all +
+                                          htol_dgn[tid + i * block_size]];
+
+              shared_data.local_src[local_patch * n_patch_dofs +
+                                    n_patch_dofs_rt + tid + i * block_size] =
+                src[global_dof_index];
+              shared_data.local_dst[local_patch * n_patch_dofs +
+                                    n_patch_dofs_rt + tid + i * block_size] = 0;
+            }
+        __syncthreads();
+
+        // if (threadIdx.x == 0 && threadIdx.y == 0)
+        //   {
+        //     for (unsigned int i = 0; i < n_patch_dofs; ++i)
+        //       printf("%f ", shared_data.local_src[i]);
+        //     printf("src Uzawa\n\n");
+        //   }
+        //
+        // __syncthreads();
+        // printf("[%d] ", tid);
+
+        evaluate_smooth_Uzawa<dim, fe_degree, Number, decltype(shared_data)>(
+          local_patch, &shared_data);
+        __syncthreads();
+
+        // if (threadIdx.x == 0 && threadIdx.y == 0)
+        //   {
+        //     for (unsigned int i = 0; i < n_patch_dofs_rt; ++i)
+        //       printf("%f ", shared_data.local_dst[i]);
+        //
+        //     for (unsigned int i = 0; i < n_patch_dofs_dg; ++i)
+        //       printf("%f ",
+        //              shared_data.local_dst[n_patch_dofs_rt + ltoh_dgn[i]]);
+        //     printf("x Uzawa\n\n");
+        //   }
+        //
+        // __syncthreads();
+        // printf("(%d) ", tid);
+
+        // store
+        for (unsigned int i = 0; i < n_patch_dofs_rt / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_rt)
+            {
+              unsigned int global_dof_index =
+                gpu_data
+                  .patch_dof_smooth[patch * n_patch_dofs_all +
+                                    htol_rt_interior[tid + i * block_size]];
+
+              dst[global_dof_index] +=
+                shared_data.local_dst[local_patch * n_patch_dofs + tid +
+                                      i * block_size] *
+                gpu_data.relaxation;
+
+              // printf("<%d> ", tid);
+              // if (tid == 32)
+              //   printf("\n store [[[ %d %d %d %d %f]]]\n",
+              //          i,
+              //          block_size,
+              //          n_patch_dofs_rt,
+              //          n_patch_dofs_rt / block_size,
+              //          shared_data.local_dst[tid]);
+            }
+
+        // if (threadIdx.x == 0 && threadIdx.y == 0)
+        //   {
+        //     for (unsigned int i = 0; i < n_patch_dofs_rt; ++i)
+        //       printf("%d ",
+        //              gpu_data.patch_dof_smooth[patch * n_patch_dofs_all +
+        //                                        htol_rt_interior[i]]);
+        //     printf("ind Uzawa\n\n");
+        //
+        //     for (unsigned int i = 0; i < n_patch_dofs_rt; ++i)
+        //       printf("%f ",
+        //              dst[gpu_data.patch_dof_smooth[patch * n_patch_dofs_all +
+        //                                            htol_rt_interior[i]]]);
+        //     printf("dstg Uzawa\n\n");
+        //   }
+
+        for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_dg)
+            {
+              unsigned int global_dof_index =
+                gpu_data
+                  .patch_dof_smooth[patch * n_patch_dofs_all +
+                                    n_patch_dofs_rt_all + tid + i * block_size];
+
+              dst[global_dof_index] +=
+                shared_data
+                  .local_dst[local_patch * n_patch_dofs + n_patch_dofs_rt +
+                             ltoh_dgn[tid + i * block_size]] *
+                gpu_data.relaxation;
+            }
+
+        // if (threadIdx.x == 0 && threadIdx.y == 0)
+        //   {
+        //     __syncthreads();
+        //     for (unsigned int i = 0; i < n_patch_dofs_all; ++i)
+        //       printf("%f ", dst[i]);
+        //     printf("dsta Uzawa\n\n");
+        //   }
+      }
+  }
+
+
   template <int matrix_dim, typename Number>
   __device__ void
   MatVecMul(const Number *A, const Number *src, Number *dst)
@@ -1091,7 +1303,8 @@ namespace PSMF
                             local_solver != LocalSolverVariant::SchurDirect &&
                             local_solver != LocalSolverVariant::SchurIter &&
                             local_solver !=
-                              LocalSolverVariant::SchurTensorProduct>::type
+                              LocalSolverVariant::SchurTensorProduct &&
+                            local_solver != LocalSolverVariant::Uzawa>::type
     loop_kernel_global(
       const Number                                                 *src,
       Number                                                       *dst,
