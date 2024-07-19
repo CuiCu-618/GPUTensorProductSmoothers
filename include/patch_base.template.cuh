@@ -67,6 +67,11 @@ namespace PSMF
         Utilities::CUDA::free(rt_laplace_1d[d]);
         Utilities::CUDA::free(mix_mass_1d[d]);
         Utilities::CUDA::free(mix_der_1d[d]);
+
+        Utilities::CUDA::free(rt_mass_1d_p[d]);
+        Utilities::CUDA::free(rt_laplace_1d_p[d]);
+        Utilities::CUDA::free(mix_mass_1d_p[d]);
+        Utilities::CUDA::free(mix_der_1d_p[d]);
       }
 
     Utilities::CUDA::free(hl_rt);
@@ -165,7 +170,7 @@ namespace PSMF
                 collection.resize(patch_size);
               if (patch_size == regular_vpatch_size) // regular patch
                 collection[regular_vpatch_size - 1 - v] = cell;
-              else                                   // irregular patch
+              else // irregular patch
                 AssertThrow(false, ExcMessage("TODO irregular vertex patches"));
             }
         }
@@ -583,6 +588,45 @@ namespace PSMF
     copy_mappings_shared(dof_offset_rt, dof_offset_rt_host);
     copy_mappings_shared(dof_offset_dg, dof_offset_dg_host);
 
+    copy_mappings_shared(ltoh_dgn_dev, ltoh_dgn_host);
+    copy_mappings_shared(ltoh_dgt_dev, ltoh_dgt_host);
+    copy_mappings_shared(ltoh_dgz_dev, ltoh_dgz_host);
+
+    auto padding_zero_copy = [&](auto              &device,
+                                 const auto        &vec,
+                                 const unsigned int n_dofs_1d) {
+      if (vec.size() == 0)
+        return;
+
+      const auto n_dofs_z  = dim == 2 ? 1 : n_dofs_1d;
+      const auto n_dofs_in = n_dofs_1d - 1;
+
+      std::vector<unsigned int> result;
+      result.resize(n_dofs_z * n_dofs_1d * n_dofs_1d);
+
+      for (unsigned int i = 0; i < n_dofs_z; ++i)
+        for (unsigned int j = 0; j < n_dofs_1d; ++j)
+          for (unsigned int k = 0; k < n_dofs_1d; ++k)
+            if (i < n_dofs_in && j < n_dofs_in && k < n_dofs_in)
+              {
+                auto idx = vec[i * n_dofs_in * n_dofs_in + j * n_dofs_in + k];
+                result[i * n_dofs_1d * n_dofs_1d + j * n_dofs_1d + k] =
+                  idx + (idx / (n_dofs_in * n_dofs_in)) * (2 * n_dofs_1d - 1) +
+                  ((idx % (n_dofs_in * n_dofs_in)) / n_dofs_in);
+              }
+            else
+              {
+                result[i * n_dofs_1d * n_dofs_1d + j * n_dofs_1d + k] =
+                  i * n_dofs_1d * n_dofs_1d + j * n_dofs_1d + k;
+              }
+      copy_mappings_shared(device, result);
+    };
+
+    padding_zero_copy(ltoh_dgn_p, ltoh_dgn_host, 2 * fe_degree + 3);
+    padding_zero_copy(ltoh_dgt_p, ltoh_dgt_host, 2 * fe_degree + 3);
+    padding_zero_copy(ltoh_dgz_p, ltoh_dgz_host, 2 * fe_degree + 3);
+
+
     auto copy_to_device = [](auto &device, const auto &host) {
       LinearAlgebra::ReadWriteVector<unsigned int> rw_vector(host.size());
       device.reinit(host.size());
@@ -627,6 +671,11 @@ namespace PSMF
         alloc_arrays(&mix_mass_1d[d], n_dofs_2d * 3 * dim);
         alloc_arrays(&mix_der_1d[d], n_dofs_2d * 3 * dim);
 
+        alloc_arrays(&rt_mass_1d_p[d], n_dofs_2d * 3 * dim);
+        alloc_arrays(&rt_laplace_1d_p[d], n_dofs_2d * 3 * dim);
+        alloc_arrays(&mix_mass_1d_p[d], n_dofs_2d * 3 * dim);
+        alloc_arrays(&mix_der_1d_p[d], n_dofs_2d * 3 * dim);
+
         alloc_arrays(&eigvals[d], n_dofs_1d * dim * Util::pow(3, dim));
         alloc_arrays(&eigvecs[d], n_dofs_2d * dim * Util::pow(3, dim));
       }
@@ -650,8 +699,20 @@ namespace PSMF
     data_copy.mix_mass_1d     = mix_mass_1d;
     data_copy.mix_der_1d      = mix_der_1d;
 
+    data_copy.rt_mass_1d_p    = rt_mass_1d_p;
+    data_copy.rt_laplace_1d_p = rt_laplace_1d_p;
+    data_copy.mix_mass_1d_p   = mix_mass_1d_p;
+    data_copy.mix_der_1d_p    = mix_der_1d_p;
+
     data_copy.htol_rt  = hl_rt;
     data_copy.htol_dgn = hl_dgn;
+    data_copy.ltoh_dgn = ltoh_dgn_dev;
+    data_copy.ltoh_dgt = ltoh_dgt_dev;
+    data_copy.ltoh_dgz = ltoh_dgz_dev;
+
+    data_copy.ltoh_dgn_p = ltoh_dgn_p;
+    data_copy.ltoh_dgt_p = ltoh_dgt_p;
+    data_copy.ltoh_dgz_p = ltoh_dgz_p;
 
     data_copy.base_dof_rt   = base_dof_rt;
     data_copy.base_dof_dg   = base_dof_dg;
@@ -898,6 +959,7 @@ namespace PSMF
         for (unsigned int k = 0; k < 3; ++k)
           {
             {
+              /*
               // Exact
               if (level == 1 && 0)
                 {
@@ -1409,6 +1471,50 @@ namespace PSMF
     copy_to_device(RT_laplace, rt_laplace_1d);
     copy_to_device(Mix_mass, mix_mass_1d);
     copy_to_device(Mix_der, mix_der_1d);
+
+    // auto print_matrices = [](auto matrix) {
+    //   for (auto m = 0U; m < matrix.size(0); ++m)
+    //     {
+    //       for (auto n = 0U; n < matrix.size(1); ++n)
+    //         std::cout << matrix(m, n) << " ";
+    //       std::cout << std::endl;
+    //     }
+    //   std::cout << std::endl;
+    // };
+    //
+    // print_matrices(Mix_der[0][0]);
+    // print_matrices(Mix_der[0][1]);
+
+    auto copy_to_device_p = [](auto tensor, auto dst) {
+      const unsigned int n_dofs_1d = 2 * fe_degree + 3;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        {
+          const unsigned int n_elements = Util::pow(n_dofs_1d, 2);
+
+          auto mat = new Number[n_elements * 3];
+          for (unsigned int i = 0; i < n_elements * 3; ++i)
+            mat[i] = 0;
+
+          for (unsigned int c = 0; c < 3; ++c)
+            for (unsigned int i = 0; i < tensor[d][c].size(0); ++i)
+              for (unsigned int j = 0; j < tensor[d][c].size(1); ++j)
+                mat[c * n_elements + i * n_dofs_1d + j] = tensor[d][c](i, j);
+
+          cudaError_t error_code = cudaMemcpy(dst[d],
+                                              mat,
+                                              3 * n_elements * sizeof(Number),
+                                              cudaMemcpyHostToDevice);
+          AssertCuda(error_code);
+
+          delete[] mat;
+        }
+    };
+
+    copy_to_device_p(RT_mass, rt_mass_1d_p);
+    copy_to_device_p(RT_laplace, rt_laplace_1d_p);
+    copy_to_device_p(Mix_mass, mix_mass_1d_p);
+    copy_to_device_p(Mix_der, mix_der_1d_p);
 
     /*
     constexpr unsigned dim_z = dim == 2 ? 1 : 3;
@@ -2255,7 +2361,7 @@ namespace PSMF
 
 } // namespace PSMF
 
-  /**
-   * \page patch_base.template
-   * \include patch_base.template.cuh
-   */
+/**
+ * \page patch_base.template
+ * \include patch_base.template.cuh
+ */

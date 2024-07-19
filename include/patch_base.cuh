@@ -23,6 +23,15 @@
 
 using namespace dealii;
 
+#define MEMTYPE 1
+// mapping indices memory type
+// 0: constant memory
+// 1: L1/L2 cache
+
+#define CONFLICTFREE
+
+// #define DATAONLY
+
 /**
  * Namespace for the Patch Smoother Matrix-Free
  */
@@ -40,9 +49,9 @@ namespace PSMF
     Basic,
 
     /**
-     * Basic implementation. Load data cell by cell.
+     * Basic implementation. Avoid divergent branches by zero-padding.
      */
-    BasicCell,
+    BasicPadding,
 
     /**
      * A conflict-free implementation by restructuring shared memory access.
@@ -263,6 +272,36 @@ namespace PSMF
       unsigned int *htol_dgn;
 
       /**
+       * Pointer to mapping from l to h
+       */
+      unsigned int *ltoh_dgn;
+
+      /**
+       * Pointer to mapping from l to h
+       */
+      unsigned int *ltoh_dgt;
+
+      /**
+       * Pointer to mapping from l to h
+       */
+      unsigned int *ltoh_dgz;
+
+      /**
+       * Pointer to mapping from l to h with zero-padding
+       */
+      unsigned int *ltoh_dgn_p;
+
+      /**
+       * Pointer to mapping from l to h with zero-padding
+       */
+      unsigned int *ltoh_dgt_p;
+
+      /**
+       * Pointer to mapping from l to h with zero-padding
+       */
+      unsigned int *ltoh_dgz_p;
+
+      /**
        * Pointer to 1D RT mass matrix for Stokes operator.
        */
       cuda::std::array<Number *, dim> rt_mass_1d;
@@ -281,6 +320,28 @@ namespace PSMF
        * Pointer to 1D mixed derivative matrix for Stokes operator.
        */
       cuda::std::array<Number *, dim> mix_der_1d;
+
+      /**
+       * Pointer to 1D RT mass matrix with zero-padding for Stokes operator.
+       */
+      cuda::std::array<Number *, dim> rt_mass_1d_p;
+
+      /**
+       * Pointer to 1D RT stiffness matrix with zero-padding for Stokes
+       * operator.
+       */
+      cuda::std::array<Number *, dim> rt_laplace_1d_p;
+
+      /**
+       * Pointer to 1D mixed mass matrix with zero-padding for Stokes operator.
+       */
+      cuda::std::array<Number *, dim> mix_mass_1d_p;
+
+      /**
+       * Pointer to 1D mixed derivative matrix with zero-padding for Stokes
+       * operator.
+       */
+      cuda::std::array<Number *, dim> mix_der_1d_p;
 
       /**
        * Pointer to 1D RT mass matrix for smoothing operator.
@@ -659,6 +720,36 @@ namespace PSMF
     unsigned int *hl_dgn;
 
     /**
+     * Pointer to mapping from l to h
+     */
+    unsigned int *ltoh_dgn_dev;
+
+    /**
+     * Pointer to mapping from l to h
+     */
+    unsigned int *ltoh_dgt_dev;
+
+    /**
+     * Pointer to mapping from l to h
+     */
+    unsigned int *ltoh_dgz_dev;
+
+    /**
+     * Pointer to mapping from l to h with zero-padding
+     */
+    unsigned int *ltoh_dgn_p;
+
+    /**
+     * Pointer to mapping from l to h with zero-padding
+     */
+    unsigned int *ltoh_dgt_p;
+
+    /**
+     * Pointer to mapping from l to h with zero-padding
+     */
+    unsigned int *ltoh_dgz_p;
+
+    /**
      * A variable storing the local indices of Dirichlet boundary conditions
      * on cells for all levels (outer index), the cells within the levels
      * (second index), and the indices on the cell (inner index).
@@ -684,6 +775,27 @@ namespace PSMF
      * Pointer to 1D mixed derivative matrix for Stokes operator.
      */
     cuda::std::array<Number *, dim> mix_der_1d;
+
+    /**
+     * Pointer to 1D RT mass matrix with zero-padding for Stokes operator.
+     */
+    cuda::std::array<Number *, dim> rt_mass_1d_p;
+
+    /**
+     * Pointer to 1D RT stiffness matrix with zero-padding for Stokes operator.
+     */
+    cuda::std::array<Number *, dim> rt_laplace_1d_p;
+
+    /**
+     * Pointer to 1D mixed mass matrix with zero-padding for Stokes operator.
+     */
+    cuda::std::array<Number *, dim> mix_mass_1d_p;
+
+    /**
+     * Pointer to 1D mixed derivative matrix with zero-padding for Stokes
+     * operator.
+     */
+    cuda::std::array<Number *, dim> mix_der_1d_p;
 
     /**
      * Pointer to patch matrices for Stokes operator.
@@ -853,6 +965,72 @@ namespace PSMF
       tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * dim;
     }
   };
+
+  template <int dim, typename Number>
+  struct SharedDataOp<dim, Number, LaplaceVariant::BasicPadding>
+    : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+    using SharedDataBase<Number>::local_mass;
+    using SharedDataBase<Number>::local_laplace;
+    using SharedDataBase<Number>::local_mix_mass;
+    using SharedDataBase<Number>::local_mix_der;
+    using SharedDataBase<Number>::tmp;
+
+    __device__
+    SharedDataOp(Number      *data,
+                 unsigned int n_buff,
+                 unsigned int n_dofs_1d,
+                 unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+
+      local_mass    = local_dst + n_buff * local_dim;
+      local_laplace = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_mass =
+        local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_der =
+        local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * dim * (dim - 1);
+
+      tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * dim;
+    }
+  };
+
+
+  template <int dim, typename Number>
+  struct SharedDataOp<dim, Number, LaplaceVariant::ConflictFree>
+    : SharedDataBase<Number>
+  {
+    using SharedDataBase<Number>::local_src;
+    using SharedDataBase<Number>::local_dst;
+    using SharedDataBase<Number>::local_mass;
+    using SharedDataBase<Number>::local_laplace;
+    using SharedDataBase<Number>::local_mix_mass;
+    using SharedDataBase<Number>::local_mix_der;
+    using SharedDataBase<Number>::tmp;
+
+    __device__
+    SharedDataOp(Number      *data,
+                 unsigned int n_buff,
+                 unsigned int n_dofs_1d,
+                 unsigned int local_dim)
+    {
+      local_src = data;
+      local_dst = local_src + n_buff * local_dim;
+
+      local_mass    = local_dst + n_buff * local_dim;
+      local_laplace = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_mass =
+        local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_der =
+        local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * dim * (dim - 1);
+
+      tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * dim;
+    }
+  };
+
 
   /**
    * Structure to pass the shared memory into a general user function.

@@ -63,7 +63,7 @@
   }
 
 SMO_MACRO(Smoother, GLOBAL, FUSED_L, ConflictFree, TensorCore);
-LA_MACRO(Laplace, Basic, BasicCell, ConflictFree, TensorCore, MatrixStruct);
+LA_MACRO(Laplace, Basic, BasicPadding, ConflictFree, TensorCore, MatrixStruct);
 SMO_MACRO(LocalSolver, Direct, SchurDirect, SchurIter, SchurTensorProduct);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);
 ENUM_MACRO(Granularity, none, user_define, multiple);
@@ -199,8 +199,7 @@ namespace Util
         << "Number of MG cycles in V-cycle: " << 1 << std::endl
         << "Number of smoothing steps:      " << CT::N_SMOOTH_STEPS_
         << std::endl
-        << "Build type:                     "
-        <<
+        << "Build type:                     " <<
 #ifdef DEBUG
       "Debug"
 #else
