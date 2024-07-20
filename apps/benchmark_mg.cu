@@ -60,7 +60,7 @@
 
 using namespace dealii;
 
-#define MODE 1
+#define MODE 0
 // 0 - ncu
 // 1 - perf
 
@@ -956,9 +956,9 @@ LaplaceProblem<dim, fe_degree>::run()
 
   double n_dofs_1d = 0;
   if (dim == 2)
-    n_dofs_1d = std::sqrt(CT::MAX_SIZES_);
+    n_dofs_1d = std::sqrt(CT::MAX_SIZES_ / (dim + 1));
   else if (dim == 3)
-    n_dofs_1d = std::cbrt(CT::MAX_SIZES_);
+    n_dofs_1d = std::cbrt(CT::MAX_SIZES_ / (dim + 1));
 
   auto n_refinement =
     static_cast<unsigned int>(std::log2((n_dofs_1d - 1) / fe_degree));

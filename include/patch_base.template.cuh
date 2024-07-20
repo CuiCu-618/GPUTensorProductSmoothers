@@ -1191,7 +1191,7 @@ namespace PSMF
                     delete[] vals;
                   }
                 }
-              /*
+
               // Schur direct
               {
                 auto h_interior_rt = dm.get_h_to_l_rt_interior();

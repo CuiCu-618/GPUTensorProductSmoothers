@@ -436,7 +436,7 @@ namespace Step64
                              * (tangential_solution_values[qpoint]) // (u_exact
                                                                     // . n)
                            ) *
-                          JxW[qpoint];                              // dx
+                          JxW[qpoint]; // dx
                       }
                   }
 
@@ -664,8 +664,18 @@ namespace Step64
         constraints.distribute(solution_velocity_host);
 
         // solution_host.print(std::cout);
+        double l2_error_v = 0;
+        double l2_error_p = 0;
+        double H1_error_v = 0;
 
-        const auto [l2_error_v, l2_error_p, H1_error_v] = compute_error();
+        if (dof_handler.n_dofs() < 5e6)
+          {
+            const auto [l2_error, l2_error_, H1_error] = compute_error();
+
+            l2_error_v = l2_error;
+            l2_error_p = l2_error_;
+            H1_error_v = H1_error;
+          }
 
         *pcout << "L2 error velocity: " << l2_error_v << std::endl
                << "L2 error pressure: " << l2_error_p << std::endl
@@ -787,26 +797,7 @@ namespace Step64
             *pcout << "Max size reached, terminating." << std::endl;
             *pcout << std::endl;
 
-            for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
-              for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
-                for (unsigned int i = 0; i < CT::LOCAL_SOLVER_.size(); ++i)
-                  {
-                    unsigned int index = (k * CT::SMOOTH_INV_.size() + j) *
-                                           CT::LOCAL_SOLVER_.size() +
-                                         i;
-
-                    std::ostringstream oss;
-
-                    oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
-                        << LaplaceToString(CT::SMOOTH_VMULT_[k]) << " "
-                        << SmootherToString(CT::SMOOTH_INV_[j]) << " "
-                        << LocalSolverToString(CT::LOCAL_SOLVER_[i]) << "]\n";
-                    info_table[index].write_text(oss);
-
-                    *pcout << oss.str() << std::endl;
-                  }
-
-            return;
+            break;
           }
 
         if (cycle == 0)
@@ -824,6 +815,26 @@ namespace Step64
         solve_mg(1);
         *pcout << std::endl;
       }
+
+    {
+      for (unsigned int k = 0; k < CT::LAPLACE_TYPE_.size(); ++k)
+        for (unsigned int j = 0; j < CT::SMOOTH_INV_.size(); ++j)
+          for (unsigned int i = 0; i < CT::LOCAL_SOLVER_.size(); ++i)
+            {
+              unsigned int index =
+                (k * CT::SMOOTH_INV_.size() + j) * CT::LOCAL_SOLVER_.size() + i;
+
+              std::ostringstream oss;
+
+              oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
+                  << LaplaceToString(CT::SMOOTH_VMULT_[k]) << " "
+                  << SmootherToString(CT::SMOOTH_INV_[j]) << " "
+                  << LocalSolverToString(CT::LOCAL_SOLVER_[i]) << "]\n";
+              info_table[index].write_text(oss);
+
+              *pcout << oss.str() << std::endl;
+            }
+    }
   }
 } // namespace Step64
 int
