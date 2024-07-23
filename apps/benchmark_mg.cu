@@ -47,6 +47,7 @@
 #include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 
 #include "app_utilities.h"
@@ -58,6 +59,10 @@
 #include "patch_smoother.cuh"
 
 using namespace dealii;
+
+#define MODE 0
+// 0 - ncu
+// 1 - perf
 
 template <int dim>
 using Solution = Stokes::NoSlipExp::Solution<dim>;
@@ -112,6 +117,8 @@ private:
             PSMF::SmootherVariant    smooth_inv>
   void
   do_smooth();
+  size_t
+  disp_gpu_usage();
 
   Triangulation<dim>                  triangulation;
   std::shared_ptr<FiniteElement<dim>> fe;
@@ -193,15 +200,15 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   dof_handler.distribute_mg_dofs();
 
   n_dofs = dof_handler.n_dofs();
-  N      = 1; // 5;
-  n_mv   = 1; // dof_handler.n_dofs() < 10000000 ? 100 : 20;
+#if MODE == 0
+  N    = 1;
+  n_mv = 1;
+#elif MODE == 1
+  N    = 5;
+  n_mv = n_dofs < 10000000 ? 100 : 20;
+#endif
 
   *pcout << "Setting up dofs...\n";
-
-  // const unsigned int nlevels = triangulation.n_global_levels();
-  // for (unsigned int level = 0; level < nlevels; ++level)
-  //   Util::Lexicographic(dof_handler, level);
-  // Util::Lexicographic(dof_handler);
 
   *pcout << "Number of degrees of freedom: " << dof_handler.n_dofs() << " = ("
          << dof_handler_velocity.n_dofs() << " + "
@@ -257,6 +264,7 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   }
 
   *pcout << "Matrix-free setup time: " << time.wall_time() << "s" << std::endl;
+  *pcout << "Matrix-free Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 template <int dim, int fe_degree>
 void
@@ -409,7 +417,7 @@ LaplaceProblem<dim, fe_degree>::assemble_rhs()
                            * (tangential_solution_values[qpoint]) // (u_exact
                                                                   // . n)
                          ) *
-                        JxW[qpoint];                              // dx
+                        JxW[qpoint]; // dx
                     }
                 }
 
@@ -424,6 +432,8 @@ LaplaceProblem<dim, fe_degree>::assemble_rhs()
   system_rhs_host.compress(VectorOperation::add);
   rw_vector.import(system_rhs_host, VectorOperation::insert);
   system_rhs_dev.import(rw_vector, VectorOperation::insert);
+
+  *pcout << "RHS Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 template <int dim, int fe_degree>
 template <PSMF::LaplaceVariant kernel>
@@ -438,14 +448,15 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   system_rhs_dp = 1.;
   solution_dp   = 0.;
 
-  std::cout << "TESTING Ax!!!\n";
-
+  // std::cout << "TESTING Ax!!!\n";
+  std::srand(0);
   LinearAlgebra::ReadWriteVector<full_number> rw_vector(dof_handler.n_dofs());
   for (unsigned int i = 0; i < rw_vector.size(); ++i)
-    rw_vector[i] = i;
+    rw_vector[i] = ((double)std::rand()) / RAND_MAX;
   system_rhs_dp.import(rw_vector, VectorOperation::insert);
-  matrix_dp.vmult(solution_dp, system_rhs_dp);
-  solution_dp.print(std::cout, 4, false);
+
+  // matrix_dp.vmult(solution_dp, system_rhs_dp);
+  // solution_dp.print(std::cout, 4, false);
 
   // rw_vector     = 0;
   // system_rhs_dp = 0.;
@@ -460,7 +471,7 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
   //     rw_vector[i] = 0;
   //   }
 
-  std::cout << "TESTING Ax!!!\n";
+  // std::cout << "TESTING Ax!!!\n";
 
   Timer  time;
   double best_time = 1e10;
@@ -477,7 +488,7 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
     }
 
   // solution_dp.print(std::cout);
-  // std::cout << solution_dp.l2_norm() << std::endl;
+  std::cout << std::setprecision(17) << solution_dp.l2_norm() << std::endl;
 
   info_table[0].add_value("Name", std::string(LaplaceToString(kernel)) + " DP");
   info_table[0].add_value("Time[s]", best_time);
@@ -503,9 +514,13 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
 
+  std::cout << std::setprecision(12) << solution_sp.l2_norm() << std::endl;
+
   info_table[1].add_value("Name", std::string(LaplaceToString(kernel)) + " SP");
   info_table[1].add_value("Time[s]", best_time);
   info_table[1].add_value("Perf[Dof/s]", n_dofs / best_time);
+
+  *pcout << "Ax Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 template <int dim, int fe_degree>
 void
@@ -584,19 +599,19 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
 
     assign_vector_cuda(u[max_level - 1]);
 
-    std::cout << " CUDA\n";
+    // std::cout << " CUDA\n";
     mg_transfer.prolongate(max_level, u[max_level], u[max_level - 1]);
-    u[max_level].print(std::cout);
+    // u[max_level].print(std::cout);
 
     mg_transfer.restrict_and_add(max_level, u[max_level - 1], u[max_level]);
-    u[max_level - 1].print(std::cout);
+    // u[max_level - 1].print(std::cout);
 
     mg_transfer.copy_from_mg(dof_handler, system_rhs_dp, u);
-    system_rhs_dp.print(std::cout);
+    // system_rhs_dp.print(std::cout);
 
     u[max_level] = 0;
     mg_transfer.copy_to_mg(dof_handler, u, system_rhs_dp);
-    u[max_level].print(std::cout);
+    // u[max_level].print(std::cout);
 
     // ref
     MGTransferPrebuilt<VectorTypeDPHost> tran_v(mg_constrained_dofs);
@@ -605,7 +620,7 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
     MGTransferPrebuilt<VectorTypeDPHost> tran_p;
     tran_p.build(dof_handler_pressure);
 
-    std::cout << "\n HOST\n";
+    // std::cout << "\n HOST\n";
 
     // tran_v.print_matrices(std::cout);
     // tran_p.print_matrices(std::cout);
@@ -620,16 +635,16 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
     assign_vector_host(vec_p[max_level - 1], vec_v[max_level - 1].size());
 
     tran_v.prolongate(max_level, vec_v[max_level], vec_v[max_level - 1]);
-    vec_v[max_level].print(std::cout);
+    // vec_v[max_level].print(std::cout);
 
     tran_p.prolongate(max_level, vec_p[max_level], vec_p[max_level - 1]);
-    vec_p[max_level].print(std::cout);
+    // vec_p[max_level].print(std::cout);
 
     tran_v.restrict_and_add(max_level, vec_v[max_level - 1], vec_v[max_level]);
-    vec_v[max_level - 1].print(std::cout);
+    // vec_v[max_level - 1].print(std::cout);
 
     tran_p.restrict_and_add(max_level, vec_p[max_level - 1], vec_p[max_level]);
-    vec_p[max_level - 1].print(std::cout);
+    // vec_p[max_level - 1].print(std::cout);
   }
 
   Timer  time;
@@ -672,6 +687,8 @@ LaplaceProblem<dim, fe_degree>::bench_transfer()
   info_table[2].add_value("Name", "Transfer SP");
   info_table[2].add_value("Time[s]", best_time2);
   info_table[2].add_value("Perf[Dof/s]", n_dofs / best_time2);
+
+  *pcout << "Transfer Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 
 template <int dim, int fe_degree>
@@ -715,15 +732,21 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   assign_vector_cuda(solution_dp);
 
   solution_dp   = 0;
-  system_rhs_dp = system_rhs_dev;
+  system_rhs_dp = 1;
 
-  system_rhs_dp.print(std::cout);
+  // system_rhs_dp.print(std::cout);
 
-  smooth_dp.step(solution_dp, system_rhs_dp);
+  // smooth_dp.step(solution_dp, system_rhs_dp);
 
-  std::cout << "TESTING SMOOTHER!!!\n";
-  solution_dp.print(std::cout);
-  std::cout << "\nTESTING SMOOTHER!!!\n";
+  // std::cout << "TESTING SMOOTHER!!!\n";
+  // solution_dp.print(std::cout);
+  // std::cout << "\nTESTING SMOOTHER!!!\n";
+
+  std::srand(0);
+  LinearAlgebra::ReadWriteVector<full_number> rw_vector(dof_handler.n_dofs());
+  for (unsigned int i = 0; i < rw_vector.size(); ++i)
+    rw_vector[i] = ((double)std::rand()) / RAND_MAX;
+  system_rhs_dp.import(rw_vector, VectorOperation::insert);
 
   for (unsigned int i = 0; i < N; ++i)
     {
@@ -735,6 +758,8 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
         }
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
+
+  std::cout << std::setprecision(17) << solution_dp.l2_norm() << std::endl;
 
   info_table[3].add_value("Name",
                           std::string(LaplaceToString(smooth_vmult)) + " " +
@@ -774,11 +799,15 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
 
+  std::cout << std::setprecision(17) << solution_sp.l2_norm() << std::endl;
+
   info_table[4].add_value("Name",
                           std::string(LaplaceToString(smooth_vmult)) + " " +
                             std::string(SmootherToString(smooth_inv)) + " SP");
   info_table[4].add_value("Time[s]", best_time);
   info_table[4].add_value("Perf[Dof/s]", n_dofs / best_time);
+
+  *pcout << "Smoother Mem: " << disp_gpu_usage() << " MB" << std::endl;
 }
 template <int dim, int fe_degree>
 void
@@ -915,7 +944,18 @@ LaplaceProblem<dim, fe_degree>::bench_smooth()
   //         AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
   //     }
 }
+template <int dim, int fe_degree>
+size_t
+LaplaceProblem<dim, fe_degree>::disp_gpu_usage()
+{
+  size_t free_mem, total_mem;
+  AssertCuda(cudaMemGetInfo(&free_mem, &total_mem));
 
+  unsigned int scale    = 1024 * 1024;
+  size_t       used_mem = (total_mem - free_mem) / scale;
+
+  return used_mem;
+}
 template <int dim, int fe_degree>
 void
 LaplaceProblem<dim, fe_degree>::run()
@@ -926,19 +966,31 @@ LaplaceProblem<dim, fe_degree>::run()
 
   double n_dofs_1d = 0;
   if (dim == 2)
-    n_dofs_1d = std::sqrt(CT::MAX_SIZES_);
+    n_dofs_1d = std::sqrt(CT::MAX_SIZES_ / (dim + 1));
   else if (dim == 3)
-    n_dofs_1d = std::cbrt(CT::MAX_SIZES_);
+    n_dofs_1d = std::cbrt(CT::MAX_SIZES_ / (dim + 1));
 
   auto n_refinement =
-    static_cast<unsigned int>(std::log2((n_dofs_1d - 1) / fe_degree));
-  triangulation.refine_global(2);
+    static_cast<unsigned int>(std::log2(n_dofs_1d / (fe_degree + 1)));
 
+#if MODE == 0
+  triangulation.refine_global(n_refinement);
   setup_system();
-  assemble_rhs();
+  // assemble_rhs();
   bench_Ax();
   bench_transfer();
   bench_smooth();
+#elif MODE == 1
+  for (unsigned int cycle = 0; cycle < n_refinement; ++cycle)
+    {
+      triangulation.refine_global(1);
+      setup_system();
+      // assemble_rhs();
+      bench_Ax();
+      bench_transfer();
+      bench_smooth();
+    }
+#endif
 
   *pcout << std::endl;
 
