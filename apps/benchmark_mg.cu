@@ -742,6 +742,12 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
   // solution_dp.print(std::cout);
   // std::cout << "\nTESTING SMOOTHER!!!\n";
 
+  std::srand(0);
+  LinearAlgebra::ReadWriteVector<full_number> rw_vector(dof_handler.n_dofs());
+  for (unsigned int i = 0; i < rw_vector.size(); ++i)
+    rw_vector[i] = ((double)std::rand()) / RAND_MAX;
+  system_rhs_dp.import(rw_vector, VectorOperation::insert);
+
   for (unsigned int i = 0; i < N; ++i)
     {
       time.restart();
@@ -752,6 +758,8 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
         }
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
+
+  std::cout << std::setprecision(17) << solution_dp.l2_norm() << std::endl;
 
   info_table[3].add_value("Name",
                           std::string(LaplaceToString(smooth_vmult)) + " " +
@@ -790,6 +798,8 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
         }
       best_time = std::min(time.wall_time() / n_mv, best_time);
     }
+
+  std::cout << std::setprecision(17) << solution_sp.l2_norm() << std::endl;
 
   info_table[4].add_value("Name",
                           std::string(LaplaceToString(smooth_vmult)) + " " +
@@ -961,7 +971,7 @@ LaplaceProblem<dim, fe_degree>::run()
     n_dofs_1d = std::cbrt(CT::MAX_SIZES_ / (dim + 1));
 
   auto n_refinement =
-    static_cast<unsigned int>(std::log2((n_dofs_1d - 1) / fe_degree));
+    static_cast<unsigned int>(std::log2(n_dofs_1d / (fe_degree + 1)));
 
 #if MODE == 0
   triangulation.refine_global(n_refinement);

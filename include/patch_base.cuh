@@ -28,7 +28,7 @@ using namespace dealii;
 // 0: constant memory
 // 1: L1/L2 cache
 
-#define CONFLICTFREE
+// #define CONFLICTFREE
 
 // #define DATAONLY
 

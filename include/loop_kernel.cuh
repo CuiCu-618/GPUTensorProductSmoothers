@@ -79,9 +79,11 @@ namespace PSMF
     const int local_patch     = threadIdx.y / (n_dofs_1d * dim);
     const int patch           = local_patch + patch_per_block * blockIdx.x;
 
-    const int tid_y = threadIdx.y % (n_dofs_1d * dim);
-    const int tid_x = threadIdx.x;
-    const int tid   = tid_y * n_dofs_1d + tid_x;
+    const int tid_y     = threadIdx.y % (n_dofs_1d * dim);
+    const int tid_x     = threadIdx.x;
+    const int tid       = tid_y * n_dofs_1d + tid_x;
+    const int tid_c     = (threadIdx.y % n_dofs_1d) * n_dofs_1d + tid_x;
+    const int component = (threadIdx.y / n_dofs_1d) % dim;
 
     SharedDataOp<dim, Number, LaplaceVariant::Basic> shared_data(
       get_shared_data_ptr<Number>(), patch_per_block, n_dofs_1d, n_patch_dofs);
@@ -89,64 +91,65 @@ namespace PSMF
     if (patch < gpu_data.n_patches)
       {
         // L M
-        for (int dir = 0; dir < dim; ++dir)
-          for (int d = 0; d < dim; ++d)
-            if ((d == 0 && tid < n_dofs_2d) ||
-                (d != 0 && tid < (n_dofs_1d - 1) * (n_dofs_1d - 1)))
-              {
-                auto dd = dir == 0 ? d :
-                          dir == 1 ? (d == 0 ? 1 :
-                                      d == 1 ? 0 :
-                                               2) :
-                                     (d == 0 ? 2 :
-                                      d == 1 ? 0 :
-                                               1);
+        for (int d = 0; d < dim; ++d)
+          if ((d == 0 && tid_c < n_dofs_2d) ||
+              (d != 0 && tid_c < (n_dofs_1d - 1) * (n_dofs_1d - 1)))
+            {
+              auto dd = component == 0 ? d :
+                        component == 1 ? (d == 0 ? 1 :
+                                          d == 1 ? 0 :
+                                                   2) :
+                                         (d == 0 ? 2 :
+                                          d == 1 ? 0 :
+                                                   1);
 
-                const int shift = local_patch * n_dofs_2d * dim * dim;
-                shared_data
-                  .local_mass[shift + (dir * dim + d) * n_dofs_2d + tid] =
-                  gpu_data.rt_mass_1d[d][gpu_data.patch_type[patch * dim + dd] *
-                                           n_dofs_2d +
-                                         tid];
-                shared_data
-                  .local_laplace[shift + (dir * dim + d) * n_dofs_2d + tid] =
-                  gpu_data
-                    .rt_laplace_1d[d][gpu_data.patch_type[patch * dim + dd] *
-                                        n_dofs_2d +
-                                      tid];
-              }
-
-        for (int dir = 0; dir < dim; ++dir)
-          {
-            // D
-            const int shift1 = local_patch * n_dofs_2d * dim;
-            if (tid < n_dofs_1d * (n_dofs_1d - 1))
-              shared_data.local_mix_der[shift1 + dir * n_dofs_2d + tid] =
-                -gpu_data.mix_der_1d[0][gpu_data.patch_type[patch * dim + dir] *
-                                          n_dofs_2d +
-                                        tid];
-            // M
-            const int shift2 = local_patch * n_dofs_2d * dim * (dim - 1);
-            auto      dd1    = dir == 0 ? 1 : 0;
-            if (tid < (n_dofs_1d - 1) * (n_dofs_1d - 1))
+              const int shift = local_patch * n_dofs_2d * dim * dim;
               shared_data
-                .local_mix_mass[shift2 + dir * n_dofs_2d * (dim - 1) + tid] =
-                gpu_data.mix_mass_1d[1][gpu_data.patch_type[patch * dim + dd1] *
-                                          n_dofs_2d +
-                                        tid];
-            if (dim == 3)
-              {
-                auto dd2 = dir == 2 ? 1 : 2;
-                if (tid < (n_dofs_1d - 1) * (n_dofs_1d - 1))
-                  shared_data
-                    .local_mix_mass[shift2 + dir * n_dofs_2d * (dim - 1) +
-                                    n_dofs_2d + tid] =
-                    gpu_data
-                      .mix_mass_1d[2][gpu_data.patch_type[patch * dim + dd2] *
+                .local_mass[shift + (component * dim + d) * n_dofs_2d + tid_c] =
+                gpu_data.rt_mass_1d[d][gpu_data.patch_type[patch * dim + dd] *
+                                         n_dofs_2d +
+                                       tid_c];
+              shared_data
+                .local_laplace[shift + (component * dim + d) * n_dofs_2d +
+                               tid_c] =
+                gpu_data
+                  .rt_laplace_1d[d][gpu_data.patch_type[patch * dim + dd] *
+                                      n_dofs_2d +
+                                    tid_c];
+            }
+
+        {
+          // D
+          const int shift1 = local_patch * n_dofs_2d * dim;
+          if (tid_c < n_dofs_1d * (n_dofs_1d - 1))
+            shared_data.local_mix_der[shift1 + component * n_dofs_2d + tid_c] =
+              -gpu_data
+                 .mix_der_1d[0][gpu_data.patch_type[patch * dim + component] *
+                                  n_dofs_2d +
+                                tid_c];
+          // M
+          const int shift2 = local_patch * n_dofs_2d * dim * (dim - 1);
+          auto      dd1    = component == 0 ? 1 : 0;
+          if (tid_c < (n_dofs_1d - 1) * (n_dofs_1d - 1))
+            shared_data
+              .local_mix_mass[shift2 + component * n_dofs_2d * (dim - 1) +
+                              tid_c] =
+              gpu_data.mix_mass_1d[1][gpu_data.patch_type[patch * dim + dd1] *
                                         n_dofs_2d +
-                                      tid];
-              }
-          }
+                                      tid_c];
+          if (dim == 3)
+            {
+              auto dd2 = component == 2 ? 1 : 2;
+              if (tid_c < (n_dofs_1d - 1) * (n_dofs_1d - 1))
+                shared_data
+                  .local_mix_mass[shift2 + component * n_dofs_2d * (dim - 1) +
+                                  n_dofs_2d + tid_c] =
+                  gpu_data
+                    .mix_mass_1d[2][gpu_data.patch_type[patch * dim + dd2] *
+                                      n_dofs_2d +
+                                    tid_c];
+            }
+        }
 
 
         for (unsigned int i = 0; i < n_patch_dofs_rt / block_size + 1; ++i)

@@ -340,6 +340,74 @@ namespace PSMF
       const int tid_x = threadIdx.x;
       const int tid   = tid_y * n_dofs_1d + tid_x;
 
+#ifdef CONFLICTFREE
+      const int n_active_t = direction == 0 ? shapeA::m * shapeB::m :
+                             direction == 1 ? shapeA::m * shapeB::n :
+                                              shapeA::m * shapeB::n;
+
+      if (tid >= n_active_t)
+        return;
+
+      const int row = direction == 0 ? tid / shapeA::m :
+                      direction == 1 ? tid / shapeB::n :
+                                       tid / shapeB::n;
+      const int col = direction == 0 ? tid % shapeA::m :
+                      direction == 1 ? tid % shapeB::n :
+                                       tid % shapeB::n;
+
+      constexpr int stride  = direction == 0 ? shapeB::m * shapeB::n :
+                              direction == 1 ? shapeB::m * shapeB::n :
+                                               shapeB::m * shapeB::n;
+      constexpr int stride1 = direction == 0 ? shapeA::m * shapeB::m :
+                              direction == 1 ? shapeA::m * shapeB::n :
+                                               shapeA::m * shapeB::n;
+      constexpr int dim_z   = direction == 0 ? shapeB::z :
+                              direction == 1 ? shapeB::z :
+                                               shapeB::z;
+
+      constexpr int reduction = transposed ? shapeA::m : shapeA::n;
+
+      Number pval[dim_z];
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      // #pragma unroll
+      // TODO:
+      for (int z = 0; z < dim_z; ++z)
+        {
+          pval[z] = 0;
+          for (int k = 0; k < reduction; ++k)
+            {
+              const int shape_idx = transposed ?
+                                      ((direction == 0) ? k * reduction + col :
+                                       (direction == 1) ? k * reduction + row :
+                                                          k * reduction + z) :
+                                      ((direction == 0) ? col * reduction + k :
+                                       (direction == 1) ? row * reduction + k :
+                                                          z * reduction + k);
+
+              const int source_idx =
+                (direction == 0) ? (row * shapeB::n + k + z * stride) :
+                (direction == 1) ? (k * shapeB::n + col + z * stride) :
+                                   (row * shapeB::n + col + k * stride);
+
+              pval[z] += shape_data[shape_idx] * in[source_idx];
+            }
+        }
+
+      for (int z = 0; z < dim_z; ++z)
+        {
+          const int destination_idx =
+            (direction == 0) ? (row * shapeA::m + col + z * stride1) :
+            (direction == 1) ? (row * shapeB::n + col + z * stride1) :
+                               (row * shapeB::n + col + z * stride1);
+
+          if constexpr (add)
+            out[destination_idx] += pval[z];
+          else if constexpr (sub)
+            out[destination_idx] -= pval[z];
+          else
+            out[destination_idx] = pval[z];
+        }
+#else
       const int n_active_t = direction == 0 ? shapeA::m * shapeB::m :
                              direction == 1 ? shapeA::m * shapeB::n :
                                               shapeA::m * shapeB::n;
@@ -364,42 +432,6 @@ namespace PSMF
       constexpr int reduction = transposed ? shapeA::m : shapeA::n;
 
       Number pval[dim_z];
-      // kernel product: A kdot src, [N x N] * [N^dim, 1]
-      // #pragma unroll
-      // TODO:
-#ifdef CONFLICTFREE
-      for (int z = 0; z < dim_z; ++z)
-        {
-          pval[z] = 0;
-          for (int k = 0; k < reduction; ++k)
-            {
-              const int shape_idx =
-                transposed ? k * reduction + row : row * reduction + k;
-
-              const int source_idx =
-                (direction == 0) ? (col * shapeB::n + k + z * stride) :
-                (direction == 1) ? (k * shapeB::n + col + z * stride) :
-                                   (z * shapeB::n + col + k * stride);
-
-              pval[z] += shape_data[shape_idx] * in[source_idx];
-            }
-        }
-
-      for (int z = 0; z < dim_z; ++z)
-        {
-          const int destination_idx =
-            (direction == 0) ? (col * shapeB::n + row + z * stride) :
-            (direction == 1) ? (row * shapeB::n + col + z * stride) :
-                               (z * shapeB::n + col + row * stride);
-
-          if constexpr (add)
-            out[destination_idx] += pval[z];
-          else if constexpr (sub)
-            out[destination_idx] -= pval[z];
-          else
-            out[destination_idx] = pval[z];
-        }
-#else
       for (int z = 0; z < dim_z; ++z)
         {
           pval[z] = 0;
@@ -448,6 +480,83 @@ namespace PSMF
       const int tid_x = threadIdx.x;
       const int tid   = tid_y * n_dofs_1d + tid_x;
 
+#ifdef CONFLICTFREE
+      const int n_active_t = direction == 0 ? shapeA::m * shapeB::m :
+                             direction == 1 ? shapeA::m * shapeB::n :
+                                              shapeA::m * shapeB::n;
+
+      if (tid >= n_active_t)
+        return;
+
+      const int row = direction == 0 ? tid / shapeA::m :
+                      direction == 1 ? tid / shapeB::n :
+                                       tid / shapeB::n;
+      const int col = direction == 0 ? tid % shapeA::m :
+                      direction == 1 ? tid % shapeB::n :
+                                       tid % shapeB::n;
+
+      constexpr int stride  = direction == 0 ? shapeB::m * shapeB::n :
+                              direction == 1 ? shapeB::m * shapeB::n :
+                                               shapeB::m * shapeB::n;
+      constexpr int stride1 = direction == 0 ? shapeA::m * shapeB::m :
+                              direction == 1 ? shapeA::m * shapeB::n :
+                                               shapeA::m * shapeB::n;
+      constexpr int dim_z   = direction == 0 ? shapeB::z :
+                              direction == 1 ? shapeB::z :
+                                               shapeB::z;
+
+      constexpr int reduction = transposed ? shapeA::m : shapeA::n;
+
+      Number pval[dim_z];
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+      // #pragma unroll
+      for (int z = 0; z < dim_z; ++z)
+        {
+          pval[z] = 0;
+          for (int k = 0; k < reduction; ++k)
+            {
+              const int shape_idx = transposed ?
+                                      ((direction == 0) ? k * reduction + col :
+                                       (direction == 1) ? k * reduction + row :
+                                                          k * reduction + z) :
+                                      ((direction == 0) ? col * reduction + k :
+                                       (direction == 1) ? row * reduction + k :
+                                                          z * reduction + k);
+
+              const int source_idx =
+                (direction == 0) ? (row * shapeB::n + k + z * stride) :
+                (direction == 1) ? (k * shapeB::n + col + z * stride) :
+                                   (row * shapeB::n + col + k * stride);
+
+              pval[z] += shape_data[shape_idx] * in[source_idx];
+            }
+        }
+
+      for (int z = 0; z < dim_z; ++z)
+        {
+          const int destination_idx =
+            (direction == 0) ? (row * shapeA::m + col + z * stride1) :
+            (direction == 1) ? (row * shapeB::n + col + z * stride1) :
+                               (row * shapeB::n + col + z * stride1);
+
+          if constexpr (add)
+            {
+              if constexpr (atomicop)
+                atomicAdd(&out[destination_idx], pval[z]);
+              else
+                out[destination_idx] += pval[z];
+            }
+          else if constexpr (sub)
+            {
+              if constexpr (atomicop)
+                atomicAdd(&out[destination_idx], -pval[z]);
+              else
+                out[destination_idx] -= pval[z];
+            }
+          else
+            out[destination_idx] = pval[z];
+        }
+#else
       const int n_active_t = direction == 0 ? shapeA::m * shapeB::m :
                              direction == 1 ? shapeA::m * shapeB::n :
                                               shapeA::m * shapeB::n;
@@ -475,51 +584,6 @@ namespace PSMF
       constexpr int reduction = shapeA::n;
 
       Number pval[dim_z];
-      // kernel product: A kdot src, [N x N] * [N^dim, 1]
-      // #pragma unroll
-#ifdef CONFLICTFREE
-      for (int z = 0; z < dim_z; ++z)
-        {
-          pval[z] = 0;
-          for (int k = 0; k < reduction; ++k)
-            {
-              const int shape_idx =
-                transposed ? k * shapeA::m + row : row * reduction + k;
-
-              const int source_idx =
-                (direction == 0) ? (col * shapeB::n + k + z * stride) :
-                (direction == 1) ? (k * shapeB::n + col + z * stride) :
-                                   (z * shapeB::n + col + k * stride);
-
-              pval[z] += shape_data[shape_idx] * in[source_idx];
-            }
-        }
-
-      for (int z = 0; z < dim_z; ++z)
-        {
-          const int destination_idx =
-            (direction == 0) ? (col * shapeA::m + row + z * stride1) :
-            (direction == 1) ? (row * shapeB::n + col + z * stride1) :
-                               (z * shapeB::n + col + row * stride1);
-
-          if constexpr (add)
-            {
-              if constexpr (atomicop)
-                atomicAdd(&out[destination_idx], pval[z]);
-              else
-                out[destination_idx] += pval[z];
-            }
-          else if constexpr (sub)
-            {
-              if constexpr (atomicop)
-                atomicAdd(&out[destination_idx], -pval[z]);
-              else
-                out[destination_idx] -= pval[z];
-            }
-          else
-            out[destination_idx] = pval[z];
-        }
-#else
       for (int z = 0; z < dim_z; ++z)
         {
           pval[z] = 0;
