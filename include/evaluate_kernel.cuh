@@ -370,7 +370,6 @@ namespace PSMF
       Number pval[dim_z];
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       // #pragma unroll
-      // TODO:
       for (int z = 0; z < dim_z; ++z)
         {
           pval[z] = 0;
@@ -513,7 +512,7 @@ namespace PSMF
       for (int z = 0; z < dim_z; ++z)
         {
           pval[z] = 0;
-          for (int k = 0; k < reduction; ++k)
+          for (int k = 0; k < shapeA::n; ++k)
             {
               const int shape_idx = transposed ?
                                       ((direction == 0) ? k * reduction + col :

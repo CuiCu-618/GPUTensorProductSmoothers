@@ -974,7 +974,6 @@ namespace PSMF
         auto elapsed_p = clock64() - start_p;
         if (blockIdx.x == 0 && threadIdx.x == 0 && threadIdx.y == 0)
           printf("Prepare P: %lld\n", elapsed_p);
-
 #endif
 
 #ifdef TIMING

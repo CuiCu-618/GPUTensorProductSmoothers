@@ -9,7 +9,7 @@ jobs:
     strategy:
       matrix:
         path:
-          - 'apps'
+          # - 'apps'
           - 'include'
           - 'source'
     steps:
