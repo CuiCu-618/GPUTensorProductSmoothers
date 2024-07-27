@@ -367,14 +367,14 @@ namespace PSMF
       fe_values.reinit(cell);
 
       // Quadrature points
-      // if (update_flags & update_quadrature_points)
-      //   {
-      //     const std::vector<Point<dim>> &q_points =
-      //       fe_values.get_quadrature_points();
-      //     std::copy(q_points.begin(),
-      //               q_points.end(),
-      //               &q_points_host[cell_id * padding_length]);
-      //   }
+      if (update_flags & update_quadrature_points)
+        {
+          const std::vector<Point<dim>> &q_points =
+            fe_values.get_quadrature_points();
+          std::copy(q_points.begin(),
+                    q_points.end(),
+                    &q_points_host[cell_id * padding_length]);
+        }
 
       if (update_flags & update_JxW_values)
         {
@@ -416,17 +416,17 @@ namespace PSMF
         n_cells * 1);
 
       // Quadrature points
-      // if (update_flags & update_quadrature_points)
-      //   {
-      //     if (data->parallelization_scheme ==
-      //         MatrixFree<dim, Number>::parallel_over_elem)
-      //       transpose_in_place(q_points_host, n_cells, padding_length);
+      if (update_flags & update_quadrature_points)
+        {
+          if (data->parallelization_scheme ==
+              MatrixFree<dim, Number>::parallel_over_elem)
+            transpose_in_place(q_points_host, n_cells, padding_length);
 
-      //     alloc_and_copy(&data->q_points[color],
-      //                    ArrayView<const Point<dim, Number>>(
-      //                      q_points_host.data(), q_points_host.size()),
-      //                    n_cells * padding_length);
-      //   }
+          alloc_and_copy(&data->q_points[color],
+                         ArrayView<const Point<dim, Number>>(
+                           q_points_host.data(), q_points_host.size()),
+                         n_cells * padding_length);
+        }
 
       // Jacobian determinants/quadrature weights
       if (update_flags & update_JxW_values)

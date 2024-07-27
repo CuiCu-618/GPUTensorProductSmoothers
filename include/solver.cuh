@@ -156,14 +156,17 @@ namespace PSMF
   public:
     MultigridSolvers(const DoFHandler<dim>              &dof_handler,
                      const Function<dim>                &boundary_values,
-                     const Function<dim>                &right_hand_side,
-                     const Function<dim>                &coefficient,
                      std::shared_ptr<ConditionalOStream> pcout,
+                     const unsigned int                  N,
+                     const double                        tau,
+                     const double                        wave_number,
+                     const double                        a_t,
                      const unsigned int                  n_cycles = 1)
       : dof_handler(&dof_handler)
       , minlevel(1)
       , maxlevel(dof_handler.get_triangulation().n_global_levels() - 1)
       , solution(minlevel, maxlevel)
+      , solution_old(minlevel, maxlevel)
       , rhs(minlevel, maxlevel)
       , residual(minlevel, maxlevel)
       , defect(minlevel, maxlevel)
@@ -173,6 +176,10 @@ namespace PSMF
       , matrix_dp(minlevel, maxlevel)
       , smooth(minlevel, maxlevel)
       , coarse(smooth, false)
+      , N(N)
+      , tau(tau)
+      , wave_number(wave_number)
+      , a_t(a_t)
       , n_cycles(n_cycles)
       , timings(maxlevel + 1)
       , analytic_solution(boundary_values)
@@ -215,7 +222,8 @@ namespace PSMF
             typename PSMF::MatrixFree<dim, Number>::AdditionalData
               additional_data;
             additional_data.mapping_update_flags =
-              (update_gradients | update_JxW_values | update_values);
+              (update_gradients | update_JxW_values | update_values |
+               update_quadrature_points);
             additional_data.mg_level = level;
             std::shared_ptr<PSMF::MatrixFree<dim, Number>> mg_mf_storage_level(
               new PSMF::MatrixFree<dim, Number>());
@@ -225,7 +233,10 @@ namespace PSMF
                                         QGauss<1>(fe_degree + 1),
                                         additional_data);
 
-            matrix[level].initialize(mg_mf_storage_level);
+            matrix[level].initialize(mg_mf_storage_level,
+                                     tau,
+                                     wave_number,
+                                     a_t);
 
             matrix[level].initialize_dof_vector(defect[level]);
             t[level]               = defect[level];
@@ -237,7 +248,8 @@ namespace PSMF
             typename PSMF::MatrixFree<dim, Number2>::AdditionalData
               additional_data;
             additional_data.mapping_update_flags =
-              (update_gradients | update_JxW_values | update_values);
+              (update_gradients | update_JxW_values | update_values |
+               update_quadrature_points);
             additional_data.mg_level = level;
             std::shared_ptr<PSMF::MatrixFree<dim, Number2>> mg_mf_storage_level(
               new PSMF::MatrixFree<dim, Number2>());
@@ -247,11 +259,15 @@ namespace PSMF
                                         QGauss<1>(fe_degree + 1),
                                         additional_data);
 
-            matrix_dp[level].initialize(mg_mf_storage_level);
+            matrix_dp[level].initialize(mg_mf_storage_level,
+                                        tau,
+                                        wave_number,
+                                        a_t);
 
             matrix_dp[level].initialize_dof_vector(solution[level]);
-            rhs[level]      = solution[level];
-            residual[level] = solution[level];
+            solution_old[level] = solution[level];
+            rhs[level]          = solution[level];
+            residual[level]     = solution[level];
           }
         }
 
@@ -270,11 +286,10 @@ namespace PSMF
       }
       *pcout << "MG transfer setup time:   " << time.wall_time() << std::endl;
 
-      time.restart();
       // interpolate the inhomogeneous boundary conditions
       inhomogeneous_bc.clear();
       inhomogeneous_bc.resize(maxlevel + 1);
-      for (unsigned int level = minlevel; level <= maxlevel; ++level)
+      for (unsigned int level = maxlevel; level <= maxlevel; ++level)
         {
           Quadrature<dim - 1> face_quad(
             dof_handler.get_fe().get_unit_face_support_points());
@@ -314,11 +329,33 @@ namespace PSMF
           // residual from the inhomogeneous boundary conditions
           set_inhomogeneous_bc<false>(level);
 
-          matrix_dp[level].compute_residual(rhs[level],
-                                            solution[level],
-                                            right_hand_side,
-                                            analytic_solution,
-                                            level);
+          // U0
+          {
+            const unsigned int n_dofs = solution[level].size();
+
+            LinearAlgebra::distributed::Vector<Number2, MemorySpace::Host>
+              system_u_host(n_dofs);
+            LinearAlgebra::distributed::Vector<Number2, MemorySpace::CUDA>
+                                                    system_u_dev(n_dofs);
+            LinearAlgebra::ReadWriteVector<Number2> rw_vector(n_dofs);
+
+            // U
+            std::map<types::global_dof_index, Point<dim>> current_point_map;
+            DoFTools::map_dofs_to_support_points<dim>(MappingQGeneric<dim>(
+                                                        fe_degree + 1),
+                                                      dof_handler,
+                                                      current_point_map);
+            for (unsigned int i = 0; i < n_dofs; ++i)
+              system_u_host[i] = analytic_solution.value(current_point_map[i]);
+
+            rw_vector.import(system_u_host, VectorOperation::insert);
+            solution_old[level].import(rw_vector, VectorOperation::insert);
+          }
+
+          auto T = tau;
+
+          time.restart();
+          matrix_dp[level].compute_rhs(rhs[level], solution_old[level], T);
         }
 
 
@@ -330,6 +367,8 @@ namespace PSMF
       for (unsigned int level = minlevel; level <= maxlevel; ++level)
         {
           typename SmootherType::AdditionalData smoother_data;
+
+          smoother_data.tau        = tau;
           smoother_data.relaxation = 1.;
           smoother_data.patch_per_block =
             fe_degree == 1 ? 16 : (fe_degree == 2 ? 2 : 1);
@@ -460,7 +499,7 @@ namespace PSMF
     // (invoking this->vmult() or vmult_with_residual_update()) and return the
     // number of iterations and the reduction rate per GMRES iteration
     std::optional<ReductionControl>
-    solve_gmres(const bool do_analyze)
+    solve_gmres(const bool do_analyze, const unsigned int N = 1)
     {
       ReductionControl solver_control(1000, 1e-16, CT::REDUCE_);
       solver_control.enable_history_data();
@@ -468,15 +507,47 @@ namespace PSMF
 
       SolverGMRES<VectorType2> solver_gmres(solver_control);
       solution[maxlevel] = 0;
-      solver_gmres.solve(matrix_dp[maxlevel],
-                         solution[maxlevel],
-                         rhs[maxlevel],
-                         *this);
 
-      if (do_analyze)
-        return solver_control;
-      else
-        return std::nullopt;
+      if (N == 1)
+        {
+          solver_gmres.solve(matrix_dp[maxlevel],
+                             solution[maxlevel],
+                             rhs[maxlevel],
+                             *this);
+
+          if (do_analyze)
+            return solver_control;
+          else
+            return std::nullopt;
+        }
+
+      for (unsigned int it = 1; it <= N; ++it)
+        {
+          Timer time;
+          auto  T = it * tau;
+          *pcout << "Time step " << it << " at t=" << T << std::endl;
+
+          matrix_dp[maxlevel].compute_rhs(rhs[maxlevel],
+                                          solution_old[maxlevel],
+                                          T);
+
+          *pcout << "Time compute rhs:         " << time.wall_time() << "\n";
+          time.restart();
+
+          solver_gmres.solve(matrix_dp[maxlevel],
+                             solution[maxlevel],
+                             rhs[maxlevel],
+                             *this);
+
+          *pcout << "Time solve GMRES:         " << time.wall_time() << "\n";
+
+          *pcout << "     " << solver_control.last_step()
+                 << " GMRES iterations." << "\n\n";
+
+          solution_old[maxlevel] = solution[maxlevel];
+        }
+
+      return std::nullopt;
     }
 
 
@@ -693,6 +764,7 @@ namespace PSMF
      * The solution vector
      */
     mutable MGLevelObject<VectorType2> solution;
+    mutable MGLevelObject<VectorType2> solution_old;
 
     /**
      * Original right hand side vector
@@ -748,6 +820,11 @@ namespace PSMF
      * The coarse solver
      */
     MGCoarseFromSmoother<VectorType, MGLevelObject<SmootherType>> coarse;
+
+    const unsigned int N;
+    const double       tau;
+    const double       wave_number;
+    const double       a_t;
 
     /**
      * Number of cycles to be done in the FMG cycle

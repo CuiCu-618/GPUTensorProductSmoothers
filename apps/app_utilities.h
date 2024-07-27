@@ -89,7 +89,7 @@ namespace Util
     const auto str_dof_layout  = DoFLayoutToString(CT::DOF_LAYOUT_);
     const auto str_granularity = GranularityToString(CT::GRANULARITY_);
 
-    oss << "poisson";
+    oss << "heat";
     oss << std::scientific << std::setprecision(2);
     oss << "_" << CT::DIMENSION_ << "D";
     oss << "_" << str_dof_layout;

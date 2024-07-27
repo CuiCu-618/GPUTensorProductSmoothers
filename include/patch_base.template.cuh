@@ -72,6 +72,7 @@ namespace PSMF
 
     this->relaxation         = additional_data.relaxation;
     this->granularity_scheme = additional_data.granularity_scheme;
+    this->tau                = additional_data.tau;
 
     dof_handler = &matrix_free->get_dof_handler();
     level       = matrix_free->get_mg_level();
@@ -536,7 +537,6 @@ namespace PSMF
     FE_DGQ<1> fe_1d(fe_degree);
 
     constexpr unsigned int N              = fe_degree + 1;
-    const Number           tau            = 0.01;
     const Number           h              = 1. / Util::pow(2, level);
     const Number           scaling_factor = dim == 2 ? 1 : h;
 

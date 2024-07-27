@@ -145,13 +145,20 @@ namespace PSMF
        * Constructor.
        */
       AdditionalData(
+        const Number            tau                = 0.1,
         const Number            relaxation         = 1.,
         const unsigned int      patch_per_block    = 1,
         const GranularityScheme granularity_scheme = GranularityScheme::none)
-        : relaxation(relaxation)
+        : tau(tau)
+        , relaxation(relaxation)
         , patch_per_block(patch_per_block)
         , granularity_scheme(granularity_scheme)
       {}
+
+      /**
+       * Timestep size
+       */
+      Number tau;
 
       /**
        * Relaxation parameter.
@@ -373,6 +380,11 @@ namespace PSMF
      * Number of colors produced by the coloring algorithm.
      */
     unsigned int n_colors;
+
+    /**
+     * Timestep size
+     */
+    Number tau;
 
     /**
      * Relaxation parameter.

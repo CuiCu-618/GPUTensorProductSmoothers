@@ -31,26 +31,30 @@
 #include "solver.cuh"
 #include "utilities.cuh"
 
-
-// -\delta u = f, u = 0 on \parital \Omege, f = 1.
-// double percision
+// Solving Heat equation with implicit Euler time discretizations
 
 namespace Step64
 {
   using namespace dealii;
 
+  const unsigned int N   = 5;
+  const double       tau = 0.01;
+
   const double wave_number = 2;
   const double a_t         = 0.5;
-  const double tau         = 0.01;
 
   template <int dim, typename Number = double>
   class Solution : public Function<dim, Number>
   {
   public:
+    Solution()
+      : Function<dim>()
+    {}
+
     virtual Number
     value(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      const double T   = 0;
+      const double T   = this->get_time();
       double       val = (1 + std::sin(numbers::PI * T)) * std::exp(-a_t * T);
       for (unsigned int d = 0; d < dim; ++d)
         val *= std::sin(numbers::PI * p[d] * wave_number);
@@ -60,42 +64,7 @@ namespace Step64
     virtual Tensor<1, dim, Number>
     gradient(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      const double   T = 0;
-      Tensor<1, dim> return_value;
-      for (unsigned int d = 0; d < dim; ++d)
-        {
-          return_value[d] =
-            (1 + std::sin(numbers::PI * T)) * std::exp(-a_t * T);
-          for (unsigned int e = 0; e < dim; ++e)
-            if (d == e)
-              return_value[d] *= numbers::PI * wave_number *
-                                 std::cos(numbers::PI * p[e] * wave_number);
-            else
-              return_value[d] *= std::sin(numbers::PI * p[e] * wave_number);
-        }
-
-      return return_value;
-    }
-  };
-
-  template <int dim, typename Number = double>
-  class Solution1 : public Function<dim, Number>
-  {
-  public:
-    virtual Number
-    value(const Point<dim> &p, const unsigned int = 0) const override final
-    {
-      const double T   = tau;
-      double       val = (1 + std::sin(numbers::PI * T)) * std::exp(-a_t * T);
-      for (unsigned int d = 0; d < dim; ++d)
-        val *= std::sin(numbers::PI * p[d] * wave_number);
-      return val;
-    }
-
-    virtual Tensor<1, dim, Number>
-    gradient(const Point<dim> &p, const unsigned int = 0) const override final
-    {
-      const double   T = tau;
+      const double   T = this->get_time();
       Tensor<1, dim> return_value;
       for (unsigned int d = 0; d < dim; ++d)
         {
@@ -117,11 +86,15 @@ namespace Step64
   class RightHandSide : public Function<dim, Number>
   {
   public:
+    RightHandSide()
+      : Function<dim>()
+    {}
+
     virtual Number
     value(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      const double T   = tau;
-      double       val = std::exp(-a_t * T) * tau;
+      const double T   = this->get_time();
+      double       val = std::exp(-a_t * T);
       for (unsigned int d = 0; d < dim; ++d)
         val *= std::sin(numbers::PI * p[d] * wave_number);
       return val *
@@ -152,7 +125,7 @@ namespace Step64
     solve(unsigned int n_mg_cycles);
 
     std::pair<double, double>
-    compute_error();
+    compute_error(const double time);
 
     Triangulation<dim>                  triangulation;
     std::shared_ptr<FiniteElement<dim>> fe;
@@ -161,6 +134,7 @@ namespace Step64
     double                              setup_time;
 
     ConvergenceTable convergence_table;
+    ConvergenceTable convergence_table_N;
 
     std::fstream                        fout;
     std::shared_ptr<ConditionalOStream> pcout;
@@ -232,12 +206,15 @@ namespace Step64
   LaplaceProblem<dim, fe_degree>::solve(unsigned int n_mg_cycles)
   {
     Solution<dim> analytic_solution;
+
     PSMF::MultigridSolvers<dim, fe_degree, vcycle_number, full_number> solver(
       dof_handler,
       analytic_solution,
-      RightHandSide<dim>(),
-      Functions::ConstantFunction<dim>(1.),
       pcout,
+      N,
+      tau,
+      wave_number,
+      a_t,
       n_mg_cycles);
 
     Timer time;
@@ -258,13 +235,14 @@ namespace Step64
     *pcout << "GPU Memory stats [MB]: " << mem_usage << "\n\n";
 
     double time_gmres = 1e10;
-    for (unsigned int i = 0; i < 10; ++i)
+    for (unsigned int i = 0; i < 1; ++i)
       {
         time.restart();
         solver.solve_gmres(false);
         cudaDeviceSynchronize();
         time_gmres = std::min(time.wall_time(), time_gmres);
-        *pcout << "Time solve GMRES           " << time.wall_time() << "\n";
+        *pcout << "Time solve GMRES (one time step): " << time.wall_time()
+               << "\n";
       }
 
     std::optional<ReductionControl> solver_control = solver.solve_gmres(true);
@@ -293,7 +271,7 @@ namespace Step64
       ghost_solution_host = solution_host;
       constraints.distribute(ghost_solution_host);
     }
-    const auto [l2_error_gmres, H1_error_gmres] = compute_error();
+    const auto [l2_error_gmres, H1_error_gmres] = compute_error(tau);
 
     *pcout << "Iterations: " << n_iter << std::endl
            << "frac Its. : " << n_frac << std::endl
@@ -302,6 +280,31 @@ namespace Step64
 
     *pcout << "L2 error: " << l2_error_gmres << std::endl
            << "H1 error: " << H1_error_gmres << std::endl
+           << std::endl;
+
+    double time_gmres_N = 1e10;
+    {
+      time.restart();
+      solver.solve_gmres(false, N);
+      cudaDeviceSynchronize();
+      time_gmres_N = std::min(time.wall_time(), time_gmres_N);
+    }
+
+    {
+      auto solution = solver.get_solution();
+
+      LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+                                             solution_host(solution.size());
+      LinearAlgebra::ReadWriteVector<double> rw_vector(solution.size());
+      rw_vector.import(solution, VectorOperation::insert);
+      solution_host.import(rw_vector, VectorOperation::insert);
+      ghost_solution_host = solution_host;
+      constraints.distribute(ghost_solution_host);
+    }
+    const auto [l2_error_gmres_N, H1_error_gmres_N] = compute_error(tau * N);
+
+    *pcout << "L2 error: " << l2_error_gmres_N << std::endl
+           << "H1 error: " << H1_error_gmres_N << std::endl
            << std::endl;
 
 
@@ -357,18 +360,27 @@ namespace Step64
     convergence_table.add_value("gmres_time", time_gmres);
     convergence_table.add_value("gmres_its", n_iter);
     convergence_table.add_value("frac_its", n_frac);
-    convergence_table.add_value("gmres_reduction", rho);
+
+    convergence_table_N.add_value("cells",
+                                  triangulation.n_global_active_cells());
+    convergence_table_N.add_value("dofs", dof_handler.n_dofs());
+    convergence_table_N.add_value("gmres_L2error", l2_error_gmres_N);
+    convergence_table_N.add_value("gmres_H1error", H1_error_gmres_N);
+    convergence_table_N.add_value("gmres_time", time_gmres_N);
   }
 
 
   template <int dim, int fe_degree>
   std::pair<double, double>
-  LaplaceProblem<dim, fe_degree>::compute_error()
+  LaplaceProblem<dim, fe_degree>::compute_error(const double time)
   {
+    Solution<dim> u_analytical;
+    u_analytical.set_time(time);
+
     Vector<double> cellwise_norm(triangulation.n_active_cells());
     VectorTools::integrate_difference(dof_handler,
                                       ghost_solution_host,
-                                      Solution1<dim>(),
+                                      u_analytical,
                                       cellwise_norm,
                                       QGauss<dim>(fe->degree + 1),
                                       VectorTools::L2_norm);
@@ -380,7 +392,7 @@ namespace Step64
     Vector<double> cellwise_h1norm(triangulation.n_active_cells());
     VectorTools::integrate_difference(dof_handler,
                                       ghost_solution_host,
-                                      Solution1<dim>(),
+                                      u_analytical,
                                       cellwise_h1norm,
                                       QGauss<dim>(fe->degree + 1),
                                       VectorTools::H1_seminorm);
@@ -453,10 +465,24 @@ namespace Step64
         std::ostringstream oss;
 
         oss << "\n[" << SmootherToString(CT::KERNEL_TYPE_[0]) << "]\n";
+        oss << "\n Time = " << tau * 1 << "\n";
         convergence_table.write_text(oss);
 
-        *pcout << oss.str() << std::endl;
+        convergence_table_N.set_scientific("gmres_L2error", true);
+        convergence_table_N.set_precision("gmres_L2error", 3);
+        convergence_table_N.evaluate_convergence_rates(
+          "gmres_L2error", "cells", ConvergenceTable::reduction_rate_log2, dim);
+        convergence_table_N.set_scientific("gmres_H1error", true);
+        convergence_table_N.set_precision("gmres_H1error", 3);
+        convergence_table_N.evaluate_convergence_rates(
+          "gmres_H1error", "cells", ConvergenceTable::reduction_rate_log2, dim);
+        convergence_table_N.set_scientific("gmres_time", true);
+        convergence_table_N.set_precision("gmres_time", 3);
 
+        oss << "\n Time = " << tau * N << "\n";
+        convergence_table_N.write_text(oss);
+
+        *pcout << oss.str() << std::endl;
 
         *pcout << std::endl << std::endl;
       }

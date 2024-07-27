@@ -19,10 +19,11 @@ namespace PSMF
   class LaplaceOperatorQuad
   {
   public:
-    const double tau = 0.01;
+    const Number tau;
 
     __device__
-    LaplaceOperatorQuad()
+    LaplaceOperatorQuad(const Number tau)
+      : tau(tau)
     {}
     __device__ void
     operator()(
@@ -46,9 +47,11 @@ namespace PSMF
     static const unsigned int n_q_points   = Utilities::pow(fe_degree + 1, dim);
 
     const unsigned int dofs_per_dim;
+    const Number       tau;
 
-    LocalLaplaceOperator(const unsigned int dofs_per_dim)
+    LocalLaplaceOperator(const unsigned int dofs_per_dim, const Number tau)
       : dofs_per_dim(dofs_per_dim)
+      , tau(tau)
     {}
 
     __device__ void
@@ -65,7 +68,7 @@ namespace PSMF
       fe_eval.read_dof_values(src);
       fe_eval.evaluate(true, true);
       fe_eval.apply_for_each_quad_point(
-        LaplaceOperatorQuad<dim, fe_degree, Number>());
+        LaplaceOperatorQuad<dim, fe_degree, Number>(tau));
       fe_eval.integrate(true, true);
       fe_eval.distribute_local_to_global(dst);
     }
@@ -105,6 +108,64 @@ namespace PSMF
     }
   };
 
+  template <int dim, int fe_degree, typename Number>
+  class LocalRHSOperator
+  {
+  public:
+    static const unsigned int n_dofs_1d    = fe_degree + 1;
+    static const unsigned int n_local_dofs = Utilities::pow(fe_degree + 1, dim);
+    static const unsigned int n_q_points   = Utilities::pow(fe_degree + 1, dim);
+
+    const unsigned int dofs_per_dim;
+
+    const Number wave_number;
+    const Number tau;
+    const Number a_t;
+    const Number T;
+
+    LocalRHSOperator(const unsigned int dofs_per_dim,
+                     const Number       wave_number,
+                     const Number       tau,
+                     const Number       a_t,
+                     const Number       T)
+      : dofs_per_dim(dofs_per_dim)
+      , wave_number(wave_number)
+      , tau(tau)
+      , a_t(a_t)
+      , T(T)
+    {}
+
+    __device__ void
+    operator()(const unsigned int                            cell,
+               const typename MatrixFree<dim, Number>::Data *gpu_data,
+               SharedDataCuda<dim, Number>                  *shared_data,
+               const Number                                 *src,
+               Number                                       *dst) const
+    {
+      (void)src;
+
+      const auto point =
+        get_quadrature_point<dim, Number>(cell, gpu_data, n_dofs_1d);
+      FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> fe_eval(
+        cell, gpu_data, shared_data, dofs_per_dim);
+
+      Number val = exp(-a_t * T);
+      for (unsigned int d = 0; d < dim; ++d)
+        val *= sin(numbers::PI * point[d] * wave_number);
+      val *=
+        (numbers::PI * cos(numbers::PI * T) - a_t - a_t * sin(numbers::PI * T) +
+         dim * numbers::PI * wave_number * numbers::PI * wave_number +
+         dim * numbers::PI * wave_number * numbers::PI * wave_number *
+           sin(numbers::PI * T));
+
+      fe_eval.submit_value(val);
+      __syncthreads();
+      fe_eval.integrate(true, false);
+      fe_eval.distribute_local_to_global(dst);
+    }
+  };
+
+
 
   template <int dim, int fe_degree, typename Number, DoFLayout dof_layout>
   class LaplaceOperator;
@@ -120,9 +181,15 @@ namespace PSMF
     {}
 
     void
-    initialize(std::shared_ptr<const PSMF::MatrixFree<dim, Number>> data_)
+    initialize(std::shared_ptr<const PSMF::MatrixFree<dim, Number>> data_,
+               const Number                                         tau_,
+               const Number wave_number_,
+               const Number a_t_)
     {
-      mf_data = data_;
+      mf_data     = data_;
+      tau         = tau_;
+      wave_number = wave_number_;
+      a_t         = a_t_;
     }
 
     void
@@ -136,7 +203,7 @@ namespace PSMF
       unsigned int n_dofs_per_dim = (1 << level) * fe_degree + 1;
 
       LocalLaplaceOperator<dim, fe_degree, Number> Laplace_operator(
-        n_dofs_per_dim);
+        n_dofs_per_dim, tau);
 
       mf_data->cell_loop(Laplace_operator, src, dst);
       mf_data->copy_constrained_values(src, dst);
@@ -160,6 +227,22 @@ namespace PSMF
       mf_data->copy_constrained_values(src, dst);
     }
 
+    void
+    rhs_ops(LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
+            const double T) const
+    {
+      dst      = 0.;
+      auto src = dst;
+
+      unsigned int level          = mf_data->get_mg_level();
+      unsigned int n_dofs_per_dim = (1 << level) * fe_degree + 1;
+
+      LocalRHSOperator<dim, fe_degree, Number> RHS_operator(
+        n_dofs_per_dim, wave_number, tau, a_t, T);
+
+      mf_data->cell_loop(RHS_operator, src, dst);
+    }
+
 
     void
     Tvmult(LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
@@ -180,87 +263,19 @@ namespace PSMF
     }
 
     void
-    compute_residual(
+    compute_rhs(
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &dst,
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &src,
-      const Function<dim, Number> &rhs_function,
-      const Function<dim, Number> &analytic_solution,
-      const unsigned int           mg_level) const
+      const double                                                   T) const
     {
-      dst = 0.;
-      src.update_ghost_values();
+      dst      = 0.;
+      auto tmp = dst;
 
-      const unsigned int n_dofs = src.size();
+      rhs_ops(tmp, T);
 
-      LinearAlgebra::distributed::Vector<Number, MemorySpace::Host>
-        system_rhs_host(n_dofs);
-      LinearAlgebra::distributed::Vector<Number, MemorySpace::Host>
-        system_u_host(n_dofs);
-      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
-        system_rhs_dev(n_dofs);
-      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
-        system_u_dev(n_dofs);
+      vmult_mass(dst, src);
 
-      LinearAlgebra::ReadWriteVector<Number> rw_vector(n_dofs);
-
-      AffineConstraints<Number> constraints;
-      constraints.close();
-
-      // U
-      std::map<types::global_dof_index, Point<dim>> current_point_map;
-      DoFTools::map_dofs_to_support_points<dim>(MappingQGeneric<dim>(fe_degree +
-                                                                     1),
-                                                mf_data->get_dof_handler(),
-                                                current_point_map);
-      for (unsigned int i = 0; i < n_dofs; ++i)
-        system_u_host[i] = analytic_solution.value(current_point_map[i]);
-
-      rw_vector.import(system_u_host, VectorOperation::insert);
-      system_u_dev.import(rw_vector, VectorOperation::insert);
-      vmult_mass(system_rhs_dev, system_u_dev);
-
-      // rhs
-      const QGauss<dim>  quadrature_formula(fe_degree + 1);
-      FEValues<dim>      fe_values(mf_data->get_dof_handler().get_fe(),
-                              quadrature_formula,
-                              update_values | update_quadrature_points |
-                                update_JxW_values);
-      const unsigned int dofs_per_cell =
-        mf_data->get_dof_handler().get_fe().n_dofs_per_cell();
-      const unsigned int n_q_points = quadrature_formula.size();
-      Vector<Number>     cell_rhs(dofs_per_cell);
-      std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
-      std::vector<Number>                  rhs_values(n_q_points);
-
-      auto begin = mf_data->get_dof_handler().begin_mg(mg_level);
-      auto end   = mf_data->get_dof_handler().end_mg(mg_level);
-
-      for (auto cell = begin; cell != end; ++cell)
-        if (cell->is_locally_owned_on_level())
-          {
-            cell_rhs = 0;
-            fe_values.reinit(cell);
-            rhs_function.value_list(fe_values.get_quadrature_points(),
-                                    rhs_values);
-
-            for (unsigned int q_index = 0; q_index < n_q_points; ++q_index)
-              {
-                for (unsigned int i = 0; i < dofs_per_cell; ++i)
-                  cell_rhs(i) += (fe_values.shape_value(i, q_index) *
-                                  rhs_values[q_index] * fe_values.JxW(q_index));
-              }
-            cell->get_mg_dof_indices(local_dof_indices);
-            constraints.distribute_local_to_global(cell_rhs,
-                                                   local_dof_indices,
-                                                   system_rhs_host);
-          }
-
-      system_rhs_host.compress(VectorOperation::add);
-      rw_vector.import(system_rhs_host, VectorOperation::insert);
-      system_rhs_dev.import(rw_vector, VectorOperation::add);
-
-      vmult(dst, src);
-      dst.sadd(-1., system_rhs_dev);
+      dst.add(tau, tmp);
     }
 
     void
@@ -285,6 +300,10 @@ namespace PSMF
 
   private:
     std::shared_ptr<const PSMF::MatrixFree<dim, Number>> mf_data;
+
+    double tau;
+    double wave_number;
+    double a_t;
   };
 } // namespace PSMF
 

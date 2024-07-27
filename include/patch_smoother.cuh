@@ -102,11 +102,13 @@ namespace PSMF
     {
     public:
       AdditionalData(
+        const Number            tau                = 0.1,
         const Number            relaxation         = 1.,
         const unsigned int      n_iterations       = 1,
         const unsigned int      patch_per_block    = 1,
         const GranularityScheme granularity_scheme = GranularityScheme::none);
 
+      Number            tau;
       Number            relaxation;
       unsigned int      n_iterations;
       unsigned int      patch_per_block;
@@ -138,6 +140,7 @@ namespace PSMF
   {
     typename LevelVertexPatch::AdditionalData additional_data;
 
+    additional_data.tau                = additional_data_in.tau;
     additional_data.relaxation         = additional_data_in.relaxation;
     additional_data.patch_per_block    = additional_data_in.patch_per_block;
     additional_data.granularity_scheme = additional_data_in.granularity_scheme;
@@ -340,11 +343,13 @@ namespace PSMF
             SmootherVariant kernel,
             DoFLayout       dof_layout>
   inline PatchSmoother<MatrixType, dim, fe_degree, kernel, dof_layout>::
-    AdditionalData::AdditionalData(const Number            relaxation,
+    AdditionalData::AdditionalData(const Number            tau,
+                                   const Number            relaxation,
                                    const unsigned int      n_iterations,
                                    const unsigned int      patch_per_block,
                                    const GranularityScheme granularity_scheme)
-    : relaxation(relaxation)
+    : tau(tau)
+    , relaxation(relaxation)
     , n_iterations(n_iterations)
     , patch_per_block(patch_per_block)
     , granularity_scheme(granularity_scheme)
