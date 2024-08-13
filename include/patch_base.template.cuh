@@ -34,10 +34,11 @@ namespace PSMF
       Utilities::CUDA::free(patch_id_color_ptr);
     patch_id.clear();
 
-    Utilities::CUDA::free(eigenvalues);
-    Utilities::CUDA::free(eigenvectors);
-    Utilities::CUDA::free(global_mass_1d);
-    Utilities::CUDA::free(global_derivative_1d);
+    // TODO:
+    // Utilities::CUDA::free(eigenvalues);
+    // Utilities::CUDA::free(eigenvectors);
+    // Utilities::CUDA::free(global_mass_1d);
+    // Utilities::CUDA::free(global_derivative_1d);
   }
 
   template <int dim, int fe_degree, typename Number, SmootherVariant kernel>
@@ -73,6 +74,7 @@ namespace PSMF
     this->relaxation         = additional_data.relaxation;
     this->granularity_scheme = additional_data.granularity_scheme;
     this->tau                = additional_data.tau;
+    this->n_stages           = additional_data.n_stages;
 
     dof_handler = &matrix_free->get_dof_handler();
     level       = matrix_free->get_mg_level();
@@ -113,21 +115,40 @@ namespace PSMF
     constexpr unsigned n_dofs_2d = n_dofs_1d * n_dofs_1d;
 
     // if (kernel == SmootherVariant::Exact)
-    alloc_arrays(&eigenvalues,
-                 n_dofs_in + Util::pow(Util::pow(n_dofs_in, dim), 2) +
-                   dim * n_dofs_in);
+    // alloc_arrays(&eigenvalues,
+    //              n_dofs_in + Util::pow(Util::pow(n_dofs_in, dim), 2) +
+    //                dim * n_dofs_in);
     // else
     //   alloc_arrays(&eigenvalues, n_dofs_1d);
-    alloc_arrays(&eigenvectors, n_dofs_2d + dim * n_dofs_2d);
-    alloc_arrays(&global_mass_1d, n_dofs_2d);
-    alloc_arrays(&global_derivative_1d, n_dofs_2d);
 
-    alloc_arrays(&mass_ii, n_dofs_in * n_dofs_in);
-    alloc_arrays(&mass_ib, n_dofs_in * 2);
-    alloc_arrays(&der_ii, n_dofs_in * n_dofs_in);
-    alloc_arrays(&der_ib, n_dofs_in * 2);
-    alloc_arrays(&mass_I, n_dofs_in * n_dofs_1d);
-    alloc_arrays(&der_I, n_dofs_in * n_dofs_1d);
+    eigenvalues.resize(n_stages);
+    eigenvectors.resize(n_stages);
+    global_mass_1d.resize(n_stages);
+    global_derivative_1d.resize(n_stages);
+
+    mass_ii.resize(n_stages);
+    mass_ib.resize(n_stages);
+    der_ii.resize(n_stages);
+    der_ib.resize(n_stages);
+    mass_I.resize(n_stages);
+    der_I.resize(n_stages);
+
+    for (unsigned int i = 0; i < n_stages; ++i)
+      {
+        alloc_arrays(&eigenvalues[i],
+                     n_dofs_in + Util::pow(Util::pow(n_dofs_in, dim), 2) +
+                       dim * n_dofs_in);
+        alloc_arrays(&eigenvectors[i], n_dofs_2d + dim * n_dofs_2d);
+        alloc_arrays(&global_mass_1d[i], n_dofs_2d);
+        alloc_arrays(&global_derivative_1d[i], n_dofs_2d);
+
+        alloc_arrays(&mass_ii[i], n_dofs_in * n_dofs_in);
+        alloc_arrays(&mass_ib[i], n_dofs_in * 2);
+        alloc_arrays(&der_ii[i], n_dofs_in * n_dofs_in);
+        alloc_arrays(&der_ib[i], n_dofs_in * 2);
+        alloc_arrays(&mass_I[i], n_dofs_in * n_dofs_1d);
+        alloc_arrays(&der_I[i], n_dofs_in * n_dofs_1d);
+      }
   }
 
   template <int dim, int fe_degree, typename Number, SmootherVariant kernel>
@@ -137,23 +158,26 @@ namespace PSMF
   {
     Data data_copy;
 
-    data_copy.n_patches            = n_patches[color];
-    data_copy.patch_per_block      = patch_per_block;
-    data_copy.relaxation           = relaxation;
-    data_copy.first_dof            = first_dof[color];
-    data_copy.patch_id             = patch_id[color];
-    data_copy.eigenvalues          = eigenvalues;
-    data_copy.eigenvectors         = eigenvectors;
-    data_copy.global_mass_1d       = global_mass_1d;
-    data_copy.global_derivative_1d = global_derivative_1d;
+    data_copy.n_patches       = n_patches[color];
+    data_copy.patch_per_block = patch_per_block;
+    data_copy.relaxation      = relaxation;
+    data_copy.first_dof       = first_dof[color];
+    data_copy.patch_id        = patch_id[color];
 
-    data_copy.mass_ii = mass_ii;
-    data_copy.mass_ib = mass_ib;
-    data_copy.mass_I  = mass_I;
+    stage = current_stage;
 
-    data_copy.der_ii = der_ii;
-    data_copy.der_ib = der_ib;
-    data_copy.der_I  = der_I;
+    data_copy.eigenvalues          = eigenvalues[stage];
+    data_copy.eigenvectors         = eigenvectors[stage];
+    data_copy.global_mass_1d       = global_mass_1d[stage];
+    data_copy.global_derivative_1d = global_derivative_1d[stage];
+
+    data_copy.mass_ii = mass_ii[stage];
+    data_copy.mass_ib = mass_ib[stage];
+    data_copy.mass_I  = mass_I[stage];
+
+    data_copy.der_ii = der_ii[stage];
+    data_copy.der_ib = der_ib[stage];
+    data_copy.der_I  = der_I[stage];
 
     return data_copy;
   }
@@ -534,6 +558,31 @@ namespace PSMF
   LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::
     reinit_tensor_product() const
   {
+    std::vector<double> D_vec(n_stages);
+    {
+      std::string file_name = "D_vec_" + std::to_string(n_stages) + ".txt";
+
+      std::ifstream fin;
+      fin.open(file_name);
+
+      if (fin.fail())
+        fin.open("../IRK_txt/" + file_name);
+
+      AssertThrow(fin.fail() == false,
+                  ExcMessage("File with the name " + file_name +
+                             " could not be found!"));
+
+      unsigned int m, n;
+      fin >> m >> n;
+
+      AssertDimension(m, 1);
+      AssertDimension(n, n_stages);
+
+      for (unsigned int i = 0; i < n_stages; ++i)
+        fin >> D_vec[i];
+    }
+
+
     FE_DGQ<1> fe_1d(fe_degree);
 
     constexpr unsigned int N              = fe_degree + 1;
@@ -542,503 +591,403 @@ namespace PSMF
 
     QGauss<1> quadrature(N);
 
-    std::array<Table<2, Number>, dim> patch_mass;
-
-    for (unsigned int d = 0; d < dim; ++d)
+    for (unsigned int ss = 0; ss < n_stages; ++ss)
       {
-        patch_mass[d].reinit(2 * N - 1, 2 * N - 1);
-      }
+        std::array<Table<2, Number>, dim> patch_mass;
 
-    auto get_cell_laplace = [&]() {
-      FullMatrix<double> cell_laplace(N, N);
-
-      for (unsigned int i = 0; i < N; ++i)
-        for (unsigned int j = 0; j < N; ++j)
+        for (unsigned int d = 0; d < dim; ++d)
           {
-            double sum_laplace = 0;
-            for (unsigned int q = 0; q < quadrature.size(); ++q)
-              {
-                sum_laplace += tau *
-                               (fe_1d.shape_grad(i, quadrature.point(q))[0] *
-                                fe_1d.shape_grad(j, quadrature.point(q))[0]) *
-                               quadrature.weight(q);
-
-                sum_laplace += (fe_1d.shape_value(i, quadrature.point(q)) *
-                                fe_1d.shape_value(j, quadrature.point(q))) *
-                               quadrature.weight(q) * h * h / dim;
-              }
-
-            // scaling to real cells
-            cell_laplace(i, j) = sum_laplace * scaling_factor;
+            patch_mass[d].reinit(2 * N - 1, 2 * N - 1);
           }
 
-      return cell_laplace;
-    };
+        auto get_cell_laplace = [&]() {
+          FullMatrix<double> cell_laplace(N, N);
 
-    for (unsigned int i = 0; i < N; ++i)
-      for (unsigned int j = 0; j < N; ++j)
-        {
-          double sum_mass = 0;
-          for (unsigned int q = 0; q < quadrature.size(); ++q)
-            {
-              sum_mass += (fe_1d.shape_value(i, quadrature.point(q)) *
-                           fe_1d.shape_value(j, quadrature.point(q))) *
-                          quadrature.weight(q);
-            }
-          for (unsigned int d = 0; d < dim; ++d)
-            {
-              patch_mass[d](i, j) += sum_mass;
-              patch_mass[d](i + N - 1, j + N - 1) += sum_mass;
-            }
-        }
+          for (unsigned int i = 0; i < N; ++i)
+            for (unsigned int j = 0; j < N; ++j)
+              {
+                double sum_laplace = 0;
+                for (unsigned int q = 0; q < quadrature.size(); ++q)
+                  {
+                    sum_laplace +=
+                      tau *
+                      (fe_1d.shape_grad(i, quadrature.point(q))[0] *
+                       fe_1d.shape_grad(j, quadrature.point(q))[0]) *
+                      quadrature.weight(q);
 
-    auto laplace_middle = get_cell_laplace();
+                    sum_laplace += D_vec[ss] *
+                                   (fe_1d.shape_value(i, quadrature.point(q)) *
+                                    fe_1d.shape_value(j, quadrature.point(q))) *
+                                   quadrature.weight(q) * h * h / dim;
+                  }
 
-    // mass, laplace
-    auto get_patch_laplace = [&](auto left, auto right) {
-      std::array<Table<2, Number>, dim> patch_laplace;
+                // scaling to real cells
+                cell_laplace(i, j) = sum_laplace * scaling_factor;
+              }
 
-      for (unsigned int d = 0; d < dim; ++d)
-        {
-          patch_laplace[d].reinit(2 * N - 1, 2 * N - 1);
-        }
+          return cell_laplace;
+        };
 
-      for (unsigned int d = 0; d < dim; ++d)
         for (unsigned int i = 0; i < N; ++i)
           for (unsigned int j = 0; j < N; ++j)
             {
-              patch_laplace[d](i, j) += left(i, j);
-              patch_laplace[d](i + N - 1, j + N - 1) += right(i, j);
+              double sum_mass = 0;
+              for (unsigned int q = 0; q < quadrature.size(); ++q)
+                {
+                  sum_mass += (fe_1d.shape_value(i, quadrature.point(q)) *
+                               fe_1d.shape_value(j, quadrature.point(q))) *
+                              quadrature.weight(q);
+                }
+              for (unsigned int d = 0; d < dim; ++d)
+                {
+                  patch_mass[d](i, j) += sum_mass;
+                  patch_mass[d](i + N - 1, j + N - 1) += sum_mass;
+                }
             }
 
-      return patch_laplace;
-    };
+        auto laplace_middle = get_cell_laplace();
 
-    auto patch_laplace = get_patch_laplace(laplace_middle, laplace_middle);
+        // mass, laplace
+        auto get_patch_laplace = [&](auto left, auto right) {
+          std::array<Table<2, Number>, dim> patch_laplace;
 
-    // eigenvalue, eigenvector
-    std::array<Table<2, Number>, dim> patch_mass_inv;
-    std::array<Table<2, Number>, dim> patch_laplace_inv;
-
-    for (unsigned int d = 0; d < dim; ++d)
-      {
-        patch_mass_inv[d].reinit(2 * N - 3, 2 * N - 3);
-        patch_laplace_inv[d].reinit(2 * N - 3, 2 * N - 3);
-      }
-
-    for (unsigned int d = 0; d < dim; ++d)
-      for (unsigned int i = 0; i < 2 * N - 3; ++i)
-        for (unsigned int j = 0; j < 2 * N - 3; ++j)
-          {
-            patch_mass_inv[d](i, j)    = patch_mass[d](i + 1, j + 1);
-            patch_laplace_inv[d](i, j) = patch_laplace[d](i + 1, j + 1);
-          }
-
-    TensorProductData<dim, fe_degree, Number> tensor_product;
-    tensor_product.reinit(patch_mass_inv, patch_laplace_inv);
-
-    std::array<AlignedVector<Number>, dim> eigenval;
-    std::array<Table<2, Number>, dim>      eigenvec;
-    tensor_product.get_eigenvalues(eigenval);
-    tensor_product.get_eigenvectors(eigenvec);
-
-    // auto exact_inverse = tensor_product.inverse_matrix_to_table();
-
-    // auto print_matrices = [](auto matrix) {
-    //   for (auto m = 0U; m < matrix.size(1); ++m)
-    //     {
-    //       for (auto n = 0U; n < matrix.size(0); ++n)
-    //         std::cout << matrix(m, n) << " ";
-    //       std::cout << std::endl;
-    //     }
-    //   std::cout << std::endl;
-    // };
-
-    // print_matrices(exact_inverse);
-
-    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
-
-    auto *mass    = new Number[n_dofs_1d * n_dofs_1d * dim];
-    auto *laplace = new Number[n_dofs_1d * n_dofs_1d * dim];
-    auto *values  = new Number[n_dofs_1d * n_dofs_1d * dim];
-    auto *vectors = new Number[n_dofs_1d * n_dofs_1d * dim];
-
-    for (int d = 0; d < dim; ++d)
-      {
-        std::transform(patch_mass[d].begin(),
-                       patch_mass[d].end(),
-                       &mass[n_dofs_1d * n_dofs_1d * d],
-                       [](const Number m) -> Number { return m; });
-
-        std::transform(patch_laplace[d].begin(),
-                       patch_laplace[d].end(),
-                       &laplace[n_dofs_1d * n_dofs_1d * d],
-                       [](const Number m) -> Number { return m; });
-
-        std::transform(eigenval[d].begin(),
-                       eigenval[d].end(),
-                       &values[n_dofs_1d * n_dofs_1d * d],
-                       [](const Number m) -> Number { return m; });
-
-        std::transform(eigenvec[d].begin(),
-                       eigenvec[d].end(),
-                       &vectors[n_dofs_1d * n_dofs_1d * d],
-                       [](const Number m) -> Number { return m; });
-      }
-
-    cudaError_t error_code = cudaMemcpy(eigenvalues,
-                                        values,
-                                        (n_dofs_1d - 2) * sizeof(Number),
-                                        cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
-    // {
-    //   auto *vals = new Number[exact_inverse.n_elements()];
-    //
-    //   std::transform(exact_inverse.begin(),
-    //                  exact_inverse.end(),
-    //                  vals,
-    //                  [](const Number m) -> Number { return m; });
-    //
-    //   error_code = cudaMemcpy(eigenvalues + n_dofs_1d - 2,
-    //                           vals,
-    //                           exact_inverse.n_elements() * sizeof(Number),
-    //                           cudaMemcpyHostToDevice);
-    //   AssertCuda(error_code);
-    //
-    //   delete[] vals;
-    // }
-
-    error_code = cudaMemcpy(eigenvectors,
-                            vectors,
-                            n_dofs_1d * n_dofs_1d * sizeof(Number),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
-    error_code = cudaMemcpy(global_mass_1d,
-                            mass,
-                            n_dofs_1d * n_dofs_1d * sizeof(Number),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
-    error_code = cudaMemcpy(global_derivative_1d,
-                            laplace,
-                            n_dofs_1d * n_dofs_1d * sizeof(Number),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
-    // Neural Network
-    if (dim == 2 && false)
-      {
-        // TODO: 3d
-        std::string filenamea0 =
-          "/export/home/cucui/CLionProjects/python-project-template/poisson/TensorProduct/a0_interior_2D_Q" +
-          std::to_string(fe_degree) + ".txt";
-        std::string filenamea1 =
-          "/export/home/cucui/CLionProjects/python-project-template/poisson/TensorProduct/a1_interior_2D_Q" +
-          std::to_string(fe_degree) + ".txt";
-        std::string filenamem0 =
-          "/export/home/cucui/CLionProjects/python-project-template/poisson/TensorProduct/m0_interior_2D_Q" +
-          std::to_string(fe_degree) + ".txt";
-        std::string filenamem1 =
-          "/export/home/cucui/CLionProjects/python-project-template/poisson/TensorProduct/m1_interior_2D_Q" +
-          std::to_string(fe_degree) + ".txt";
-
-        std::ifstream filea0(filenamea0);
-        std::ifstream filea1(filenamea1);
-        std::ifstream filem0(filenamem0);
-        std::ifstream filem1(filenamem1);
-
-        constexpr unsigned int n_dofs_in = 2 * fe_degree - 1;
-        constexpr unsigned int n_dofs_2d = Util::pow(n_dofs_in, 2);
-
-
-        auto read_nn = [&](auto &file) {
-          Table<2, Number> mat(n_dofs_in, n_dofs_in);
-          if (file.is_open())
+          for (unsigned int d = 0; d < dim; ++d)
             {
-              Number tmp[n_dofs_2d];
-
-              std::istream_iterator<Number> fileIter(file);
-              std::copy_n(fileIter, n_dofs_2d, tmp);
-
-              std::transform(tmp,
-                             tmp + n_dofs_2d,
-                             mat.begin(),
-                             [](auto m) -> Number { return m; });
-
-              file.close();
+              patch_laplace[d].reinit(2 * N - 1, 2 * N - 1);
             }
-          else
-            std::cout << "Error opening file!" << std::endl;
 
+          for (unsigned int d = 0; d < dim; ++d)
+            for (unsigned int i = 0; i < N; ++i)
+              for (unsigned int j = 0; j < N; ++j)
+                {
+                  patch_laplace[d](i, j) += left(i, j);
+                  patch_laplace[d](i + N - 1, j + N - 1) += right(i, j);
+                }
 
-          return mat;
+          return patch_laplace;
         };
 
-        std::array<Table<2, Number>, dim> t1;
-        std::array<Table<2, Number>, dim> t2;
+        auto patch_laplace = get_patch_laplace(laplace_middle, laplace_middle);
 
-        t1[0] = read_nn(filem1);
-        t1[1] = read_nn(filem0);
-        t2[0] = read_nn(filea1);
-        t2[1] = read_nn(filea0);
+        // eigenvalue, eigenvector
+        std::array<Table<2, Number>, dim> patch_mass_inv;
+        std::array<Table<2, Number>, dim> patch_laplace_inv;
 
-        TensorProductData<dim, fe_degree, Number> tensor_product_inv;
-        tensor_product_inv.reinit(t1, t2);
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            patch_mass_inv[d].reinit(2 * N - 3, 2 * N - 3);
+            patch_laplace_inv[d].reinit(2 * N - 3, 2 * N - 3);
+          }
 
-        std::array<AlignedVector<Number>, dim> eigenval_inv;
-        std::array<Table<2, Number>, dim>      eigenvec_inv;
-        tensor_product_inv.get_eigenvalues(eigenval_inv);
-        tensor_product_inv.get_eigenvectors(eigenvec_inv);
+        for (unsigned int d = 0; d < dim; ++d)
+          for (unsigned int i = 0; i < 2 * N - 3; ++i)
+            for (unsigned int j = 0; j < 2 * N - 3; ++j)
+              {
+                patch_mass_inv[d](i, j)    = patch_mass[d](i + 1, j + 1);
+                patch_laplace_inv[d](i, j) = patch_laplace[d](i + 1, j + 1);
+              }
 
-        auto *values_inv  = new Number[n_dofs_in * dim];
-        auto *vectors_inv = new Number[n_dofs_2d * dim];
+        TensorProductData<dim, fe_degree, Number> tensor_product;
+        tensor_product.reinit(patch_mass_inv, patch_laplace_inv);
+
+        std::array<AlignedVector<Number>, dim> eigenval;
+        std::array<Table<2, Number>, dim>      eigenvec;
+        tensor_product.get_eigenvalues(eigenval);
+        tensor_product.get_eigenvectors(eigenvec);
+
+        // auto exact_inverse = tensor_product.inverse_matrix_to_table();
+
+        // auto print_matrices = [](auto matrix) {
+        //   for (auto m = 0U; m < matrix.size(1); ++m)
+        //     {
+        //       for (auto n = 0U; n < matrix.size(0); ++n)
+        //         std::cout << matrix(m, n) << " ";
+        //       std::cout << std::endl;
+        //     }
+        //   std::cout << std::endl;
+        // };
+
+        // print_matrices(exact_inverse);
+
+        constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
+
+        auto *mass    = new Number[n_dofs_1d * n_dofs_1d * dim];
+        auto *laplace = new Number[n_dofs_1d * n_dofs_1d * dim];
+        auto *values  = new Number[n_dofs_1d * n_dofs_1d * dim];
+        auto *vectors = new Number[n_dofs_1d * n_dofs_1d * dim];
 
         for (int d = 0; d < dim; ++d)
           {
-            std::transform(eigenval_inv[d].begin(),
-                           eigenval_inv[d].end(),
-                           &values_inv[n_dofs_in * d],
+            std::transform(patch_mass[d].begin(),
+                           patch_mass[d].end(),
+                           &mass[n_dofs_1d * n_dofs_1d * d],
                            [](const Number m) -> Number { return m; });
 
-            std::transform(eigenvec_inv[d].begin(),
-                           eigenvec_inv[d].end(),
-                           &vectors_inv[n_dofs_2d * d],
+            std::transform(patch_laplace[d].begin(),
+                           patch_laplace[d].end(),
+                           &laplace[n_dofs_1d * n_dofs_1d * d],
+                           [](const Number m) -> Number { return m; });
+
+            std::transform(eigenval[d].begin(),
+                           eigenval[d].end(),
+                           &values[n_dofs_1d * n_dofs_1d * d],
+                           [](const Number m) -> Number { return m; });
+
+            std::transform(eigenvec[d].begin(),
+                           eigenvec[d].end(),
+                           &vectors[n_dofs_1d * n_dofs_1d * d],
                            [](const Number m) -> Number { return m; });
           }
 
-        error_code = cudaMemcpy(eigenvalues + n_dofs_in +
-                                  Util::pow(Util::pow(n_dofs_in, dim), 2),
-                                values_inv,
-                                n_dofs_in * dim * sizeof(Number),
+        cudaError_t error_code = cudaMemcpy(eigenvalues[ss],
+                                            values,
+                                            (n_dofs_1d - 2) * sizeof(Number),
+                                            cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+
+        // {
+        //   auto *vals = new Number[exact_inverse.n_elements()];
+        //
+        //   std::transform(exact_inverse.begin(),
+        //                  exact_inverse.end(),
+        //                  vals,
+        //                  [](const Number m) -> Number { return m; });
+        //
+        //   error_code = cudaMemcpy(eigenvalues + n_dofs_1d - 2,
+        //                           vals,
+        //                           exact_inverse.n_elements() *
+        //                           sizeof(Number), cudaMemcpyHostToDevice);
+        //   AssertCuda(error_code);
+        //
+        //   delete[] vals;
+        // }
+
+        error_code = cudaMemcpy(eigenvectors[ss],
+                                vectors,
+                                n_dofs_1d * n_dofs_1d * sizeof(Number),
                                 cudaMemcpyHostToDevice);
         AssertCuda(error_code);
 
-        error_code = cudaMemcpy(eigenvectors + n_dofs_2d,
-                                vectors_inv,
-                                n_dofs_2d * dim * sizeof(Number),
+        error_code = cudaMemcpy(global_mass_1d[ss],
+                                mass,
+                                n_dofs_1d * n_dofs_1d * sizeof(Number),
                                 cudaMemcpyHostToDevice);
         AssertCuda(error_code);
 
-        delete[] values_inv;
-        delete[] vectors_inv;
-      }
+        error_code = cudaMemcpy(global_derivative_1d[ss],
+                                laplace,
+                                n_dofs_1d * n_dofs_1d * sizeof(Number),
+                                cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
 
+        constexpr unsigned int n_dofs_in = 2 * fe_degree - 1;
 
-    constexpr unsigned int n_dofs_in = 2 * fe_degree - 1;
+        auto *mass_ii_host = new Number[n_dofs_in * n_dofs_in];
+        auto *mass_ib_host = new Number[n_dofs_in * 2];
+        auto *der_ii_host  = new Number[n_dofs_in * n_dofs_in];
+        auto *der_ib_host  = new Number[n_dofs_in * 2];
+        auto *mass_I_host  = new Number[n_dofs_1d * n_dofs_in];
+        auto *der_I_host   = new Number[n_dofs_1d * n_dofs_in];
 
-    auto *mass_ii_host = new Number[n_dofs_in * n_dofs_in];
-    auto *mass_ib_host = new Number[n_dofs_in * 2];
-    auto *der_ii_host  = new Number[n_dofs_in * n_dofs_in];
-    auto *der_ib_host  = new Number[n_dofs_in * 2];
-    auto *mass_I_host  = new Number[n_dofs_1d * n_dofs_in];
-    auto *der_I_host   = new Number[n_dofs_1d * n_dofs_in];
+        unsigned int c1, c2, c3;
+        c1 = c2 = c3 = 0;
 
-    unsigned int c1, c2, c3;
-    c1 = c2 = c3 = 0;
-
-    for (unsigned int i = 1; i < n_dofs_1d - 1; ++i)
-      for (unsigned int j = 0; j < n_dofs_1d; ++j)
-        {
-          if (j > 0 && j < n_dofs_1d - 1)
+        for (unsigned int i = 1; i < n_dofs_1d - 1; ++i)
+          for (unsigned int j = 0; j < n_dofs_1d; ++j)
             {
-              mass_ii_host[c1] = mass[i * n_dofs_1d + j];
-              der_ii_host[c1]  = laplace[i * n_dofs_1d + j];
-              c1++;
+              if (j > 0 && j < n_dofs_1d - 1)
+                {
+                  mass_ii_host[c1] = mass[i * n_dofs_1d + j];
+                  der_ii_host[c1]  = laplace[i * n_dofs_1d + j];
+                  c1++;
+                }
+              if (j == 0 || j == n_dofs_1d - 1)
+                {
+                  mass_ib_host[c2] = mass[i * n_dofs_1d + j];
+                  der_ib_host[c2]  = laplace[i * n_dofs_1d + j];
+                  c2++;
+                }
+              mass_I_host[c3] = mass[i * n_dofs_1d + j];
+              der_I_host[c3]  = laplace[i * n_dofs_1d + j];
+              c3++;
             }
-          if (j == 0 || j == n_dofs_1d - 1)
-            {
-              mass_ib_host[c2] = mass[i * n_dofs_1d + j];
-              der_ib_host[c2]  = laplace[i * n_dofs_1d + j];
-              c2++;
-            }
-          mass_I_host[c3] = mass[i * n_dofs_1d + j];
-          der_I_host[c3]  = laplace[i * n_dofs_1d + j];
-          c3++;
-        }
 
-    error_code = cudaMemcpy(mass_ii,
-                            mass_ii_host,
-                            n_dofs_in * n_dofs_in * sizeof(Number),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-    error_code = cudaMemcpy(mass_ib,
-                            mass_ib_host,
-                            n_dofs_in * 2 * sizeof(Number),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-    error_code = cudaMemcpy(der_ii,
-                            der_ii_host,
-                            n_dofs_in * n_dofs_in * sizeof(Number),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-    error_code = cudaMemcpy(der_ib,
-                            der_ib_host,
-                            n_dofs_in * 2 * sizeof(Number),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-    error_code = cudaMemcpy(mass_I,
-                            mass_I_host,
-                            n_dofs_in * n_dofs_1d * sizeof(Number),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-    error_code = cudaMemcpy(der_I,
-                            der_I_host,
-                            n_dofs_in * n_dofs_1d * sizeof(Number),
-                            cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
+        error_code = cudaMemcpy(mass_ii[ss],
+                                mass_ii_host,
+                                n_dofs_in * n_dofs_in * sizeof(Number),
+                                cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+        error_code = cudaMemcpy(mass_ib[ss],
+                                mass_ib_host,
+                                n_dofs_in * 2 * sizeof(Number),
+                                cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+        error_code = cudaMemcpy(der_ii[ss],
+                                der_ii_host,
+                                n_dofs_in * n_dofs_in * sizeof(Number),
+                                cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+        error_code = cudaMemcpy(der_ib[ss],
+                                der_ib_host,
+                                n_dofs_in * 2 * sizeof(Number),
+                                cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+        error_code = cudaMemcpy(mass_I[ss],
+                                mass_I_host,
+                                n_dofs_in * n_dofs_1d * sizeof(Number),
+                                cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+        error_code = cudaMemcpy(der_I[ss],
+                                der_I_host,
+                                n_dofs_in * n_dofs_1d * sizeof(Number),
+                                cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
 
 
 
-    // for (unsigned i = 0; i < n_dofs_1d; ++i)
-    //   {
-    //     for (unsigned j = 0; j < n_dofs_1d; ++j)
-    //       std::cout << mass[i * n_dofs_1d + j] << " ";
-    //     std::cout << std::endl;
-    //   }
-    // std::cout << std::endl;
-    // for (unsigned i = 0; i < n_dofs_in; ++i)
-    //   {
-    //     for (unsigned j = 0; j < n_dofs_1d; ++j)
-    //       std::cout << mass_I_host[i * n_dofs_1d + j] << " ";
-    //     std::cout << std::endl;
-    //   }
-    // std::cout << std::endl;
-    // std::cout << std::endl;
-    // for (unsigned i = 0; i < n_dofs_1d; ++i)
-    //   {
-    //     for (unsigned j = 0; j < n_dofs_1d; ++j)
-    //       std::cout << laplace[i * n_dofs_1d + j] << " ";
-    //     std::cout << std::endl;
-    //   }
+        // for (unsigned i = 0; i < n_dofs_1d; ++i)
+        //   {
+        //     for (unsigned j = 0; j < n_dofs_1d; ++j)
+        //       std::cout << mass[i * n_dofs_1d + j] << " ";
+        //     std::cout << std::endl;
+        //   }
+        // std::cout << std::endl;
+        // for (unsigned i = 0; i < n_dofs_in; ++i)
+        //   {
+        //     for (unsigned j = 0; j < n_dofs_1d; ++j)
+        //       std::cout << mass_I_host[i * n_dofs_1d + j] << " ";
+        //     std::cout << std::endl;
+        //   }
+        // std::cout << std::endl;
+        // std::cout << std::endl;
+        // for (unsigned i = 0; i < n_dofs_1d; ++i)
+        //   {
+        //     for (unsigned j = 0; j < n_dofs_1d; ++j)
+        //       std::cout << laplace[i * n_dofs_1d + j] << " ";
+        //     std::cout << std::endl;
+        //   }
 
 
-    unsigned int n_bound =
-      Util::pow(n_dofs_1d, dim) - Util::pow(n_dofs_1d - 2, dim);
-    std::vector<unsigned int> index;
-    std::vector<unsigned int> mapping;
-    index.resize(n_bound);
-    mapping.resize(n_bound);
+        unsigned int n_bound =
+          Util::pow(n_dofs_1d, dim) - Util::pow(n_dofs_1d - 2, dim);
+        std::vector<unsigned int> index;
+        std::vector<unsigned int> mapping;
+        index.resize(n_bound);
+        mapping.resize(n_bound);
 
-    if (dim == 2)
-      {
-        for (auto i = 0U; i < (n_dofs_1d - 2) * 2; ++i)
+        if (dim == 2)
           {
-            index[i] = (i / 2 + 1) * n_dofs_1d + (i % 2) * (n_dofs_1d - 1);
+            for (auto i = 0U; i < (n_dofs_1d - 2) * 2; ++i)
+              {
+                index[i] = (i / 2 + 1) * n_dofs_1d + (i % 2) * (n_dofs_1d - 1);
+              }
+
+            for (auto i = 0U; i < n_dofs_1d * 2; ++i)
+              {
+                index[i + (n_dofs_1d - 2) * 2] =
+                  (i / n_dofs_1d) * (n_dofs_1d - 2) * n_dofs_1d + i;
+              }
+
+            for (auto i = 0U; i < (n_dofs_1d - 2) * 2; ++i)
+              {
+                mapping[i] = n_dofs_1d + i;
+              }
+
+            for (auto i = 0U; i < n_dofs_1d * 2; ++i)
+              {
+                mapping[i + (n_dofs_1d - 2) * 2] =
+                  (i / n_dofs_1d) * (n_dofs_1d - 2) * 2 + i;
+              }
+          }
+        else if (dim == 3)
+          {
+            unsigned int count = 0;
+            unsigned int begin = 0;
+
+            for (auto i = 0U; i < n_dofs_1d - 2; ++i)
+              for (auto j = 0U; j < n_dofs_1d - 2; ++j)
+                for (auto k = 0U; k < 2; ++k)
+                  {
+                    index[count++] = (i + 1) * n_dofs_1d * n_dofs_1d +
+                                     (j + 1) * n_dofs_1d + k * (n_dofs_1d - 1);
+                  }
+
+            for (auto i = 0U; i < n_dofs_1d - 2; ++i)
+              for (auto j = 0U; j < 2; ++j)
+                for (auto k = 0U; k < n_dofs_1d; ++k)
+                  {
+                    index[count++] = (i + 1) * n_dofs_1d * n_dofs_1d +
+                                     j * n_dofs_1d * (n_dofs_1d - 1) + k;
+                  }
+
+            for (auto i = 0U; i < 2; ++i)
+              for (auto j = 0U; j < n_dofs_1d; ++j)
+                for (auto k = 0U; k < n_dofs_1d; ++k)
+                  {
+                    index[count++] =
+                      i * n_dofs_1d * n_dofs_1d * (n_dofs_1d - 1) +
+                      j * n_dofs_1d + k;
+                  }
+
+            count = 0;
+
+            for (auto i = 0U; i < n_dofs_1d - 2; ++i)
+              for (auto j = 0U; j < n_dofs_1d - 2; ++j)
+                for (auto k = 0U; k < 2; ++k)
+                  {
+                    mapping[count] = n_dofs_1d * n_dofs_1d + n_dofs_1d +
+                                     i * n_dofs_1d * 2 + count;
+                    count++;
+                  }
+            begin = count;
+            count = 0;
+            for (auto i = 0U; i < n_dofs_1d - 2; ++i)
+              for (auto j = 0U; j < 2; ++j)
+                for (auto k = 0U; k < n_dofs_1d; ++k)
+                  {
+                    mapping[begin + count] =
+                      n_dofs_1d * n_dofs_1d + i * (n_dofs_1d - 2) * 2 +
+                      (j % 2) * 2 * (n_dofs_1d - 2) + count;
+                    count++;
+                  }
+            begin += count;
+            count = 0;
+            for (auto i = 0U; i < 2; ++i)
+              for (auto j = 0U; j < n_dofs_1d; ++j)
+                for (auto k = 0U; k < n_dofs_1d; ++k)
+                  {
+                    mapping[begin + count] =
+                      i * (n_bound - n_dofs_1d * n_dofs_1d * 2) + count;
+                    count++;
+                  }
           }
 
-        for (auto i = 0U; i < n_dofs_1d * 2; ++i)
-          {
-            index[i + (n_dofs_1d - 2) * 2] =
-              (i / n_dofs_1d) * (n_dofs_1d - 2) * n_dofs_1d + i;
-          }
+        error_code = cudaMemcpyToSymbol(boundary_dofs_index,
+                                        index.data(),
+                                        index.size() * sizeof(unsigned int),
+                                        0,
+                                        cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
 
-        for (auto i = 0U; i < (n_dofs_1d - 2) * 2; ++i)
-          {
-            mapping[i] = n_dofs_1d + i;
-          }
+        error_code = cudaMemcpyToSymbol(index_mapping,
+                                        mapping.data(),
+                                        mapping.size() * sizeof(unsigned int),
+                                        0,
+                                        cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
 
-        for (auto i = 0U; i < n_dofs_1d * 2; ++i)
-          {
-            mapping[i + (n_dofs_1d - 2) * 2] =
-              (i / n_dofs_1d) * (n_dofs_1d - 2) * 2 + i;
-          }
+        delete[] mass;
+        delete[] laplace;
+        delete[] values;
+        delete[] vectors;
+
+        delete[] mass_ii_host;
+        delete[] mass_ib_host;
+        delete[] der_ii_host;
+        delete[] der_ib_host;
+        delete[] mass_I_host;
+        delete[] der_I_host;
       }
-    else if (dim == 3)
-      {
-        unsigned int count = 0;
-        unsigned int begin = 0;
-
-        for (auto i = 0U; i < n_dofs_1d - 2; ++i)
-          for (auto j = 0U; j < n_dofs_1d - 2; ++j)
-            for (auto k = 0U; k < 2; ++k)
-              {
-                index[count++] = (i + 1) * n_dofs_1d * n_dofs_1d +
-                                 (j + 1) * n_dofs_1d + k * (n_dofs_1d - 1);
-              }
-
-        for (auto i = 0U; i < n_dofs_1d - 2; ++i)
-          for (auto j = 0U; j < 2; ++j)
-            for (auto k = 0U; k < n_dofs_1d; ++k)
-              {
-                index[count++] = (i + 1) * n_dofs_1d * n_dofs_1d +
-                                 j * n_dofs_1d * (n_dofs_1d - 1) + k;
-              }
-
-        for (auto i = 0U; i < 2; ++i)
-          for (auto j = 0U; j < n_dofs_1d; ++j)
-            for (auto k = 0U; k < n_dofs_1d; ++k)
-              {
-                index[count++] = i * n_dofs_1d * n_dofs_1d * (n_dofs_1d - 1) +
-                                 j * n_dofs_1d + k;
-              }
-
-        count = 0;
-
-        for (auto i = 0U; i < n_dofs_1d - 2; ++i)
-          for (auto j = 0U; j < n_dofs_1d - 2; ++j)
-            for (auto k = 0U; k < 2; ++k)
-              {
-                mapping[count] =
-                  n_dofs_1d * n_dofs_1d + n_dofs_1d + i * n_dofs_1d * 2 + count;
-                count++;
-              }
-        begin = count;
-        count = 0;
-        for (auto i = 0U; i < n_dofs_1d - 2; ++i)
-          for (auto j = 0U; j < 2; ++j)
-            for (auto k = 0U; k < n_dofs_1d; ++k)
-              {
-                mapping[begin + count] = n_dofs_1d * n_dofs_1d +
-                                         i * (n_dofs_1d - 2) * 2 +
-                                         (j % 2) * 2 * (n_dofs_1d - 2) + count;
-                count++;
-              }
-        begin += count;
-        count = 0;
-        for (auto i = 0U; i < 2; ++i)
-          for (auto j = 0U; j < n_dofs_1d; ++j)
-            for (auto k = 0U; k < n_dofs_1d; ++k)
-              {
-                mapping[begin + count] =
-                  i * (n_bound - n_dofs_1d * n_dofs_1d * 2) + count;
-                count++;
-              }
-      }
-
-    error_code = cudaMemcpyToSymbol(boundary_dofs_index,
-                                    index.data(),
-                                    index.size() * sizeof(unsigned int),
-                                    0,
-                                    cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
-    error_code = cudaMemcpyToSymbol(index_mapping,
-                                    mapping.data(),
-                                    mapping.size() * sizeof(unsigned int),
-                                    0,
-                                    cudaMemcpyHostToDevice);
-    AssertCuda(error_code);
-
-    // for (auto i : index)
-    //   std::cout << i << " ";
-    // std::cout << std::endl;
-    // for (auto i : mapping)
-    //   std::cout << i << " ";
-    // std::cout << std::endl;
-
-    delete[] mass;
-    delete[] laplace;
-    delete[] values;
-    delete[] vectors;
-
-    delete[] mass_ii_host;
-    delete[] mass_ib_host;
-    delete[] der_ii_host;
-    delete[] der_ib_host;
-    delete[] mass_I_host;
-    delete[] der_I_host;
   }
 
 

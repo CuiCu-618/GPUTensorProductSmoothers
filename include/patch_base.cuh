@@ -15,6 +15,8 @@ using namespace dealii;
 
 // #define OPTIMIZE
 
+extern int current_stage;
+
 /**
  * Namespace for the Patch Smoother Matrix-Free
  */
@@ -146,10 +148,12 @@ namespace PSMF
        */
       AdditionalData(
         const Number            tau                = 0.1,
+        const unsigned int      n_stages           = 2,
         const Number            relaxation         = 1.,
         const unsigned int      patch_per_block    = 1,
         const GranularityScheme granularity_scheme = GranularityScheme::none)
         : tau(tau)
+        , n_stages(n_stages)
         , relaxation(relaxation)
         , patch_per_block(patch_per_block)
         , granularity_scheme(granularity_scheme)
@@ -159,6 +163,11 @@ namespace PSMF
        * Timestep size
        */
       Number tau;
+
+      /**
+       * Number of stages
+       */
+      unsigned int n_stages;
 
       /**
        * Relaxation parameter.
@@ -387,6 +396,16 @@ namespace PSMF
     Number tau;
 
     /**
+     * Number of stages
+     */
+    unsigned int n_stages;
+
+    /**
+     * Current stage
+     */
+    mutable unsigned int stage;
+
+    /**
      * Relaxation parameter.
      */
     Number relaxation;
@@ -454,29 +473,29 @@ namespace PSMF
     /**
      * Pointer to 1D global mass matrix.
      */
-    Number *global_mass_1d;
+    std::vector<Number *> global_mass_1d;
 
     /**
      * Pointer to 1D global derivative matrix.
      */
-    Number *global_derivative_1d;
+    std::vector<Number *> global_derivative_1d;
 
     /**
      * Vector of pointer to 1D eigenvalues of each color.
      */
-    Number *eigenvalues;
+    std::vector<Number *> eigenvalues;
 
     /**
      * Vector of pointer to 1D eigenvectors of each color.
      */
-    Number *eigenvectors;
+    std::vector<Number *> eigenvectors;
 
-    Number *mass_ii;
-    Number *mass_ib;
-    Number *der_ii;
-    Number *der_ib;
-    Number *mass_I;
-    Number *der_I;
+    std::vector<Number *> mass_ii;
+    std::vector<Number *> mass_ib;
+    std::vector<Number *> der_ii;
+    std::vector<Number *> der_ib;
+    std::vector<Number *> mass_I;
+    std::vector<Number *> der_I;
   };
 
 

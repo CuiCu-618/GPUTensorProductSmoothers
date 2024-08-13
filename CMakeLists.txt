@@ -124,6 +124,8 @@ set(CMAKE_CXX_STANDARD 17)
 
 ADD_LIBRARY(GPUTPS STATIC ${TARGET_SRC})
 
+FILE(GLOB FileList IRK_txt/*.txt)
+install(FILES ${FileList} DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
 # Define custom targets to easily switch the build type:
 ADD_CUSTOM_TARGET(debug

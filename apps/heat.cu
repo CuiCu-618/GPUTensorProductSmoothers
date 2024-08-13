@@ -25,6 +25,8 @@
 #include <helper_cuda.h>
 
 #include <fstream>
+#include <functional>
+#include <optional>
 
 #include "app_utilities.h"
 #include "ct_parameter.h"
@@ -37,8 +39,10 @@ namespace Step64
 {
   using namespace dealii;
 
-  const unsigned int N   = 5;
-  const double       tau = 0.01;
+  const double tau  = CT::DT_;
+  const double endT = CT::ENDT_;
+
+  const unsigned int N = endT / tau;
 
   const double wave_number = 2;
   const double a_t         = 0.5;
@@ -206,6 +210,7 @@ namespace Step64
   LaplaceProblem<dim, fe_degree>::solve(unsigned int n_mg_cycles)
   {
     Solution<dim> analytic_solution;
+    analytic_solution.set_time(0);
 
     PSMF::MultigridSolvers<dim, fe_degree, vcycle_number, full_number> solver(
       dof_handler,
@@ -245,18 +250,20 @@ namespace Step64
                << "\n";
       }
 
-    std::optional<ReductionControl> solver_control = solver.solve_gmres(true);
+    std::optional<std::pair<ReductionControl, double>> it_data =
+      solver.solve_gmres(true);
 
-    auto       n_iter     = solver_control->last_step();
-    auto       residual_0 = solver_control->initial_value();
-    auto       residual_n = solver_control->last_value();
-    auto       reduction  = solver_control->reduction();
-    const auto rho =
+    auto solver_control = it_data->first;
+    auto n_iter         = solver_control.last_step();
+    auto residual_0     = solver_control.initial_value();
+    auto residual_n     = solver_control.last_value();
+    auto reduction      = solver_control.reduction();
+    auto rho =
       std::pow(residual_n / residual_0, static_cast<double>(1. / n_iter));
     const auto n_frac = std::log(reduction) / std::log(rho);
 
-    solver.print_wall_times();
-    auto history_data = solver_control->get_history_data();
+    // solver.print_wall_times();
+    auto history_data = solver_control.get_history_data();
     for (auto i = 1U; i < n_iter + 1; ++i)
       *pcout << "step " << i << ": " << history_data[i] / residual_0 << "\n";
 
@@ -307,59 +314,27 @@ namespace Step64
            << "H1 error: " << H1_error_gmres_N << std::endl
            << std::endl;
 
-
-    double best_mv = 1e10;
-    for (unsigned int i = 0; i < 5; ++i)
-      {
-        const unsigned int n_mv = dof_handler.n_dofs() < 10000000 ? 100 : 20;
-
-        time.restart();
-        for (unsigned int i = 0; i < n_mv; ++i)
-          solver.do_matvec();
-        cudaDeviceSynchronize();
-
-        Utilities::MPI::MinMaxAvg stat =
-          Utilities::MPI::min_max_avg(time.wall_time() / n_mv, MPI_COMM_WORLD);
-        best_mv = std::min(best_mv, stat.max);
-        *pcout << "matvec time dp " << stat.min << " [p" << stat.min_index
-               << "] " << stat.avg << " " << stat.max << " [p" << stat.max_index
-               << "]" << " DoFs/s: " << dof_handler.n_dofs() / stat.max
-               << std::endl;
-      }
-    double best_mvs = 1e10;
-    for (unsigned int i = 0; i < 5; ++i)
-      {
-        const unsigned int n_mv = dof_handler.n_dofs() < 10000000 ? 100 : 20;
-
-        time.restart();
-        for (unsigned int i = 0; i < n_mv; ++i)
-          solver.do_matvec_smoother();
-        cudaDeviceSynchronize();
-
-        Utilities::MPI::MinMaxAvg stat =
-          Utilities::MPI::min_max_avg(time.wall_time() / n_mv, MPI_COMM_WORLD);
-        best_mvs = std::min(best_mvs, stat.max);
-        *pcout << "smoother time " << stat.min << " [p" << stat.min_index
-               << "] " << stat.avg << " " << stat.max << " [p" << stat.max_index
-               << "]" << " DoFs/s: " << dof_handler.n_dofs() / stat.max
-               << std::endl;
-      }
-    *pcout << "Best timings for ndof = " << dof_handler.n_dofs() << "   mv "
-           << best_mv << "    mv smooth " << best_mvs << "   gmres-mg "
-           << time_gmres << std::endl;
-
     *pcout << "GMRES L2 error with ndof = " << dof_handler.n_dofs() << "  "
            << l2_error_gmres << std::endl;
 
+    auto timing_result = solver.get_timing();
+
     convergence_table.add_value("cells", triangulation.n_global_active_cells());
     convergence_table.add_value("dofs", dof_handler.n_dofs());
-    convergence_table.add_value("mat-vec", dof_handler.n_dofs() / best_mv);
-    convergence_table.add_value("smoother", dof_handler.n_dofs() / best_mvs);
+
+    convergence_table.add_value("system_mat-vec", timing_result[0]);
+    convergence_table.add_value("system_prec", timing_result[1]);
+    convergence_table.add_value("local_prec", timing_result[2]);
+    convergence_table.add_value("local_mv", timing_result[3]);
+    convergence_table.add_value("local_mv_sp", timing_result[4]);
+    convergence_table.add_value("smoother", timing_result[5]);
+
     convergence_table.add_value("gmres_L2error", l2_error_gmres);
     convergence_table.add_value("gmres_H1error", H1_error_gmres);
     convergence_table.add_value("gmres_time", time_gmres);
     convergence_table.add_value("gmres_its", n_iter);
     convergence_table.add_value("frac_its", n_frac);
+    convergence_table.add_value("inner_its_avg", it_data->second);
 
     convergence_table_N.add_value("cells",
                                   triangulation.n_global_active_cells());
@@ -382,7 +357,7 @@ namespace Step64
                                       ghost_solution_host,
                                       u_analytical,
                                       cellwise_norm,
-                                      QGauss<dim>(fe->degree + 1),
+                                      QGauss<dim>(fe->degree + 2),
                                       VectorTools::L2_norm);
     const double global_norm =
       VectorTools::compute_global_error(triangulation,
@@ -394,7 +369,7 @@ namespace Step64
                                       ghost_solution_host,
                                       u_analytical,
                                       cellwise_h1norm,
-                                      QGauss<dim>(fe->degree + 1),
+                                      QGauss<dim>(fe->degree + 2),
                                       VectorTools::H1_seminorm);
     const double global_h1norm =
       VectorTools::compute_global_error(triangulation,
@@ -444,10 +419,17 @@ namespace Step64
 
     if (true)
       {
-        convergence_table.set_scientific("mat-vec", true);
-        convergence_table.set_precision("mat-vec", 3);
-        convergence_table.set_scientific("smoother", true);
-        convergence_table.set_precision("smoother", 3);
+        auto set_format = [&](auto name) {
+          convergence_table.set_scientific(name, true);
+          convergence_table.set_precision(name, 3);
+        };
+
+        set_format("system_mat-vec");
+        set_format("system_prec");
+        set_format("local_prec");
+        set_format("local_mv");
+        set_format("local_mv_sp");
+        set_format("smoother");
 
         convergence_table.set_scientific("gmres_L2error", true);
         convergence_table.set_precision("gmres_L2error", 3);
@@ -457,8 +439,6 @@ namespace Step64
         convergence_table.set_precision("gmres_H1error", 3);
         convergence_table.evaluate_convergence_rates(
           "gmres_H1error", "cells", ConvergenceTable::reduction_rate_log2, dim);
-        convergence_table.set_scientific("gmres_reduction", true);
-        convergence_table.set_precision("gmres_reduction", 3);
         convergence_table.set_scientific("gmres_time", true);
         convergence_table.set_precision("gmres_time", 3);
 

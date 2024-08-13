@@ -94,6 +94,7 @@ namespace Util
     oss << "_" << CT::DIMENSION_ << "D";
     oss << "_" << str_dof_layout;
     oss << CT::FE_DEGREE_;
+    oss << "_S" << CT::N_STAGES_;
     oss << "_" << str_smooth_variant;
     oss << str_granularity;
     oss << "_" << value_type;
@@ -142,6 +143,10 @@ namespace Util
         << "Polynomial degree:              " << CT::FE_DEGREE_ << std::endl
         << "DoF Layout:                     "
         << DoFLayoutToString(CT::DOF_LAYOUT_) << std::endl
+        << "IRK Stages:                     " << CT::N_STAGES_ << std::endl
+        << "Time step size:                 " << CT::DT_ << std::endl
+        << "Outer tolerance:                " << CT::REDUCE_ << std::endl
+        << "Inner tolerance:                " << CT::REDUCE_INNER_ << std::endl
         << "Number type for V-cycle:        " << value_type << std::endl
         << "Smoother Variant:               ";
     for (unsigned int k = 0; k < CT::KERNEL_TYPE_.size(); ++k)
@@ -150,12 +155,79 @@ namespace Util
     oss << "Granularity Scheme:             "
         << GranularityToString(CT::GRANULARITY_) << std::endl
         << "Maximum size:                   " << CT::MAX_SIZES_ << std::endl
-        << "Number of MG cycles in V-cycle: " << 1 << std::endl
+        << "Running mode:                   "
+#ifdef DEBUG
+        << "Debug"
+#else
+        << "Release"
+#endif
+        << std::endl
         << std::endl;
 
 
     return oss.str();
   }
+
+  std::vector<double>
+  load_matrix_from_file(const unsigned int n_stages, const std::string label)
+  {
+    std::vector<double> result(n_stages * n_stages);
+
+    std::string file_name = label + std::to_string(n_stages) + ".txt";
+
+    std::ifstream fin;
+    fin.open(file_name);
+
+    if (fin.fail())
+      fin.open("../IRK_txt/" + file_name);
+
+    AssertThrow(fin.fail() == false,
+                ExcMessage("File with the name " + file_name +
+                           " could not be found!"));
+
+    unsigned int m, n;
+    fin >> m >> n;
+
+    AssertDimension(m, n_stages);
+    AssertDimension(n, n_stages);
+
+    for (unsigned int i = 0; i < n_stages; ++i)
+      for (unsigned j = 0; j < n_stages; ++j)
+        fin >> result[i * n_stages + j];
+
+    return result;
+  }
+
+  std::vector<double>
+  load_vector_from_file(const unsigned int n_stages, const std::string label)
+  {
+    std::vector<double> result(n_stages);
+
+    std::string file_name = label + std::to_string(n_stages) + ".txt";
+
+    std::ifstream fin;
+    fin.open(file_name);
+
+    if (fin.fail())
+      fin.open("../IRK_txt/" + file_name);
+
+    AssertThrow(fin.fail() == false,
+                ExcMessage("File with the name " + file_name +
+                           " could not be found!"));
+
+    unsigned int m, n;
+    fin >> m >> n;
+
+    AssertDimension(m, 1);
+    AssertDimension(n, n_stages);
+
+    for (unsigned int i = 0; i < n_stages; ++i)
+      fin >> result[i];
+
+    return result;
+  }
+
+
 
 } // namespace Util
 

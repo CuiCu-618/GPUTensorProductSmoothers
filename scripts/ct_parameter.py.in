@@ -54,10 +54,54 @@ def parse_args():
         help="spatial dimension of the domain",
     )
     parser.add_argument(
-        "-REDUCE", "--reduce", default=1e-9, type=float, help="desired reduction factor"
+        "-N_STAGES",
+        "--Nstages",
+        default=2,
+        type=int,
+        choices=range(1, 11),
+        help="IRK stages",
     )
     parser.add_argument(
-        "-MAXIT", "--max_steps", default=20, type=int, help="maximum number of steps"
+        "-DT",
+        "--timesize",
+        default=0.1,
+        type=float,
+        help="time step size",
+    )
+    parser.add_argument(
+        "-ENDT",
+        "--endtime",
+        default=0.5,
+        type=float,
+        help="end time",
+    )
+    parser.add_argument(
+        "-REDUCE",
+        "--reduce",
+        default=1e-9,
+        type=float,
+        help="desired reduction factor for outer iteration",
+    )
+    parser.add_argument(
+        "-REDUCE_INNER",
+        "--reduce_inner",
+        default=1e-9,
+        type=float,
+        help="desired reduction factor for inner iteration",
+    )
+    parser.add_argument(
+        "-MAXIT",
+        "--max_steps",
+        default=20,
+        type=int,
+        help="maximum number of steps for outer iteration",
+    )
+    parser.add_argument(
+        "-MAXIT_INNER",
+        "--max_steps_inner",
+        default=20,
+        type=int,
+        help="maximum number of steps for inner iteration",
     )
     parser.add_argument(
         "-MAXSIZE",
@@ -143,8 +187,13 @@ class Parameter:
         deg = options.fe_degree
         self.dimension = ("constexpr unsigned int", dim)
         self.fe_degree = ("constexpr unsigned int", deg)
+        self.n_stages = ("constexpr unsigned int", options.Nstages)
+        self.dt = ("constexpr double", options.timesize)
+        self.endt = ("constexpr double", options.endtime)
         self.reduce = ("constexpr double", options.reduce)
+        self.reduce_inner = ("constexpr double", options.reduce_inner)
         self.max_steps = ("constexpr unsigned int", options.max_steps)
+        self.max_steps_inner = ("constexpr unsigned int", options.max_steps_inner)
         self.max_sizes = ("constexpr long long unsigned int", options.max_sizes)
         self.dof_layout = (
             "constexpr auto",
@@ -247,4 +296,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
