@@ -14,8 +14,6 @@
 
 using namespace dealii;
 
-extern double smoother_mem = 0;
-
 namespace PSMF
 {
 
@@ -337,7 +335,6 @@ namespace PSMF
 
     this->preconditioner = parameters.preconditioner;
     this->n_iterations   = parameters.n_iterations;
-    smoother_mem += this->preconditioner->memory_consumption();
   }
 
   template <typename MatrixType,

@@ -243,6 +243,8 @@ namespace PSMF
                                        CT::KERNEL_TYPE_[0],
                                        CT::DOF_LAYOUT_>;
 
+    using SmootherTypeCheb = PreconditionChebyshev<LocalMatrixType, VectorType>;
+
     MultigridSolvers(const DoFHandler<dim>              &dof_handler,
                      const Function<dim>                &boundary_values,
                      std::shared_ptr<ConditionalOStream> pcout,
@@ -313,6 +315,8 @@ namespace PSMF
             additional_data.mapping_update_flags =
               (update_gradients | update_JxW_values | update_values |
                update_quadrature_points);
+            additional_data.tau      = tau;
+            additional_data.n_stages = n_stages;
             additional_data.mg_level = level;
             std::shared_ptr<PSMF::MatrixFree<dim, Number>> mg_mf_storage_level(
               new PSMF::MatrixFree<dim, Number>());
@@ -332,6 +336,8 @@ namespace PSMF
             additional_data.mapping_update_flags =
               (update_gradients | update_JxW_values | update_values |
                update_quadrature_points);
+            additional_data.tau      = tau;
+            additional_data.n_stages = n_stages;
             additional_data.mg_level = level;
             std::shared_ptr<PSMF::MatrixFree<dim, Number2>> mg_mf_storage_level(
               new PSMF::MatrixFree<dim, Number2>());
@@ -450,38 +456,42 @@ namespace PSMF
 
       time.restart();
 
-      MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
-      smoother_data.resize(minlevel, maxlevel);
-      for (unsigned int level = minlevel; level <= maxlevel; ++level)
+      if constexpr (CT::KERNEL_TYPE_[0] != PSMF::SmootherVariant::Chebyshev)
         {
-          smoother_data[level].tau        = tau;
-          smoother_data[level].n_stages   = n_stages;
-          smoother_data[level].relaxation = 1.;
-          smoother_data[level].patch_per_block =
-            fe_degree == 1 ? 16 : (fe_degree == 2 ? 2 : 1);
-          smoother_data[level].granularity_scheme = CT::GRANULARITY_;
+          MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
+          smoother_data.resize(minlevel, maxlevel);
+          for (unsigned int level = minlevel; level <= maxlevel; ++level)
+            {
+              smoother_data[level].tau        = tau;
+              smoother_data[level].n_stages   = n_stages;
+              smoother_data[level].relaxation = 1.;
+              smoother_data[level].patch_per_block =
+                fe_degree == 1 ? 16 : (fe_degree == 2 ? 2 : 1);
+              smoother_data[level].granularity_scheme = CT::GRANULARITY_;
+            }
+          mg_smoother.initialize(matrix, smoother_data);
+          mg_coarse.initialize(mg_smoother);
+
+          mg_matrix.initialize(matrix);
+          mg = std::make_unique<Multigrid<VectorType>>(mg_matrix,
+                                                       mg_coarse,
+                                                       transfer,
+                                                       mg_smoother,
+                                                       mg_smoother,
+                                                       minlevel,
+                                                       maxlevel);
+
+
+          preconditioner_mg = std::make_unique<
+            PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>>(
+            dof_handler, *mg, transfer);
+
+          precon =
+            std::make_unique<Preconditioner<dim, fe_degree, Number, Number2>>(
+              *preconditioner_mg, rhs.size());
         }
-      mg_smoother.initialize(matrix, smoother_data);
-      mg_coarse.initialize(mg_smoother);
 
       *pcout << "Time initial smoother:    " << time.wall_time() << std::endl;
-
-      mg_matrix.initialize(matrix);
-      mg = std::make_unique<Multigrid<VectorType>>(mg_matrix,
-                                                   mg_coarse,
-                                                   transfer,
-                                                   mg_smoother,
-                                                   mg_smoother,
-                                                   minlevel,
-                                                   maxlevel);
-
-      preconditioner_mg = std::make_unique<
-        PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>>(
-        dof_handler, *mg, transfer);
-
-      precon =
-        std::make_unique<Preconditioner<dim, fe_degree, Number, Number2>>(
-          *preconditioner_mg, rhs.size());
     }
 
     void
@@ -576,6 +586,8 @@ namespace PSMF
       solution_old    = solution_0;
       system_solution = 0;
 
+      current_stage = 0;
+
       for (unsigned int it = 0; it < N; ++it)
         {
           n_inner_its.assign(n_stages, 0);
@@ -640,6 +652,43 @@ namespace PSMF
       for (unsigned int i = 0; i < n_stages; ++i)
         {
           current_stage = i;
+
+          if constexpr (CT::KERNEL_TYPE_[0] == PSMF::SmootherVariant::Chebyshev)
+            {
+              MGLevelObject<typename SmootherTypeCheb::AdditionalData>
+                smoother_data;
+              smoother_data.resize(minlevel, maxlevel);
+              for (unsigned int level = minlevel; level <= maxlevel; ++level)
+                {
+                  matrix[level].compute_diagonal();
+
+                  smoother_data[level].smoothing_range     = 20.;
+                  smoother_data[level].degree              = 5;
+                  smoother_data[level].eig_cg_n_iterations = 20;
+                  smoother_data[level].preconditioner =
+                    matrix[level].get_diagonal_inverse();
+                }
+
+              mg_smoother_cheb.initialize(matrix, smoother_data);
+              mg_coarse_cheb.initialize(mg_smoother_cheb);
+
+              mg_matrix.initialize(matrix);
+              mg = std::make_unique<Multigrid<VectorType>>(mg_matrix,
+                                                           mg_coarse_cheb,
+                                                           transfer,
+                                                           mg_smoother_cheb,
+                                                           mg_smoother_cheb,
+                                                           minlevel,
+                                                           maxlevel);
+
+              preconditioner_mg = std::make_unique<
+                PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>>(
+                *dof_handler, *mg, transfer);
+
+              precon = std::make_unique<
+                Preconditioner<dim, fe_degree, Number, Number2>>(
+                *preconditioner_mg, rhs.size());
+            }
 
           tmp = 0.;
           rhs = 0.;
@@ -725,7 +774,10 @@ namespace PSMF
     void
     do_smoother()
     {
-      (mg_smoother).smooth(maxlevel, solution_update, defect);
+      if constexpr (CT::KERNEL_TYPE_[0] != PSMF::SmootherVariant::Chebyshev)
+        (mg_smoother).smooth(maxlevel, solution_update, defect);
+      else
+        (mg_smoother_cheb).smooth(maxlevel, solution_update, defect);
     }
 
   private:
@@ -848,7 +900,7 @@ namespace PSMF
     /**
      * The local matrix for each level
      */
-    MGLevelObject<LocalMatrixType> matrix;
+    mutable MGLevelObject<LocalMatrixType> matrix;
 
     /**
      * The double-precision local matrix
@@ -866,10 +918,17 @@ namespace PSMF
     mutable MGSmootherPrecondition<LocalMatrixType, SmootherType, VectorType>
       mg_smoother;
 
+    mutable MGSmootherPrecondition<LocalMatrixType,
+                                   SmootherTypeCheb,
+                                   VectorType>
+      mg_smoother_cheb;
+
     /**
      * The coarse solver
      */
     mutable MGCoarseGridApplySmoother<VectorType> mg_coarse;
+
+    mutable MGCoarseGridApplySmoother<VectorType> mg_coarse_cheb;
 
     const unsigned int N;
     const double       tau;

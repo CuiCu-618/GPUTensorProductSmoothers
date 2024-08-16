@@ -5,6 +5,8 @@
 #ifndef LAPLACE_OPERATOR_CUH
 #define LAPLACE_OPERATOR_CUH
 
+#include <deal.II/lac/diagonal_matrix.h>
+
 #include <deal.II/matrix_free/matrix_free.h>
 #include <deal.II/matrix_free/operators.h>
 
@@ -119,13 +121,71 @@ namespace PSMF
       FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> fe_eval(
         cell, gpu_data, shared_data, dofs_per_dim);
       fe_eval.read_dof_values(src);
+#ifdef UNIFORM_MESH
+      fe_eval.evaluate_integrate();
+#else
       fe_eval.evaluate(true, true);
       fe_eval.apply_for_each_quad_point(
         LaplaceOperatorQuad<dim, fe_degree, Number>(lambda, tau));
       fe_eval.integrate(true, true);
+#endif
       fe_eval.distribute_local_to_global(dst);
     }
   };
+
+  template <int dim, int fe_degree, typename Number>
+  class LocalLaplaceDiagOperator
+  {
+  public:
+    static const unsigned int n_dofs_1d    = fe_degree + 1;
+    static const unsigned int n_local_dofs = Utilities::pow(fe_degree + 1, dim);
+    static const unsigned int n_q_points   = Utilities::pow(fe_degree + 1, dim);
+
+    const unsigned int dofs_per_dim;
+    const Number       lambda;
+    const Number       tau;
+
+    LocalLaplaceDiagOperator(const unsigned int dofs_per_dim,
+                             const Number       lambda,
+                             const Number       tau)
+      : dofs_per_dim(dofs_per_dim)
+      , lambda(lambda)
+      , tau(tau)
+    {}
+
+    __device__ void
+    operator()(const unsigned int                            cell,
+               const typename MatrixFree<dim, Number>::Data *gpu_data,
+               SharedDataCuda<dim, Number>                  *shared_data,
+               const Number                                 *src,
+               Number                                       *dst) const
+    {
+      FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> fe_eval(
+        cell, gpu_data, shared_data, dofs_per_dim);
+
+      Number my_diagonal = 0.0;
+
+      const unsigned int tid = internal::compute_index<dim, n_dofs_1d>();
+      for (unsigned int i = 0; i < n_local_dofs; ++i)
+        {
+          fe_eval.submit_dof_value(i == tid ? 1.0 : 0.0);
+#ifdef UNIFORM_MESH
+          fe_eval.evaluate_integrate();
+#else
+          fe_eval.evaluate(true, true);
+          fe_eval.apply_for_each_quad_point(
+            LaplaceOperatorQuad<dim, fe_degree, Number>(lambda, tau));
+          fe_eval.integrate(true, true);
+#endif
+          if (tid == i)
+            my_diagonal = fe_eval.get_value();
+        }
+      fe_eval.submit_dof_value(my_diagonal);
+      fe_eval.distribute_local_to_global(dst);
+    }
+  };
+
+
 
   template <int dim, int fe_degree, typename Number>
   class LocalStiffnessOperator
@@ -151,10 +211,14 @@ namespace PSMF
       FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> fe_eval(
         cell, gpu_data, shared_data, dofs_per_dim);
       fe_eval.read_dof_values(src);
+#ifdef UNIFORM_MESH
+      fe_eval.evaluate_integrate_stiffness();
+#else
       fe_eval.evaluate(false, true);
       fe_eval.submit_gradient(fe_eval.get_gradient());
       __syncthreads();
       fe_eval.integrate(false, true);
+#endif
       fe_eval.distribute_local_to_global(dst);
     }
   };
@@ -185,11 +249,15 @@ namespace PSMF
         local_q_point_id<dim, Number>(cell, gpu_data, n_dofs_1d, n_q_points);
       FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> fe_eval(
         cell, gpu_data, shared_data, dofs_per_dim);
-      fe_eval.read_dof_values(src);
+      fe_eval.read_dof_values(src, false);
+#ifdef UNIFORM_MESH
+      fe_eval.evaluate_integrate_mass();
+#else
       fe_eval.evaluate(true, false);
       fe_eval.submit_value(fe_eval.get_value());
       __syncthreads();
       fe_eval.integrate(true, false);
+#endif
       fe_eval.distribute_local_to_global(dst);
     }
   };
@@ -450,7 +518,10 @@ namespace PSMF
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>;
 
     LaplaceOperator()
-    {}
+    {
+      inverse_diagonal_matrix = std::make_shared<DiagonalMatrix<
+        LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>>>();
+    }
 
     void
     initialize(std::shared_ptr<const PSMF::MatrixFree<dim, Number>> data_,
@@ -461,6 +532,12 @@ namespace PSMF
 
       D_vec = D_vec_;
       tau   = tau_;
+
+      auto mg_level = mf_data->get_mg_level();
+      if (mg_level == numbers::invalid_unsigned_int)
+        n_dofs = mf_data->get_dof_handler().n_dofs();
+      else
+        n_dofs = mf_data->get_dof_handler().n_dofs(mg_level);
     }
 
     void
@@ -501,11 +578,63 @@ namespace PSMF
       return mf_data;
     }
 
+    unsigned int
+    m() const
+    {
+      return n_dofs;
+    }
+
+    // we cannot access matrix elements of a matrix free operator directly.
+    Number
+    el(const unsigned int, const unsigned int) const
+    {
+      ExcNotImplemented();
+      return -1000000000000000000;
+    }
+
+    void
+    compute_diagonal()
+    {
+      auto &inv_diag = inverse_diagonal_matrix->get_vector();
+
+      inv_diag.reinit(n_dofs);
+
+      auto ones_vec = inv_diag;
+      ones_vec      = 1.;
+
+      unsigned int level          = mf_data->get_mg_level();
+      unsigned int n_dofs_per_dim = (1 << level) * fe_degree + 1;
+
+      LocalLaplaceDiagOperator<dim, fe_degree, Number> laplace_operator(
+        n_dofs_per_dim, D_vec[current_stage], tau);
+
+      mf_data->cell_loop(laplace_operator, inv_diag, inv_diag);
+      mf_data->copy_constrained_values(ones_vec, inv_diag);
+
+      vector_invert(inv_diag);
+
+      diagonal_is_available = true;
+    }
+
+    const std::shared_ptr<DiagonalMatrix<
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>>>
+    get_diagonal_inverse() const
+    {
+      Assert(diagonal_is_available == true, ExcNotInitialized());
+      return inverse_diagonal_matrix;
+    }
+
   private:
     std::shared_ptr<const PSMF::MatrixFree<dim, Number>> mf_data;
 
+    unsigned int        n_dofs;
     std::vector<double> D_vec;
     double              tau;
+
+    std::shared_ptr<DiagonalMatrix<
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>>>
+         inverse_diagonal_matrix;
+    bool diagonal_is_available;
   };
 } // namespace PSMF
 

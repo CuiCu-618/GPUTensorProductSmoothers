@@ -14,6 +14,7 @@ namespace PSMF
   constexpr int          warp_size               = 32;
   constexpr unsigned int mf_max_elem_degree      = 10;
   constexpr unsigned int mf_n_concurrent_objects = 15;
+  constexpr unsigned int max_stages              = 10;
 
   // Default initialized to false
   std::array<std::atomic_bool, mf_n_concurrent_objects> used_objects;
@@ -30,14 +31,23 @@ namespace PSMF
 
     // These variables are stored in the device constant memory.
     // Shape values
-    __constant__ double global_shape_values_d[1][data_array_size];
-    __constant__ float  global_shape_values_f[1][data_array_size];
+    __constant__ double global_shape_values_d[2][data_array_size];
+    __constant__ float  global_shape_values_f[2][data_array_size];
     // Shape gradients
-    __constant__ double global_shape_gradients_d[1][data_array_size];
-    __constant__ float  global_shape_gradients_f[1][data_array_size];
+    __constant__ double global_shape_gradients_d[2][data_array_size];
+    __constant__ float  global_shape_gradients_f[2][data_array_size];
     // for collocation methods
     __constant__ double global_co_shape_gradients_d[1][data_array_size];
     __constant__ float  global_co_shape_gradients_f[1][data_array_size];
+
+#ifdef UNIFORM_MESH
+    template <typename NumberType>
+    using DataArray2 = NumberType[data_array_size * max_stages];
+
+    __constant__ double cell_stiffness_d[1][data_array_size * max_stages];
+    __constant__ float  cell_stiffness_f[1][data_array_size * max_stages];
+#endif
+
 
     template <typename Number>
     __host__ __device__ inline DataArray<Number>          &
@@ -65,14 +75,14 @@ namespace PSMF
     __host__ __device__ inline DataArray<double>          &
     get_global_shape_gradients<double>(unsigned int i)
     {
-      return internal::global_shape_gradients_d[i];
+      return global_shape_gradients_d[i];
     }
 
     template <>
     __host__ __device__ inline DataArray<float>          &
     get_global_shape_gradients<float>(unsigned int i)
     {
-      return internal::global_shape_gradients_f[i];
+      return global_shape_gradients_f[i];
     }
 
     // for collocation methods
@@ -84,15 +94,35 @@ namespace PSMF
     __host__ __device__ inline DataArray<double>          &
     get_global_co_shape_gradients<double>(unsigned int i)
     {
-      return internal::global_co_shape_gradients_d[i];
+      return global_co_shape_gradients_d[i];
     }
 
     template <>
     __host__ __device__ inline DataArray<float>          &
     get_global_co_shape_gradients<float>(unsigned int i)
     {
-      return internal::global_co_shape_gradients_f[i];
+      return global_co_shape_gradients_f[i];
     }
+
+#ifdef UNIFORM_MESH
+    template <typename Number>
+    __host__ __device__ inline DataArray2<Number>          &
+    get_cell_stiffness(unsigned int i);
+
+    template <>
+    __host__ __device__ inline DataArray2<double>          &
+    get_cell_stiffness<double>(unsigned int i)
+    {
+      return cell_stiffness_d[i];
+    }
+
+    template <>
+    __host__ __device__ inline DataArray2<float>          &
+    get_cell_stiffness<float>(unsigned int i)
+    {
+      return cell_stiffness_f[i];
+    }
+#endif
 
     template <typename Number>
     using CUDAVector = ::dealii::LinearAlgebra::CUDAWrappers::Vector<Number>;
@@ -686,6 +716,10 @@ namespace PSMF
     data_copy.local_to_global = local_to_global[color];
     data_copy.id              = my_id;
     data_copy.n_cells         = n_cells[color];
+#ifdef UNIFORM_MESH
+    data_copy.mg_level            = mg_level;
+    data_copy.global_stiffness_1d = global_stiffness_1d[current_stage];
+#endif
     data_copy.padding_length  = padding_length;
     data_copy.row_start       = row_start[color];
     data_copy.use_coloring    = use_coloring;
@@ -877,6 +911,8 @@ namespace PSMF
 
     this->parallelization_scheme = additional_data.parallelization_scheme;
     this->use_coloring           = additional_data.use_coloring;
+    this->n_stages               = additional_data.n_stages;
+    this->tau                    = additional_data.tau;
     this->overlap_communication_computation =
       additional_data.overlap_communication_computation;
     this->mg_level = additional_data.mg_level;
@@ -965,6 +1001,127 @@ namespace PSMF
                              cudaMemcpyHostToDevice);
         AssertCuda(cuda_error);
       }
+
+#ifdef UNIFORM_MESH
+    global_stiffness_1d.resize(n_stages);
+
+    std::vector<double> D_vec(n_stages);
+    {
+      std::string file_name = "D_vec_" + std::to_string(n_stages) + ".txt";
+
+      std::ifstream fin;
+      fin.open(std::string(IRK_FILE_DIR) + file_name);
+
+      if (fin.fail())
+        fin.open("../IRK_txt/" + file_name);
+
+      AssertThrow(fin.fail() == false,
+                  ExcMessage("File with the name " + file_name +
+                             " could not be found!"));
+
+      unsigned int m, n;
+      fin >> m >> n;
+
+      AssertDimension(m, 1);
+      AssertDimension(n, n_stages);
+
+      for (unsigned int i = 0; i < n_stages; ++i)
+        fin >> D_vec[i];
+    }
+
+    FE_DGQ<1> fe_1d(fe_degree);
+
+    const unsigned int level =
+      mg_level != numbers::invalid_unsigned_int ?
+        mg_level :
+        dof_handler->get_triangulation().n_global_levels() - 1;
+    const Number h              = 1. / std::pow(2, level);
+    const Number scaling_factor = dim == 2 ? 1 : h;
+    QGauss<1>    quadrature(n_dofs_1d);
+
+    std::vector<Number> cell_mass(n_dofs_1d * n_dofs_1d, 0);
+    for (unsigned int i = 0; i < n_dofs_1d; ++i)
+      for (unsigned int j = 0; j < n_dofs_1d; ++j)
+        for (unsigned int q = 0; q < quadrature.size(); ++q)
+          {
+            cell_mass[i * n_dofs_1d + j] +=
+              (fe_1d.shape_value(i, quadrature.point(q)) *
+               fe_1d.shape_value(j, quadrature.point(q))) *
+              quadrature.weight(q);
+          }
+
+    std::vector<Number> cell_laplace(n_dofs_1d * n_dofs_1d, 0);
+    for (unsigned int i = 0; i < n_dofs_1d; ++i)
+      for (unsigned int j = 0; j < n_dofs_1d; ++j)
+        for (unsigned int q = 0; q < quadrature.size(); ++q)
+          {
+            cell_laplace[i * n_dofs_1d + j] +=
+              (fe_1d.shape_grad(i, quadrature.point(q))[0] *
+               fe_1d.shape_grad(j, quadrature.point(q))[0]) *
+              quadrature.weight(q);
+          }
+
+    cuda_error =
+      cudaMemcpyToSymbol(internal::get_global_shape_values<Number>(0),
+                         cell_mass.data(),
+                         size_shape_values,
+                         internal::data_array_size * sizeof(Number),
+                         cudaMemcpyHostToDevice);
+    AssertCuda(cuda_error);
+
+    cuda_error =
+      cudaMemcpyToSymbol(internal::get_global_shape_gradients<Number>(0),
+                         cell_laplace.data(),
+                         size_shape_values,
+                         internal::data_array_size * sizeof(Number),
+                         cudaMemcpyHostToDevice);
+    AssertCuda(cuda_error);
+
+
+    for (unsigned int ss = 0; ss < n_stages; ++ss)
+      {
+        std::vector<Number> cell_stiffness(n_dofs_1d * n_dofs_1d, 0);
+        for (unsigned int i = 0; i < n_dofs_1d; ++i)
+          for (unsigned int j = 0; j < n_dofs_1d; ++j)
+            for (unsigned int q = 0; q < quadrature.size(); ++q)
+              {
+                cell_stiffness[i * n_dofs_1d + j] +=
+                  D_vec[ss] *
+                  (fe_1d.shape_value(i, quadrature.point(q)) *
+                   fe_1d.shape_value(j, quadrature.point(q))) *
+                  quadrature.weight(q) * h * h / dim;
+
+                cell_stiffness[i * n_dofs_1d + j] +=
+                  tau *
+                  (fe_1d.shape_grad(i, quadrature.point(q))[0] *
+                   fe_1d.shape_grad(j, quadrature.point(q))[0]) *
+                  quadrature.weight(q);
+              }
+
+        cuda_error =
+          cudaMemcpyToSymbol(internal::get_cell_stiffness<Number>(0),
+                             cell_stiffness.data(),
+                             size_shape_values,
+                             (ss * n_dofs_1d * n_dofs_1d) * sizeof(Number),
+                             cudaMemcpyHostToDevice);
+        AssertCuda(cuda_error);
+
+        internal::alloc_and_copy(&global_stiffness_1d[ss],
+                                 ArrayView<const Number>(cell_stiffness.data(),
+                                                         cell_stiffness.size()),
+                                 n_dofs_1d * n_dofs_1d);
+      }
+
+    cuda_error =
+      cudaMemcpyToSymbol(internal::get_global_shape_values<Number>(0),
+                         &scaling_factor,
+                         sizeof(Number),
+                         (internal::data_array_size + n_dofs_1d * n_dofs_1d +
+                          level) *
+                           sizeof(Number),
+                         cudaMemcpyHostToDevice);
+    AssertCuda(cuda_error);
+#endif
 
     // Setup the number of cells per CUDA thread block
     cells_per_block = cells_per_block_shmem(dim, fe_degree);
@@ -1266,6 +1423,10 @@ namespace PSMF
                                 cudaMemcpyHostToDevice);
         AssertCuda(cuda_error);
       }
+
+    mg_level = mg_level != numbers::invalid_unsigned_int ?
+                 mg_level :
+                 dof_handler->get_triangulation().n_global_levels() - 1;
   }
 
 

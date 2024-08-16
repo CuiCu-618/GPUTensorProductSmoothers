@@ -85,7 +85,7 @@ def parse_args():
     parser.add_argument(
         "-REDUCE_INNER",
         "--reduce_inner",
-        default=1e-9,
+        default=1e-6,
         type=float,
         help="desired reduction factor for inner iteration",
     )
@@ -136,6 +136,7 @@ def parse_args():
             "FUSED_BD",
             "Exact",
             "NN",
+            "Chebyshev",
         ],
         help="variant of the Schwarz smoother kernel",
     )
@@ -236,6 +237,9 @@ class Parameter:
                 count += 1
             elif kernel.endswith("NN"):
                 kernel_str += r"PSMF::SmootherVariant::NN, "
+                count += 1
+            elif kernel.endswith("Cheb"):
+                kernel_str += r"PSMF::SmootherVariant::Chebyshev, "
                 count += 1
         self.kernel_type = (
             "constexpr std::array<PSMF::SmootherVariant, " + str(count) + ">",

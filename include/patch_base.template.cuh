@@ -563,7 +563,7 @@ namespace PSMF
       std::string file_name = "D_vec_" + std::to_string(n_stages) + ".txt";
 
       std::ifstream fin;
-      fin.open(file_name);
+      fin.open(std::string(IRK_FILE_DIR) + file_name);
 
       if (fin.fail())
         fin.open("../IRK_txt/" + file_name);

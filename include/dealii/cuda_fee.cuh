@@ -130,7 +130,7 @@ namespace PSMF
      * AffineConstraints::read_dof_valuess as well.
      */
     __device__ void
-    read_dof_values(const Number *src);
+    read_dof_values(const Number *src, const bool scaling = true);
 
     /**
      * Take the value stored internally on dof values of the current cell and
@@ -160,6 +160,30 @@ namespace PSMF
      */
     __device__ void
     integrate(const bool integrate_val, const bool integrate_grad);
+
+#ifdef UNIFORM_MESH
+    /**
+     * NOTE: Specific optimization on uniform mesh:
+     * M = M2 \otimes M1
+     */
+    __device__ void
+    evaluate_integrate_mass();
+
+    /**
+     * NOTE: Specific optimization on uniform mesh:
+     * A = M2 \otimes A1 + A2 \otimes M1
+     */
+    __device__ void
+    evaluate_integrate_stiffness();
+
+    /**
+     * A = lambda * M + tau * K
+     * NOTE: Specific optimization on uniform mesh:
+     * A = M2 \otimes A1 + A2 \otimes M1
+     */
+    __device__ void
+    evaluate_integrate();
+#endif
 
     /**
      * Same as above, except that the quadrature point is computed from thread
@@ -226,6 +250,11 @@ namespace PSMF
     const unsigned int       mf_object_id;
     const unsigned int       dofs_per_dim;
 
+#ifdef UNIFORM_MESH
+    const unsigned int level;
+    Number            *cell_stiffness;
+#endif
+
     const dealii::internal::MatrixFreeFunctions::ConstraintKinds
       constraint_mask;
 
@@ -256,6 +285,10 @@ namespace PSMF
     , padding_length(data->padding_length)
     , mf_object_id(data->id)
     , dofs_per_dim(dofs_per_dim)
+#ifdef UNIFORM_MESH
+    , level(data->mg_level)
+    , cell_stiffness(data->global_stiffness_1d)
+#endif
     , constraint_mask(data->constraint_mask[cell_id])
     , use_coloring(data->use_coloring)
     , values(shdata->values)
@@ -277,7 +310,7 @@ namespace PSMF
             typename Number>
   __device__ void
   FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
-    read_dof_values(const Number *src)
+    read_dof_values(const Number *src, const bool scaling)
   {
     static_assert(n_components_ == 1, "This function only supports FE with one \
                   components");
@@ -288,8 +321,18 @@ namespace PSMF
     auto global_idx = threadIdx.z * dofs_per_dim * dofs_per_dim +
                       threadIdx.y * dofs_per_dim + threadIdx.x % n_q_points_1d +
                       src_idx;
+
+#ifdef UNIFORM_MESH
+    Number factor = *(internal::get_global_shape_values<Number>(1) +
+                      n_q_points_1d * n_q_points_1d + level);
+
+    factor = scaling ? factor : factor / inv_jac[0] / inv_jac[0];
+
+    values[idx] = __ldg(&src[global_idx]) * factor;
+#else
     // Use the read-only data cache.
     values[idx] = __ldg(&src[global_idx]);
+#endif
 
     __syncthreads();
 
@@ -402,6 +445,73 @@ namespace PSMF
       }
   }
 
+#ifdef UNIFORM_MESH
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
+  __device__ void
+  FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
+    evaluate_integrate_mass()
+  {
+    internal::EvaluatorTensorProduct<
+      internal::EvaluatorVariant::evaluate_general,
+      dim,
+      fe_degree,
+      n_q_points_1d,
+      Number>
+      evaluator_tensor_product(mf_object_id + 1);
+    evaluator_tensor_product.evaluate_integrate_mass(values, gradients);
+    __syncthreads();
+  }
+
+
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
+  __device__ void
+  FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
+    evaluate_integrate_stiffness()
+  {
+    internal::EvaluatorTensorProduct<
+      internal::EvaluatorVariant::evaluate_general,
+      dim,
+      fe_degree,
+      n_q_points_1d,
+      Number>
+      evaluator_tensor_product(mf_object_id + 1);
+    evaluator_tensor_product.evaluate_integrate_stiffness(values, gradients);
+    __syncthreads();
+  }
+
+
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
+  __device__ void
+  FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
+    evaluate_integrate()
+  {
+    internal::EvaluatorTensorProduct<
+      internal::EvaluatorVariant::evaluate_general,
+      dim,
+      fe_degree,
+      n_q_points_1d,
+      Number>
+      evaluator_tensor_product(mf_object_id + 1);
+    evaluator_tensor_product.evaluate_integrate(values,
+                                                gradients,
+                                                cell_stiffness);
+    __syncthreads();
+  }
+
+
+#endif
 
 
   template <int dim,
@@ -468,7 +578,15 @@ namespace PSMF
     submit_dof_value(const value_type &val_in)
   {
     const unsigned int dof = internal::compute_index<dim, fe_degree + 1>();
-    values[dof]            = val_in;
+#ifdef UNIFORM_MESH
+    Number factor = *(internal::get_global_shape_values<Number>(1) +
+                      n_q_points_1d * n_q_points_1d + level);
+
+    values[dof] = factor * val_in;
+#else
+    values[dof] = val_in;
+#endif
+    __syncthreads();
   }
 
 

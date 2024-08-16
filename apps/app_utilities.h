@@ -15,26 +15,29 @@
 #include <helper_cuda.h>
 
 #include "ct_parameter.h"
+#include "dealii/cuda_mf.cuh"
 #include "git_version.h"
 
-#define SMO_MACRO(name, v1, v2, v3, v4, v5, v6, v7, v8, v9)                    \
-  enum class name                                                              \
-  {                                                                            \
-    v1,                                                                        \
-    v2,                                                                        \
-    v3,                                                                        \
-    v4,                                                                        \
-    v5,                                                                        \
-    v6,                                                                        \
-    v7,                                                                        \
-    v8,                                                                        \
-    v9,                                                                        \
-  };                                                                           \
-  const char *name##Strings[] = {#v1, #v2, #v3, #v4, #v5, #v6, #v7, #v8, #v9}; \
-  template <typename T>                                                        \
-  constexpr const char *name##ToString(T value)                                \
-  {                                                                            \
-    return name##Strings[static_cast<int>(value)];                             \
+#define SMO_MACRO(name, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10) \
+  enum class name                                                \
+  {                                                              \
+    v1,                                                          \
+    v2,                                                          \
+    v3,                                                          \
+    v4,                                                          \
+    v5,                                                          \
+    v6,                                                          \
+    v7,                                                          \
+    v8,                                                          \
+    v9,                                                          \
+    v10,                                                         \
+  };                                                             \
+  const char *name##Strings[] = {                                \
+    #v1, #v2, #v3, #v4, #v5, #v6, #v7, #v8, #v9, #v10};          \
+  template <typename T>                                          \
+  constexpr const char *name##ToString(T value)                  \
+  {                                                              \
+    return name##Strings[static_cast<int>(value)];               \
   }
 
 #define ENUM_MACRO(name, v1, v2, v3)               \
@@ -60,7 +63,8 @@ SMO_MACRO(Smoother,
           FUSED_CF,
           FUSED_BD,
           Exact,
-          NN);
+          NN,
+          Chebyshev);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);
 ENUM_MACRO(Granularity, none, user_define, multiple);
 
@@ -162,6 +166,13 @@ namespace Util
         << "Release"
 #endif
         << std::endl
+        << "Uniform mesh optimization:      "
+#ifdef UNIFORM_MESH
+        << "Yes"
+#else
+        << "No"
+#endif
+        << std::endl
         << std::endl;
 
 
@@ -176,7 +187,7 @@ namespace Util
     std::string file_name = label + std::to_string(n_stages) + ".txt";
 
     std::ifstream fin;
-    fin.open(file_name);
+    fin.open(std::string(IRK_FILE_DIR) + file_name);
 
     if (fin.fail())
       fin.open("../IRK_txt/" + file_name);
@@ -206,7 +217,7 @@ namespace Util
     std::string file_name = label + std::to_string(n_stages) + ".txt";
 
     std::ifstream fin;
-    fin.open(file_name);
+    fin.open(std::string(IRK_FILE_DIR) + file_name);
 
     if (fin.fail())
       fin.open("../IRK_txt/" + file_name);

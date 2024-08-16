@@ -137,6 +137,22 @@ namespace PSMF
       __device__ void
       integrate_value_and_gradient(Number *u, Number *grad_u[dim]);
 
+      /**
+       * Helper function for integrate(). Integrate the values and the gradients
+       * of the finite element function on uniform mesh with optimization.
+       */
+      __device__ void
+      evaluate_integrate_mass(Number *u, Number *grad_u[dim]);
+
+      __device__ void
+      evaluate_integrate_stiffness(Number *u, Number *grad_u[dim]);
+
+      __device__ void
+      evaluate_integrate(Number *u,
+                         Number *grad_u[dim],
+                         Number *cell_stiffness);
+
+
       const int mf_object_id;
     };
 
@@ -684,6 +700,224 @@ namespace PSMF
             }
         }
     }
+
+#ifdef UNIFORM_MESH
+
+    template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+    inline __device__ void
+    EvaluatorTensorProduct<evaluate_general,
+                           dim,
+                           fe_degree,
+                           n_q_points_1d,
+                           Number>::evaluate_integrate_mass(Number *u,
+                                                            Number *grad_u[dim])
+    {
+      switch (dim)
+        {
+          case 1:
+            {
+              values<0, false, false, true>(
+                get_global_shape_gradients<Number>(mf_object_id), u, u);
+
+              break;
+            }
+          case 2:
+            {
+              values<0, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), u, grad_u[0]);
+              __syncthreads();
+
+              values<1, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), grad_u[0], u);
+
+              break;
+            }
+          case 3:
+            {
+              values<0, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), u, grad_u[0]);
+              __syncthreads();
+
+              values<1, false, false, false>(get_global_shape_values<Number>(
+                                               mf_object_id),
+                                             grad_u[0],
+                                             grad_u[1]);
+              __syncthreads();
+
+              values<2, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), grad_u[1], u);
+
+              break;
+            }
+          default:
+            {
+              // Do nothing. We should throw but we can't from a __device__
+              // function.
+            }
+        }
+    }
+
+
+    template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+    inline __device__ void
+    EvaluatorTensorProduct<evaluate_general,
+                           dim,
+                           fe_degree,
+                           n_q_points_1d,
+                           Number>::evaluate_integrate_stiffness(Number *u,
+                                                                 Number
+                                                                   *grad_u[dim])
+    {
+      switch (dim)
+        {
+          case 1:
+            {
+              gradients<0, false, false, true>(
+                get_global_shape_gradients<Number>(mf_object_id), u, u);
+
+              break;
+            }
+          case 2:
+            {
+              gradients<0, false, false, false>(
+                get_global_shape_gradients<Number>(mf_object_id), u, grad_u[0]);
+              values<0, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), u, grad_u[1]);
+
+              __syncthreads();
+
+              values<1, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), grad_u[0], u);
+              __syncthreads();
+              gradients<1, false, true, false>(
+                get_global_shape_gradients<Number>(mf_object_id), grad_u[1], u);
+
+              break;
+            }
+          case 3:
+            {
+              gradients<0, false, false, false>(
+                get_global_shape_gradients<Number>(mf_object_id), u, grad_u[0]);
+              values<0, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), u, grad_u[1]);
+              values<0, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), u, grad_u[2]);
+
+              __syncthreads();
+
+              values<1, false, false, true>(get_global_shape_values<Number>(
+                                              mf_object_id),
+                                            grad_u[0],
+                                            grad_u[0]);
+              gradients<1, false, false, true>(
+                get_global_shape_gradients<Number>(mf_object_id),
+                grad_u[1],
+                grad_u[1]);
+              values<1, false, false, true>(get_global_shape_values<Number>(
+                                              mf_object_id),
+                                            grad_u[2],
+                                            grad_u[2]);
+
+              __syncthreads();
+
+              values<2, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), grad_u[0], u);
+              __syncthreads();
+              values<2, false, true, false>(
+                get_global_shape_values<Number>(mf_object_id), grad_u[1], u);
+              __syncthreads();
+              gradients<2, false, true, false>(
+                get_global_shape_gradients<Number>(mf_object_id), grad_u[2], u);
+
+              break;
+            }
+          default:
+            {
+              // Do nothing. We should throw but we can't from a __device__
+              // function.
+            }
+        }
+    }
+
+
+    template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+    inline __device__ void
+    EvaluatorTensorProduct<evaluate_general,
+                           dim,
+                           fe_degree,
+                           n_q_points_1d,
+                           Number>::evaluate_integrate(Number *u,
+                                                       Number *grad_u[dim],
+                                                       Number *cell_stiffness)
+    {
+      switch (dim)
+        {
+          case 1:
+            {
+              gradients<0, false, false, true>(cell_stiffness, u, u);
+
+              break;
+            }
+          case 2:
+            {
+              gradients<0, false, false, false>(cell_stiffness, u, grad_u[0]);
+              values<0, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), u, grad_u[1]);
+
+              __syncthreads();
+
+              values<1, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), grad_u[0], u);
+              __syncthreads();
+              gradients<1, false, true, false>(cell_stiffness, grad_u[1], u);
+
+              break;
+            }
+          case 3:
+            {
+              gradients<0, false, false, false>(cell_stiffness, u, grad_u[0]);
+              values<0, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), u, grad_u[1]);
+              values<0, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), u, grad_u[2]);
+
+              __syncthreads();
+
+              values<1, false, false, true>(get_global_shape_values<Number>(
+                                              mf_object_id),
+                                            grad_u[0],
+                                            grad_u[0]);
+              gradients<1, false, false, true>(cell_stiffness,
+                                               grad_u[1],
+                                               grad_u[1]);
+              values<1, false, false, true>(get_global_shape_values<Number>(
+                                              mf_object_id),
+                                            grad_u[2],
+                                            grad_u[2]);
+
+              __syncthreads();
+
+              values<2, false, false, false>(
+                get_global_shape_values<Number>(mf_object_id), grad_u[0], u);
+              __syncthreads();
+              values<2, false, true, false>(
+                get_global_shape_values<Number>(mf_object_id), grad_u[1], u);
+              __syncthreads();
+              gradients<2, false, true, false>(cell_stiffness, grad_u[2], u);
+
+              break;
+            }
+          default:
+            {
+              // Do nothing. We should throw but we can't from a __device__
+              // function.
+            }
+        }
+    }
+
+#endif
+
+
   } // namespace internal
 } // namespace PSMF
 

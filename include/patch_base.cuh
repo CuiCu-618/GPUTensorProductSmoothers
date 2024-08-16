@@ -75,7 +75,12 @@ namespace PSMF
     /**
      * Neural Network
      */
-    NN
+    NN,
+
+    /**
+     * Chebyshev
+     */
+    Chebyshev,
   };
 
 

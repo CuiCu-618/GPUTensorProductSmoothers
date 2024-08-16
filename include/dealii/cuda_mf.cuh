@@ -39,7 +39,11 @@
 #include <cmath>
 #include <functional>
 
+#include "patch_base.cuh"
+
 using namespace dealii;
+
+#define UNIFORM_MESH
 
 namespace PSMF
 {
@@ -86,11 +90,15 @@ namespace PSMF
         const UpdateFlags           mapping_update_flags   = update_gradients |
                                                  update_JxW_values |
                                                  update_quadrature_points,
+        const Number       tau                               = 0.1,
+        const unsigned int n_stages                          = 4,
         const bool         use_coloring                      = false,
         const bool         overlap_communication_computation = false,
         const unsigned int mg_level = numbers::invalid_unsigned_int)
         : parallelization_scheme(parallelization_scheme)
         , mapping_update_flags(mapping_update_flags)
+        , tau(tau)
+        , n_stages(n_stages)
         , use_coloring(use_coloring)
         , overlap_communication_computation(overlap_communication_computation)
         , mg_level(mg_level)
@@ -122,6 +130,9 @@ namespace PSMF
        * needed, they must be specified by this field.
        */
       UpdateFlags mapping_update_flags;
+
+      Number       tau;
+      unsigned int n_stages;
 
       /**
        * If true, use graph coloring. Otherwise, use atomic operations. Graph
@@ -204,6 +215,18 @@ namespace PSMF
        * the destingation vector. Otherwise, use atomic operations.
        */
       bool use_coloring;
+
+#ifdef UNIFORM_MESH
+      /**
+       * Stored the level of the mesh to be worked on.
+       */
+      unsigned int mg_level;
+
+      /**
+       * Pointer to 1D global mass + stiffness matrix.
+       */
+      Number *global_stiffness_1d;
+#endif
     };
 
     /**
@@ -510,6 +533,9 @@ namespace PSMF
      */
     bool use_coloring;
 
+    Number       tau;
+    unsigned int n_stages;
+
     /**
      *  Overlap MPI communications with computation. This requires CUDA-aware
      *  MPI and use_coloring must be false.
@@ -641,6 +667,13 @@ namespace PSMF
      * Pointer to the DoFHandler associated with the object.
      */
     const DoFHandler<dim> *dof_handler;
+
+#ifdef UNIFORM_MESH
+    /**
+     * Pointer to 1D global mass + stiffness matrix.
+     */
+    std::vector<Number *> global_stiffness_1d;
+#endif
 
     /**
      * Colored graphed of locally owned active cells.
