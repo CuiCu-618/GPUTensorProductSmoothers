@@ -238,7 +238,7 @@ class Parameter:
             elif kernel.endswith("NN"):
                 kernel_str += r"PSMF::SmootherVariant::NN, "
                 count += 1
-            elif kernel.endswith("Cheb"):
+            elif kernel.startswith("Cheb"):
                 kernel_str += r"PSMF::SmootherVariant::Chebyshev, "
                 count += 1
         self.kernel_type = (
