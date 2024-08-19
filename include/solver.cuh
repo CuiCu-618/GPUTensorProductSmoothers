@@ -620,28 +620,37 @@ namespace PSMF
         {
           n_inner_its.assign(n_stages, 0);
 
+          auto t = it * tau;
+
           Timer time;
-          auto  t = it * tau;
-          *pcout << "Time step " << it << " at t=" << t + tau << std::endl;
+
+          if (do_analyze)
+            *pcout << "Time step " << it << " at t=" << t + tau << std::endl;
 
           if (it == 0)
             solution_old = solution_0;
 
           system_matrix.compute_system_rhs(system_rhs, solution_old, t);
 
-          *pcout << "Time compute system rhs:  " << time.wall_time() << "\n";
+          if (do_analyze)
+            *pcout << "Time compute system rhs:  " << time.wall_time() << "\n";
           time.restart();
 
           solver_gmres.solve(system_matrix, system_solution, system_rhs, *this);
 
-          *pcout << "Time solve GMRES: " << time.wall_time() << "\n";
+          if (do_analyze)
+            *pcout << "Time solve GMRES: " << time.wall_time() << "\n";
 
-          *pcout << "     " << solver_control.last_step()
-                 << " outer GMRES iterations and " << n_inner_its[0];
+          if (do_analyze)
+            *pcout << "     " << solver_control.last_step()
+                   << " outer GMRES iterations and " << n_inner_its[0];
 
-          for (unsigned int i = 1; i < n_stages; ++i)
-            *pcout << "+" << n_inner_its[i];
-          *pcout << " inner FGMRES iterations. \n\n";
+          if (do_analyze)
+            {
+              for (unsigned int i = 1; i < n_stages; ++i)
+                *pcout << "+" << n_inner_its[i];
+              *pcout << " inner FGMRES iterations. \n\n";
+            }
 
           system_matrix.compute_solution(solution, system_solution);
 
@@ -655,6 +664,128 @@ namespace PSMF
             n_inner_its.size();
 
           return std::make_pair(solver_control, n_inner_it_avg);
+        }
+      else
+        return std::nullopt;
+    }
+
+
+    std::optional<std::pair<double, double>>
+    solve_chebyshev(const bool do_analyze, const unsigned int N = 1)
+    {
+      ReductionControl solver_control(CT::MAX_STEPS_, 1e-15, CT::REDUCE_);
+      solver_control.enable_history_data();
+      solver_control.log_history(true);
+
+      SolverGMRES<VectorTypeD> solver_gmres(solver_control);
+
+      solution        = solution_0;
+      solution_old    = solution_0;
+      system_solution = 0;
+
+      const double lambda_min = 4. / 25 * (3 * std::sqrt(6) - 2);
+      const double lambda_max = 1.;
+
+      const double d = (lambda_max + lambda_min) / 2;
+      const double c = (lambda_max - lambda_min) / 2;
+
+      current_stage = 0;
+
+      unsigned int        IT = 0;
+      std::vector<double> history;
+
+      for (unsigned int it = 0; it < N; ++it)
+        {
+          n_inner_its.assign(n_stages, 0);
+
+          auto t = it * tau;
+
+          Timer time;
+
+          if (do_analyze)
+            *pcout << "Time step " << it << " at t=" << t + tau << std::endl;
+
+          if (it == 0)
+            solution_old = solution_0;
+
+          system_matrix.compute_system_rhs(system_rhs, solution_old, t);
+
+          if (do_analyze)
+            *pcout << "Time compute system rhs:  " << time.wall_time() << "\n";
+          time.restart();
+
+          // solver_gmres.solve(system_matrix, system_solution, system_rhs,
+          // *this);
+          auto   r     = system_rhs;
+          auto   z     = system_rhs;
+          auto   p     = z;
+          double alpha = 0;
+          double beta  = 0;
+
+          const double n0 = r.l2_norm();
+
+          for (unsigned int iitt = 1; iitt < CT::MAX_STEPS_; ++iitt)
+            {
+              // Mz = r
+              this->vmult(z, r);
+
+              if (iitt == 1)
+                {
+                  p     = z;
+                  alpha = 2. / d;
+                }
+              else
+                {
+                  beta  = std::pow(c * alpha / 2, 2);
+                  alpha = 1. / (d - beta);
+                  p.sadd(beta, 1., z);
+                }
+
+              system_solution.add(alpha, p);
+              system_matrix.vmult(r, system_solution);
+
+              // r = system_rhs - Ax;
+              r.sadd(-1., system_rhs);
+
+              auto norm = r.l2_norm() / n0;
+              history.push_back(norm);
+
+              if (norm < CT::REDUCE_)
+                {
+                  IT = iitt - 1;
+                  break;
+                }
+            }
+
+          if (do_analyze)
+            *pcout << "Time solve Chebyshev: " << time.wall_time() << "\n";
+
+          if (do_analyze)
+            *pcout << "     " << IT << " outer Chebyshev iterations and "
+                   << n_inner_its[0];
+
+          if (do_analyze)
+            {
+              for (unsigned int i = 1; i < n_stages; ++i)
+                *pcout << "+" << n_inner_its[i];
+              *pcout << " inner FGMRES iterations. \n\n";
+            }
+
+          system_matrix.compute_solution(solution, system_solution);
+
+          solution_old = solution;
+        }
+
+      if (do_analyze)
+        {
+          for (auto i = 1U; i < IT + 1; ++i)
+            *pcout << "step " << i << ": " << history[i] << "\n";
+
+          double n_inner_it_avg =
+            std::accumulate(n_inner_its.begin(), n_inner_its.end(), 0.0) /
+            n_inner_its.size();
+
+          return std::make_pair(IT, n_inner_it_avg);
         }
       else
         return std::nullopt;

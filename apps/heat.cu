@@ -138,6 +138,7 @@ namespace Step64
     double                              setup_time;
 
     ConvergenceTable convergence_table;
+    ConvergenceTable convergence_table_cheb;
     ConvergenceTable convergence_table_N;
 
     std::fstream                        fout;
@@ -240,7 +241,7 @@ namespace Step64
     *pcout << "GPU Memory stats [MB]: " << mem_usage << "\n\n";
 
     double time_gmres = 1e10;
-    for (unsigned int i = 0; i < 1; ++i)
+    for (unsigned int i = 0; i < 5; ++i)
       {
         time.restart();
         solver.solve_gmres(false);
@@ -293,7 +294,7 @@ namespace Step64
     for (unsigned int i = 0; i < 1; ++i)
       {
         time.restart();
-        solver.solve_gmres(false, N);
+        solver.solve_gmres(true, N);
         cudaDeviceSynchronize();
         time_gmres_N = std::min(time.wall_time(), time_gmres_N);
       }
@@ -317,6 +318,44 @@ namespace Step64
            << std::endl;
 
     auto timing_result = solver.get_timing();
+
+    double time_chebyshev = 1e10;
+    for (unsigned int i = 0; i < 5; ++i)
+      {
+        time.restart();
+        solver.solve_chebyshev(false);
+        cudaDeviceSynchronize();
+        time_chebyshev = std::min(time.wall_time(), time_chebyshev);
+      }
+    *pcout << "Time solve Chebyshev (one time step): " << time_chebyshev
+           << "\n";
+
+    std::optional<std::pair<double, double>> it_data_cheb =
+      solver.solve_chebyshev(true);
+
+    auto n_iter_cheb = it_data_cheb->first;
+
+    {
+      auto solution = solver.get_solution();
+
+      LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+                                             solution_host(solution.size());
+      LinearAlgebra::ReadWriteVector<double> rw_vector(solution.size());
+      rw_vector.import(solution, VectorOperation::insert);
+      solution_host.import(rw_vector, VectorOperation::insert);
+      ghost_solution_host = solution_host;
+      constraints.distribute(ghost_solution_host);
+    }
+    const auto error_cheb = compute_error(tau);
+
+    *pcout << "Iterations: " << n_iter_cheb << std::endl << std::endl;
+
+
+    *pcout << "L2 error: " << error_cheb[0] << std::endl
+           << "L\u221E error: " << error_cheb[1] << std::endl
+           << "H1 error: " << error_cheb[2] << std::endl
+           << std::endl;
+
 
     convergence_table.add_value("cells", triangulation.n_global_active_cells());
     convergence_table.add_value("dofs", dof_handler.n_dofs());
@@ -344,6 +383,16 @@ namespace Step64
     convergence_table_N.add_value("gmres_L\u221E_error", error_gmres_N[1]);
     convergence_table_N.add_value("gmres_H1_error", error_gmres_N[2]);
     convergence_table_N.add_value("gmres_time", time_gmres_N);
+
+    convergence_table_cheb.add_value("cells",
+                                     triangulation.n_global_active_cells());
+    convergence_table_cheb.add_value("dofs", dof_handler.n_dofs());
+    convergence_table_cheb.add_value("chebyshev_L2_error", error_cheb[0]);
+    convergence_table_cheb.add_value("chebyshev_L\u221E_error", error_cheb[1]);
+    convergence_table_cheb.add_value("chebyshev_H1_error", error_cheb[2]);
+    convergence_table_cheb.add_value("chebyshev_time", time_chebyshev);
+    convergence_table_cheb.add_value("chebyshev_its", n_iter_cheb);
+    convergence_table_cheb.add_value("inner_its_avg", it_data_cheb->second);
   }
 
 
@@ -486,6 +535,24 @@ namespace Step64
 
         oss << "\n Time = " << tau * N << "\n";
         convergence_table_N.write_text(oss);
+
+        oss << "\n\n[Chebyshev]\n";
+        oss << "\n Time = " << tau * 1 << "\n";
+
+        auto set_format_conv_cheb = [&](auto name) {
+          convergence_table_cheb.set_scientific(name, true);
+          convergence_table_cheb.set_precision(name, 3);
+          convergence_table_cheb.evaluate_convergence_rates(
+            name, "cells", ConvergenceTable::reduction_rate_log2, dim);
+        };
+
+        set_format_conv_cheb("chebyshev_L2_error");
+        set_format_conv_cheb("chebyshev_L\u221E_error");
+        set_format_conv_cheb("chebyshev_H1_error");
+        convergence_table_cheb.set_scientific("chebyshev_time", true);
+        convergence_table_cheb.set_precision("chebyshev_time", 3);
+
+        convergence_table_cheb.write_text(oss);
 
         *pcout << oss.str() << std::endl;
 

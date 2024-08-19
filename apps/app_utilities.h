@@ -118,11 +118,19 @@ namespace Util
   std::string
   generic_info_to_fstring()
   {
-    std::string value_type = "";
+    std::string value_type_gmres = "";
+    if (std::is_same_v<float, CT::GMRES_NUMBER_>)
+      value_type_gmres = "float";
+    else if (std::is_same_v<double, CT::GMRES_NUMBER_>)
+      value_type_gmres = "double";
+    else
+      AssertThrow(false, ExcMessage("Invalid GMRES number type."));
+
+    std::string value_type_v = "";
     if (std::is_same_v<float, CT::VCYCLE_NUMBER_>)
-      value_type = "float";
+      value_type_v = "float";
     else if (std::is_same_v<double, CT::VCYCLE_NUMBER_>)
-      value_type = "double";
+      value_type_v = "double";
     else
       AssertThrow(false, ExcMessage("Invalid Vcycle number type."));
 
@@ -160,7 +168,8 @@ namespace Util
         << "Time step size:                 " << CT::DT_ << std::endl
         << "Outer tolerance:                " << CT::REDUCE_ << std::endl
         << "Inner tolerance:                " << CT::REDUCE_INNER_ << std::endl
-        << "Number type for V-cycle:        " << value_type << std::endl
+        << "Number type for V-cycle:        " << value_type_v << std::endl
+        << "Number type for inner GMRES:    " << value_type_gmres << std::endl
         << "Smoother Variant:               ";
     for (unsigned int k = 0; k < CT::KERNEL_TYPE_.size(); ++k)
       oss << SmootherToString(CT::KERNEL_TYPE_[k]) << " ";
