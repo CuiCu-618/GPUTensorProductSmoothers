@@ -156,6 +156,14 @@ def parse_args():
         help="number type for the multigrid v-cycle",
     )
     parser.add_argument(
+        "-GNUM",
+        "--gmres_number",
+        default="double",
+        type=str,
+        choices=["double", "float"],
+        help="number type for the inner GMRES",
+    )
+    parser.add_argument(
         "-SETS",
         "--test_sets",
         default="none",
@@ -201,6 +209,7 @@ class Parameter:
             "PSMF::DoFLayout::" + str(options.dof_layout),
         )
         self.vcycle_number = ("using", str(options.vcycle_number))
+        self.gmres_number = ("using", str(options.gmres_number))
         self.log_dir = ("const std::string", rawstr(options.log_directory))
         self.sets = ("const std::string", rawstr(options.test_sets))
         self.smoother_prm(options.kernel_type)

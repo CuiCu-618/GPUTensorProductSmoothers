@@ -445,8 +445,9 @@ namespace PSMF
         }
     }
 
+    template <typename VectorType2>
     void
-    transform_basis(VectorType &dst, const VectorType &src) const
+    transform_basis(VectorType2 &dst, const VectorType &src) const
     {
       AssertDimension(dst.size(), src.size());
 
@@ -463,8 +464,9 @@ namespace PSMF
                               j * n_dofs);
     }
 
+    template <typename VectorType2>
     void
-    transform_basis_back(VectorType &dst, const VectorType &src) const
+    transform_basis_back(VectorType &dst, const VectorType2 &src) const
     {
       AssertDimension(dst.size(), src.size());
 

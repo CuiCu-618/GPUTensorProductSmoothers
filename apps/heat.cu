@@ -114,7 +114,7 @@ namespace Step64
   class LaplaceProblem
   {
   public:
-    using full_number   = double;
+    using gmres_number  = CT::GMRES_NUMBER_;
     using vcycle_number = CT::VCYCLE_NUMBER_;
 
     LaplaceProblem();
@@ -212,7 +212,7 @@ namespace Step64
     Solution<dim> analytic_solution;
     analytic_solution.set_time(0);
 
-    PSMF::MultigridSolvers<dim, fe_degree, vcycle_number, full_number> solver(
+    PSMF::MultigridSolvers<dim, fe_degree, vcycle_number, gmres_number> solver(
       dof_handler,
       analytic_solution,
       pcout,
@@ -240,7 +240,7 @@ namespace Step64
     *pcout << "GPU Memory stats [MB]: " << mem_usage << "\n\n";
 
     double time_gmres = 1e10;
-    for (unsigned int i = 0; i < 5; ++i)
+    for (unsigned int i = 0; i < 1; ++i)
       {
         time.restart();
         solver.solve_gmres(false);
@@ -290,7 +290,7 @@ namespace Step64
            << std::endl;
 
     double time_gmres_N = 1e10;
-    for (unsigned int i = 0; i < 5; ++i)
+    for (unsigned int i = 0; i < 1; ++i)
       {
         time.restart();
         solver.solve_gmres(false, N);
@@ -335,6 +335,7 @@ namespace Step64
     convergence_table.add_value("gmres_its", n_iter);
     convergence_table.add_value("frac_its", n_frac);
     convergence_table.add_value("inner_its_avg", it_data->second);
+    convergence_table.add_value("GPU_mem_usage", mem_usage);
 
     convergence_table_N.add_value("cells",
                                   triangulation.n_global_active_cells());
@@ -422,7 +423,7 @@ namespace Step64
         if (cycle == 0)
           {
             GridGenerator::hyper_cube(triangulation, 0., 1.);
-            triangulation.refine_global(3);
+            triangulation.refine_global(2);
           }
         else
           triangulation.refine_global(1);

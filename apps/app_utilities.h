@@ -75,11 +75,19 @@ namespace Util
   {
     std::ostringstream oss;
 
-    std::string value_type = "";
+    std::string value_type_gmres = "";
+    if (std::is_same_v<float, CT::GMRES_NUMBER_>)
+      value_type_gmres = "float";
+    else if (std::is_same_v<double, CT::GMRES_NUMBER_>)
+      value_type_gmres = "double";
+    else
+      AssertThrow(false, ExcMessage("Invalid GMRES number type."));
+
+    std::string value_type_v = "";
     if (std::is_same_v<float, CT::VCYCLE_NUMBER_>)
-      value_type = "mixed";
+      value_type_v = "float";
     else if (std::is_same_v<double, CT::VCYCLE_NUMBER_>)
-      value_type = "double";
+      value_type_v = "double";
     else
       AssertThrow(false, ExcMessage("Invalid Vcycle number type."));
 
@@ -101,7 +109,8 @@ namespace Util
     oss << "_S" << CT::N_STAGES_;
     oss << "_" << str_smooth_variant;
     oss << str_granularity;
-    oss << "_" << value_type;
+    oss << "_" << value_type_gmres;
+    oss << "_" << value_type_v;
 
     return oss.str();
   }

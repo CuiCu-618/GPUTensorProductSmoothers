@@ -219,7 +219,7 @@ namespace PSMF
    * @tparam dim
    * @tparam fe_degree
    * @tparam Number vcycle number
-   * @tparam Number2 full number
+   * @tparam Number2 inner gmres number
    */
   template <int dim, int fe_degree, typename Number, typename Number2>
   class MultigridSolvers
@@ -229,13 +229,15 @@ namespace PSMF
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>;
     using VectorType2 =
       LinearAlgebra::distributed::Vector<Number2, MemorySpace::CUDA>;
+    using VectorTypeD =
+      LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA>;
 
     using LocalMatrixType =
       LaplaceOperator<dim, fe_degree, Number, CT::DOF_LAYOUT_>;
     using LocalMatrixType2 =
       LaplaceOperator<dim, fe_degree, Number2, CT::DOF_LAYOUT_>;
 
-    using SystemMatrixType = SystemMatrixOp<dim, fe_degree, Number2>;
+    using SystemMatrixType = SystemMatrixOp<dim, fe_degree, double>;
 
     using SmootherType = PatchSmoother<LocalMatrixType,
                                        dim,
@@ -351,7 +353,29 @@ namespace PSMF
 
             if (level == maxlevel)
               {
-                system_matrix.initialize(mg_mf_storage_level,
+                AffineConstraints<double> level_constraintsD;
+                level_constraintsD.reinit(relevant_dofs);
+                level_constraintsD.add_lines(
+                  mg_constrained_dofs.get_boundary_indices(level));
+                level_constraintsD.close();
+
+                typename PSMF::MatrixFree<dim, double>::AdditionalData
+                  additional_dataD;
+                additional_dataD.mapping_update_flags =
+                  (update_gradients | update_JxW_values | update_values |
+                   update_quadrature_points);
+                additional_dataD.tau      = tau;
+                additional_dataD.n_stages = n_stages;
+                additional_dataD.mg_level = level;
+                std::shared_ptr<PSMF::MatrixFree<dim, double>>
+                  mg_mf_storage_levelD(new PSMF::MatrixFree<dim, double>());
+                mg_mf_storage_levelD->reinit(mapping,
+                                             dof_handler,
+                                             level_constraintsD,
+                                             QGauss<1>(fe_degree + 1),
+                                             additional_dataD);
+
+                system_matrix.initialize(mg_mf_storage_levelD,
                                          A_inv,
                                          S,
                                          S_inv,
@@ -362,17 +386,21 @@ namespace PSMF
                                          a_t,
                                          n_stages);
 
-                matrix_dp[maxlevel].initialize_dof_vector(solution);
-                matrix_dp[maxlevel].initialize_dof_vector(solution_0);
-                matrix_dp[maxlevel].initialize_dof_vector(solution_old);
                 matrix_dp[maxlevel].initialize_dof_vector(rhs);
                 matrix_dp[maxlevel].initialize_dof_vector(tmp);
 
                 matrix[maxlevel].initialize_dof_vector(defect);
                 matrix[maxlevel].initialize_dof_vector(solution_update);
 
+                solution.reinit(rhs.size());
+                solution_0.reinit(rhs.size());
+                solution_old.reinit(rhs.size());
+
                 system_solution.reinit(n_stages * solution_old.size());
                 system_rhs.reinit(n_stages * solution_old.size());
+
+                system_defect.reinit(n_stages * solution_old.size());
+                system_update.reinit(n_stages * solution_old.size());
               }
           }
         }
@@ -433,11 +461,11 @@ namespace PSMF
           {
             const unsigned int n_dofs = solution.size();
 
-            LinearAlgebra::distributed::Vector<Number2, MemorySpace::Host>
+            LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
               system_u_host(n_dofs);
-            LinearAlgebra::distributed::Vector<Number2, MemorySpace::CUDA>
-                                                    system_u_dev(n_dofs);
-            LinearAlgebra::ReadWriteVector<Number2> rw_vector(n_dofs);
+            LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA>
+                                                   system_u_dev(n_dofs);
+            LinearAlgebra::ReadWriteVector<double> rw_vector(n_dofs);
 
             // U
             std::map<types::global_dof_index, Point<dim>> current_point_map;
@@ -563,7 +591,7 @@ namespace PSMF
     }
 
     // Return the solution vector for further processing
-    const VectorType2 &
+    const VectorTypeD &
     get_solution()
     {
       set_inhomogeneous_bc<false>(maxlevel);
@@ -580,7 +608,7 @@ namespace PSMF
       solver_control.enable_history_data();
       solver_control.log_history(true);
 
-      SolverGMRES<VectorType2> solver_gmres(solver_control);
+      SolverGMRES<VectorTypeD> solver_gmres(solver_control);
 
       solution        = solution_0;
       solution_old    = solution_0;
@@ -635,13 +663,14 @@ namespace PSMF
 
     // Implement the vmult() function needed by the preconditioner interface
     void
-    vmult(VectorType2 &dst, const VectorType2 &src) const
+    vmult(VectorTypeD &dst, const VectorTypeD &src) const
     {
       dst = 0.;
 
-      auto tmp_dst = dst;
-      auto tmp_src = src;
-      system_matrix.transform_basis(tmp_src, src);
+      system_defect = 0;
+      system_update = 0;
+
+      system_matrix.transform_basis(system_defect, src);
 
       ReductionControl solver_control(CT::MAX_STEPS_INNER_,
                                       1e-10,
@@ -692,16 +721,18 @@ namespace PSMF
 
           tmp = 0.;
           rhs = 0.;
-          internal::vec_add(rhs, tmp_src, tmp.size(), 1., 0, i * tmp.size());
+          internal::vec_add(
+            rhs, system_defect, tmp.size(), 1., 0, i * tmp.size());
 
           solver.solve(matrix_dp[maxlevel], tmp, rhs, *precon);
 
           n_inner_its[i] += solver_control.last_step();
 
-          internal::vec_add(tmp_dst, tmp, tmp.size(), 1., i * tmp.size(), 0);
+          internal::vec_add(
+            system_update, tmp, tmp.size(), 1., i * tmp.size(), 0);
         }
 
-      system_matrix.transform_basis_back(dst, tmp_dst);
+      system_matrix.transform_basis_back(dst, system_update);
     }
 
     std::vector<double>
@@ -753,14 +784,14 @@ namespace PSMF
     void
     do_precon()
     {
-      precon->vmult(solution, rhs);
+      precon->vmult(tmp, rhs);
     }
 
     // run matrix-vector product in double precision
     void
     do_matvec()
     {
-      matrix_dp[maxlevel].vmult(solution, rhs);
+      matrix_dp[maxlevel].vmult(tmp, rhs);
     }
 
     // run matrix-vector product in single precision
@@ -804,8 +835,8 @@ namespace PSMF
 
           std::vector<unsigned int> inhomogeneous_index_host(
             n_inhomogeneous_bc);
-          std::vector<Number2> inhomogeneous_value_host(n_inhomogeneous_bc);
-          unsigned int         count = 0;
+          std::vector<double> inhomogeneous_value_host(n_inhomogeneous_bc);
+          unsigned int        count = 0;
           for (auto &i : inhomogeneous_bc[level])
             {
               inhomogeneous_index_host[count] = i.first;
@@ -814,7 +845,7 @@ namespace PSMF
             }
 
           unsigned int *inhomogeneous_index;
-          Number2      *inhomogeneous_value;
+          double       *inhomogeneous_value;
 
           cudaError_t cuda_error =
             cudaMalloc(&inhomogeneous_index,
@@ -828,17 +859,17 @@ namespace PSMF
           AssertCuda(cuda_error);
 
           cuda_error = cudaMalloc(&inhomogeneous_value,
-                                  n_inhomogeneous_bc * sizeof(Number2));
+                                  n_inhomogeneous_bc * sizeof(double));
           AssertCuda(cuda_error);
 
           cuda_error = cudaMemcpy(inhomogeneous_value,
                                   inhomogeneous_value_host.data(),
-                                  n_inhomogeneous_bc * sizeof(Number2),
+                                  n_inhomogeneous_bc * sizeof(double),
                                   cudaMemcpyHostToDevice);
           AssertCuda(cuda_error);
 
 
-          set_inhomogeneous_dofs<is_zero, Number2>
+          set_inhomogeneous_dofs<is_zero, double>
             <<<inhomogeneous_grid_dim, inhomogeneous_block_dim>>>(
               inhomogeneous_index,
               inhomogeneous_value,
@@ -851,7 +882,7 @@ namespace PSMF
 
     const SmartPointer<const DoFHandler<dim>> dof_handler;
 
-    std::vector<std::map<types::global_dof_index, Number2>> inhomogeneous_bc;
+    std::vector<std::map<types::global_dof_index, double>> inhomogeneous_bc;
 
     MGConstrainedDoFs mg_constrained_dofs;
 
@@ -870,21 +901,24 @@ namespace PSMF
     /**
      * The solution vector
      */
-    mutable VectorType2 solution;
-    mutable VectorType2 solution_0;
-    mutable VectorType2 solution_old;
-    mutable VectorType2 system_solution;
+    mutable VectorTypeD solution;
+    mutable VectorTypeD solution_0;
+    mutable VectorTypeD solution_old;
+    mutable VectorTypeD system_solution;
 
     /**
      * buffer
      */
     mutable VectorType2 tmp;
+    mutable VectorType2 rhs;
+
+    mutable VectorType2 system_defect;
+    mutable VectorType2 system_update;
 
     /**
      * Original right hand side vector
      */
-    mutable VectorType2 rhs;
-    mutable VectorType2 system_rhs;
+    mutable VectorTypeD system_rhs;
 
     /**
      * Input vector for the cycle. Contains the defect of the outer method
