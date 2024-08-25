@@ -35,6 +35,8 @@
 
 // Solving Heat equation with implicit Euler time discretizations
 
+// #define PERF
+
 namespace Step64
 {
   using namespace dealii;
@@ -240,6 +242,9 @@ namespace Step64
     int mem_usage = (total_mem - free_mem) / 1024 / 1024;
     *pcout << "GPU Memory stats [MB]: " << mem_usage << "\n\n";
 
+#ifdef PERF
+    double time_gmres = 0;
+#else
     double time_gmres = 1e10;
     for (unsigned int i = 0; i < 5; ++i)
       {
@@ -248,6 +253,7 @@ namespace Step64
         cudaDeviceSynchronize();
         time_gmres = std::min(time.wall_time(), time_gmres);
       }
+#endif
     *pcout << "Time solve GMRES (one time step): " << time_gmres << "\n";
 
     std::optional<std::pair<ReductionControl, double>> it_data =
@@ -266,6 +272,23 @@ namespace Step64
     auto history_data = solver_control.get_history_data();
     for (auto i = 1U; i < n_iter + 1; ++i)
       *pcout << "step " << i << ": " << history_data[i] / residual_0 << "\n";
+    *pcout << std::endl;
+
+#ifdef PERF
+    std::vector<double> error_gmres(3, 0);
+    std::vector<double> error_gmres_N(3, 0);
+    std::vector<double> error_cheb(3, 0);
+
+    auto timing_result = solver.get_timing();
+
+    *pcout << "system_mat-vec: " << timing_result[0] << std::endl
+           << "system_prec:    " << timing_result[1] << std::endl
+           << "local_prec:     " << timing_result[2] << std::endl
+           << "local_mv:       " << timing_result[3] << std::endl
+           << "local_mv_sp:    " << timing_result[4] << std::endl
+           << "smoother:       " << timing_result[5] << std::endl
+           << std::endl;
+#else
 
     {
       auto solution = solver.get_solution();
@@ -355,6 +378,7 @@ namespace Step64
            << "L\u221E error: " << error_cheb[1] << std::endl
            << "H1 error: " << error_cheb[2] << std::endl
            << std::endl;
+#endif
 
 
     convergence_table.add_value("cells", triangulation.n_global_active_cells());
@@ -376,6 +400,7 @@ namespace Step64
     convergence_table.add_value("inner_its_avg", it_data->second);
     convergence_table.add_value("GPU_mem_usage", mem_usage);
 
+#ifndef PERF
     convergence_table_N.add_value("cells",
                                   triangulation.n_global_active_cells());
     convergence_table_N.add_value("dofs", dof_handler.n_dofs());
@@ -393,6 +418,7 @@ namespace Step64
     convergence_table_cheb.add_value("chebyshev_time", time_chebyshev);
     convergence_table_cheb.add_value("chebyshev_its", n_iter_cheb);
     convergence_table_cheb.add_value("inner_its_avg", it_data_cheb->second);
+#endif
   }
 
 
@@ -519,6 +545,7 @@ namespace Step64
         oss << "\n Time = " << tau * 1 << "\n";
         convergence_table.write_text(oss);
 
+#ifndef PERF
         auto set_format_conv_N = [&](auto name) {
           convergence_table_N.set_scientific(name, true);
           convergence_table_N.set_precision(name, 3);
@@ -553,6 +580,7 @@ namespace Step64
         convergence_table_cheb.set_precision("chebyshev_time", 3);
 
         convergence_table_cheb.write_text(oss);
+#endif
 
         *pcout << oss.str() << std::endl;
 
