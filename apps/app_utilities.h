@@ -111,6 +111,7 @@ namespace Util
     oss << str_granularity;
     oss << "_" << value_type_gmres;
     oss << "_" << value_type_v;
+    oss << "_SOL" << CT::SOLVER_;
 
     return oss.str();
   }
@@ -143,6 +144,10 @@ namespace Util
     auto mps   = deviceProp.multiProcessorCount;
     auto cores = _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor);
 
+    auto inner_solver = CT::SOLVER_ == 0 ? "GMRES" :
+                        CT::SOLVER_ == 1 ? "FGMRES" :
+                        CT::SOLVER_ == 2 ? "GCR" :
+                                           "CG";
 
     std::ostringstream oss;
 
@@ -169,7 +174,8 @@ namespace Util
         << "Outer tolerance:                " << CT::REDUCE_ << std::endl
         << "Inner tolerance:                " << CT::REDUCE_INNER_ << std::endl
         << "Number type for V-cycle:        " << value_type_v << std::endl
-        << "Number type for inner GMRES:    " << value_type_gmres << std::endl
+        << "Number type for inner solver:   " << value_type_gmres << std::endl
+        << "Inner solver Variant:           " << inner_solver << std::endl
         << "Smoother Variant:               ";
     for (unsigned int k = 0; k < CT::KERNEL_TYPE_.size(); ++k)
       oss << SmootherToString(CT::KERNEL_TYPE_[k]) << " ";

@@ -158,6 +158,299 @@ namespace PSMF
     }
   };
 
+  // #define MIXED
+
+  template <typename VectorType>
+  class MYSolverFGMRES : public SolverBase<VectorType>
+  {
+  public:
+    using VectorTypeF =
+      LinearAlgebra::distributed::Vector<float, MemorySpace::CUDA>;
+
+    MYSolverFGMRES(SolverControl     &solver_control,
+                   const unsigned int GCRmaxit = 20)
+      : SolverBase<VectorType>(solver_control)
+      , GCRmaxit(GCRmaxit)
+#ifdef MIXED
+      , mem(static_vector_memory)
+#endif
+    {
+      solver_control.set_max_steps(GCRmaxit);
+    }
+
+    template <typename MatrixType, typename PreconditionerType>
+    void
+    solve(const MatrixType         &A,
+          VectorType               &x,
+          const VectorType         &b,
+          const PreconditionerType &preconditioner)
+    {
+      SolverControl::State iteration_state = SolverControl::iterate;
+
+      const unsigned int basis_size = GCRmaxit;
+#ifdef MIXED
+      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorTypeF> v(
+        basis_size, this->mem);
+      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorTypeF> z(
+        basis_size, this->mem);
+#else
+      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> v(
+        basis_size, this->memory);
+      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> z(
+        basis_size, this->memory);
+#endif
+
+      unsigned int accumulated_iterations = 0;
+
+      H.reinit(basis_size + 1, basis_size);
+
+      Vector<double> projected_rhs;
+      Vector<double> y;
+
+      double res = std::numeric_limits<double>::lowest();
+
+#ifdef MIXED
+      typename VectorMemory<VectorType>::Pointer aux_t(this->memory);
+      aux_t->reinit(x);
+
+      typename VectorMemory<VectorType>::Pointer tmp(this->memory);
+      tmp->reinit(x);
+
+      typename VectorMemory<VectorTypeF>::Pointer aux(this->mem);
+      aux->reinit(x.size());
+#else
+      typename VectorMemory<VectorType>::Pointer aux(this->memory);
+      aux->reinit(x);
+#endif
+
+      do
+        {
+#ifdef MIXED
+          A.vmult(*aux_t, x);
+          aux_t->sadd(-1., 1., b);
+          convert_precision<true>(*aux, *aux_t);
+#else
+          A.vmult(*aux, x);
+          aux->sadd(-1., 1., b);
+#endif
+
+          double beta = aux->l2_norm();
+          res         = beta;
+          iteration_state =
+            this->iteration_status(accumulated_iterations, res, x);
+          if (iteration_state == SolverControl::success)
+            break;
+
+          H.reinit(basis_size + 1, basis_size);
+          double a = beta;
+
+          for (unsigned int j = 0; j < basis_size; ++j)
+            {
+              if (a != 0) // treat lucky breakdown
+                v(j, *aux).equ(1. / a, *aux);
+              else
+                v(j, *aux) = 0.;
+
+
+              preconditioner.vmult(z(j, *aux), v[j]);
+#ifdef MIXED
+              convert_precision<false>(*tmp, z[j]);
+              A.vmult(*aux_t, *tmp);
+              convert_precision<true>(*aux, *aux_t);
+#else
+              A.vmult(*aux, z[j]);
+#endif
+
+              // Gram-Schmidt
+              H(0, j) = *aux * v[0];
+              for (unsigned int i = 1; i <= j; ++i)
+                H(i, j) = aux->add_and_dot(-H(i - 1, j), v[i - 1], v[i]);
+              H(j + 1, j) = a =
+                std::sqrt(aux->add_and_dot(-H(j, j), v[j], *aux));
+
+              // Compute projected solution
+
+              if (j > 0)
+                {
+                  H1.reinit(j + 1, j);
+                  projected_rhs.reinit(j + 1);
+                  y.reinit(j);
+                  projected_rhs(0) = beta;
+                  H1.fill(H);
+
+                  Householder<double> house(H1);
+                  res = house.least_squares(y, projected_rhs);
+                  iteration_state =
+                    this->iteration_status(++accumulated_iterations, res, x);
+                  if (iteration_state != SolverControl::iterate)
+                    break;
+                }
+            }
+
+          // Update solution vector
+          for (unsigned int j = 0; j < y.size(); ++j)
+            internal::vec_add(x, z[j], x.size(), y(j), 0, 0);
+          // x.add(y(j), z[j]);
+        }
+      while (iteration_state == SolverControl::iterate);
+
+      // in case of failure: throw exception
+      if (iteration_state != SolverControl::success)
+        AssertThrow(false,
+                    SolverControl::NoConvergence(accumulated_iterations, res));
+    }
+
+
+
+  private:
+    const unsigned int GCRmaxit;
+
+    FullMatrix<double> H;
+    FullMatrix<double> H1;
+
+#ifdef MIXED
+    mutable GrowingVectorMemory<VectorTypeF> static_vector_memory;
+
+    VectorMemory<VectorTypeF> &mem;
+#endif
+  };
+
+
+  template <typename VectorType>
+  class SolverGCR : public SolverBase<VectorType>
+  {
+  public:
+    using VectorTypeF =
+      LinearAlgebra::distributed::Vector<float, MemorySpace::CUDA>;
+
+    SolverGCR(SolverControl &solver_control, const unsigned int GCRmaxit = 20)
+      : SolverBase<VectorType>(solver_control)
+      , GCRmaxit(GCRmaxit)
+    {
+      solver_control.set_max_steps(GCRmaxit);
+    }
+
+    template <typename MatrixType, typename PreconditionerType>
+    void
+    solve(const MatrixType         &A,
+          VectorType               &x,
+          const VectorType         &b,
+          const PreconditionerType &preconditioner)
+    {
+      using number = typename VectorType::value_type;
+
+      SolverControl::State conv = SolverControl::iterate;
+
+      typename VectorMemory<VectorType>::Pointer search_pointer(this->memory);
+      typename VectorMemory<VectorType>::Pointer Asearch_pointer(this->memory);
+      typename VectorMemory<VectorType>::Pointer p_pointer(this->memory);
+
+      VectorType &search  = *search_pointer;
+      VectorType &Asearch = *Asearch_pointer;
+      VectorType &p       = *p_pointer;
+
+      std::vector<typename VectorType::value_type> Hn_preloc;
+      Hn_preloc.reserve(GCRmaxit);
+
+      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> H_vec(
+        GCRmaxit, this->memory);
+      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType>
+        Hd_vec(GCRmaxit, this->memory);
+
+
+      search.reinit(x);
+      Asearch.reinit(x);
+      p.reinit(x);
+
+      A.vmult(p, x);
+      p.add(-1., b);
+
+      double res = p.l2_norm();
+
+      unsigned int it = 0;
+
+      conv = this->iteration_status(it, res, x);
+      if (conv != SolverControl::iterate)
+        return;
+
+      while (conv == SolverControl::iterate)
+        {
+          it++;
+
+          preconditioner.vmult(search, p);
+
+          H_vec(it - 1, x);
+          Hd_vec(it - 1, x);
+
+          Hn_preloc.resize(it);
+
+          A.vmult(Asearch, search);
+
+          for (unsigned int i = 0; i < it - 1; ++i)
+            {
+              const double temptest = (H_vec[i] * Asearch) / Hn_preloc[i];
+              Asearch.add(-temptest, H_vec[i]);
+              search.add(-temptest, Hd_vec[i]);
+            }
+
+          const double nAsearch_new = Asearch.norm_sqr();
+          Hn_preloc[it - 1]         = nAsearch_new;
+          H_vec[it - 1]             = Asearch;
+          Hd_vec[it - 1]            = search;
+
+          Assert(std::abs(nAsearch_new) != 0., ExcDivideByZero());
+
+          const double c_preloc = (Asearch * p) / nAsearch_new;
+          x.add(-c_preloc, search);
+          p.add(-c_preloc, Asearch);
+
+          res = p.l2_norm();
+
+          conv = this->iteration_status(it, res, x);
+        }
+
+      if (conv != SolverControl::success)
+        AssertThrow(false, SolverControl::NoConvergence(it, res));
+    }
+
+  private:
+    const unsigned int GCRmaxit;
+  };
+
+
+
+  // 0: GMRES
+  // 1: FGMRES
+  // 2: GCR
+  // 3: CG
+  template <int N, typename Vectype>
+  struct SelectSolver;
+
+  template <typename Vectype>
+  struct SelectSolver<0, Vectype>
+  {
+    using type = SolverGMRES<Vectype>;
+  };
+
+  template <typename Vectype>
+  struct SelectSolver<1, Vectype>
+  {
+    using type = MYSolverFGMRES<Vectype>;
+    // using type = SolverFGMRES<Vectype>;
+  };
+
+  template <typename Vectype>
+  struct SelectSolver<2, Vectype>
+  {
+    using type = SolverGCR<Vectype>;
+  };
+
+  template <typename Vectype>
+  struct SelectSolver<3, Vectype>
+  {
+    using type = SolverCG<Vectype>;
+  };
+
   template <int dim, int fe_degree, typename Number, typename Number2>
   class Preconditioner
   {
@@ -514,9 +807,15 @@ namespace PSMF
             PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>>(
             dof_handler, *mg, transfer);
 
+#ifdef MIXED
+          precon =
+            std::make_unique<Preconditioner<dim, fe_degree, Number, Number>>(
+              *preconditioner_mg, rhs.size());
+#else
           precon =
             std::make_unique<Preconditioner<dim, fe_degree, Number, Number2>>(
               *preconditioner_mg, rhs.size());
+#endif
         }
 
       *pcout << "Time initial smoother:    " << time.wall_time() << std::endl;
@@ -608,7 +907,7 @@ namespace PSMF
       solver_control.enable_history_data();
       solver_control.log_history(true);
 
-      SolverGMRES<VectorTypeD> solver_gmres(solver_control);
+      SolverFGMRES<VectorTypeD> solver_gmres(solver_control);
 
       solution        = solution_0;
       solution_old    = solution_0;
@@ -639,17 +938,17 @@ namespace PSMF
           solver_gmres.solve(system_matrix, system_solution, system_rhs, *this);
 
           if (do_analyze)
-            *pcout << "Time solve GMRES: " << time.wall_time() << "\n";
+            *pcout << "Time solve FGMRES: " << time.wall_time() << "\n";
 
           if (do_analyze)
             *pcout << "     " << solver_control.last_step()
-                   << " outer GMRES iterations and " << n_inner_its[0];
+                   << " outer FGMRES iterations and " << n_inner_its[0];
 
           if (do_analyze)
             {
               for (unsigned int i = 1; i < n_stages; ++i)
                 *pcout << "+" << n_inner_its[i];
-              *pcout << " inner FGMRES iterations. \n\n";
+              *pcout << " inner iterations. \n\n";
             }
 
           system_matrix.compute_solution(solution, system_solution);
@@ -807,8 +1106,9 @@ namespace PSMF
                                       1e-10,
                                       CT::REDUCE_INNER_);
 
-      // NOTE: For double-precision, GMRES has fewer iteration step than FGMRES.
-      SolverFGMRES<VectorType2> solver(solver_control);
+      typename SelectSolver<CT::SOLVER_, VectorType2>::type solver(
+        solver_control);
+
       for (unsigned int i = 0; i < n_stages; ++i)
         {
           current_stage = i;
@@ -915,7 +1215,9 @@ namespace PSMF
     void
     do_precon()
     {
+#ifndef MIXED
       precon->vmult(tmp, rhs);
+#endif
     }
 
     // run matrix-vector product in double precision
@@ -1125,8 +1427,13 @@ namespace PSMF
       PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>>
       preconditioner_mg;
 
+#ifdef MIXED
+    mutable std::unique_ptr<Preconditioner<dim, fe_degree, Number, Number>>
+      precon;
+#else
     mutable std::unique_ptr<Preconditioner<dim, fe_degree, Number, Number2>>
       precon;
+#endif
 
     mutable unsigned int all_mg_counter = 0;
 

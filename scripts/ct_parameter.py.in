@@ -171,6 +171,14 @@ def parse_args():
         choices=["none", "kernel", "error_analysis", "vnum"],
         help="sets of experiments used for comparsion",
     )
+    parser.add_argument(
+        "-SOL",
+        "--inner_solver",
+        default=1,
+        type=int,
+        choices=range(0, 4),
+        help="inner solver type",
+    )
     args = parser.parse_args()
     assert os.path.isdir(args.log_directory), "Invalid directory path: {}".format(
         args.log_directory
@@ -212,6 +220,7 @@ class Parameter:
         self.gmres_number = ("using", str(options.gmres_number))
         self.log_dir = ("const std::string", rawstr(options.log_directory))
         self.sets = ("const std::string", rawstr(options.test_sets))
+        self.solver = ("constexpr unsigned int", options.inner_solver)
         self.smoother_prm(options.kernel_type)
         self.granularity_prm(options.granularity)
 

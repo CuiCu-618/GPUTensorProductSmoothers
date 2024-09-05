@@ -343,7 +343,7 @@ namespace Step64
     auto timing_result = solver.get_timing();
 
     double time_chebyshev = 1e10;
-    for (unsigned int i = 0; i < 5; ++i)
+    for (unsigned int i = 0; i < 1; ++i)
       {
         time.restart();
         solver.solve_chebyshev(false);
