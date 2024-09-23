@@ -315,7 +315,6 @@ namespace PSMF
 #endif
   };
 
-
   template <typename VectorType>
   class SolverGCR : public SolverBase<VectorType>
   {
@@ -349,25 +348,33 @@ namespace PSMF
       VectorType &Asearch = *Asearch_pointer;
       VectorType &p       = *p_pointer;
 
-      std::vector<typename VectorType::value_type> Hn_preloc;
-      Hn_preloc.reserve(GCRmaxit);
-
-      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> H_vec(
-        GCRmaxit, this->memory);
-      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType>
-        Hd_vec(GCRmaxit, this->memory);
-
-
       search.reinit(x);
       Asearch.reinit(x);
       p.reinit(x);
 
       A.vmult(p, x);
-      p.add(-1., b);
-
+      p.add(-1., b); // p = A*x- b # Initalize residual
+      p *= -1;	// p = b-A*x # fix sign, this should perhaps be reorganized.
+       
       double res = p.l2_norm();
-
       unsigned int it = 0;
+
+      // Allocate "vectors of vectors"
+      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> z_vec(GCRmaxit, this->memory);
+      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> c_vec_h(GCRmaxit, this->memory);
+      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> c_vec(GCRmaxit, this->memory);
+
+      typename VectorMemory<VectorType>::Pointer aux(this->memory);
+      aux->reinit(x);
+
+      FullMatrix<double> gamma(GCRmaxit,GCRmaxit);
+      
+      std::vector<typename VectorType::value_type> alpha_vec;
+      alpha_vec.reserve(GCRmaxit);       
+      
+      std::vector<typename VectorType::value_type> u_vec;
+      u_vec.reserve(GCRmaxit);             
+      alpha_vec.resize(GCRmaxit);      
 
       conv = this->iteration_status(it, res, x);
       if (conv != SolverControl::iterate)
@@ -375,47 +382,50 @@ namespace PSMF
 
       while (conv == SolverControl::iterate)
         {
-          it++;
-
-          preconditioner.vmult(search, p);
-
-          H_vec(it - 1, x);
-          Hd_vec(it - 1, x);
-
-          Hn_preloc.resize(it);
-
-          A.vmult(Asearch, search);
-
-          for (unsigned int i = 0; i < it - 1; ++i)
-            {
-              const double temptest = (H_vec[i] * Asearch) / Hn_preloc[i];
-              Asearch.add(-temptest, H_vec[i]);
-              search.add(-temptest, Hd_vec[i]);
-            }
-
-          const double nAsearch_new = Asearch.norm_sqr();
-          Hn_preloc[it - 1]         = nAsearch_new;
-          H_vec[it - 1]             = Asearch;
-          Hd_vec[it - 1]            = search;
-
-          Assert(std::abs(nAsearch_new) != 0., ExcDivideByZero());
-
-          const double c_preloc = (Asearch * p) / nAsearch_new;
-          x.add(-c_preloc, search);
-          p.add(-c_preloc, Asearch);
-
-          res = p.l2_norm();
-
-          conv = this->iteration_status(it, res, x);
+		  it++;
+		  preconditioner.vmult(search, p);      
+		  z_vec(it-1,*aux)=search;  
+		  A.vmult(Asearch, search);
+                  c_vec_h(0,*aux)=Asearch;
+		 for( unsigned int i=1 ; i<=it-1 ; i++ ){
+                         gamma(i-1,it-1) = c_vec[i-1]*c_vec_h[i-1];			
+		        c_vec_h(i,*aux)=c_vec_h[i-1]; 
+			c_vec_h(i,*aux).add(-gamma(i-1,it-1),c_vec[i-1]);
+		 }                      
+		gamma(it-1,it-1) = std::sqrt(aux->add_and_dot(1.0 ,  c_vec_h[it-1], c_vec_h[it-1]) );  
+                c_vec(it-1,*aux).equ( (1./gamma(it-1,it-1)), c_vec_h[it-1] );
+		alpha_vec[it-1] = c_vec[it-1] * p; 
+		p.add( -alpha_vec[it-1] , c_vec[it-1] ); 
+		res = p.l2_norm();
+	        conv = this->iteration_status(it, res, x); // I dont think we should send x here as we have not yet updated the solution
+	}
+	if (conv != SolverControl::success)
+        	AssertThrow(false, SolverControl::NoConvergence(it, res));
+       
+        u_vec.resize(it);
+        for( int j = it; j>=1 ; j--){
+        	for( int i = it; i>=j ; i--){
+        		if( i == j){
+       				u_vec[j-1] = alpha_vec[j-1]/gamma(j-1,i-1); 
+        		}else{
+        			alpha_vec[j-1] = alpha_vec[j-1] - gamma(j-1,i-1)*u_vec[i-1];
+        		}
+        	}
         }
-
-      if (conv != SolverControl::success)
-        AssertThrow(false, SolverControl::NoConvergence(it, res));
-    }
+	for( int i = 1; i<=it; i++){
+		x.add(u_vec[i-1],z_vec[i-1]);
+	}
+        
+        conv = this->iteration_status(it, res, x);
+        if (conv != SolverControl::success)
+            AssertThrow(false, SolverControl::NoConvergence(it, res));
+         
+        }
 
   private:
     const unsigned int GCRmaxit;
   };
+
 
 
 
