@@ -382,38 +382,46 @@ namespace PSMF
 
       while (conv == SolverControl::iterate)
         {
-		  it++;
+		  //it++;
+                  printf("Flag 1 \n");
 		  preconditioner.vmult(search, p);      
-		  z_vec(it-1,*aux)=search;  
+		  z_vec(it,*aux)=search;  
 		  A.vmult(Asearch, search);
                   c_vec_h(0,*aux)=Asearch;
-		 for( unsigned int i=1 ; i<=it-1 ; i++ ){
-                         gamma(i-1,it-1) = c_vec[i-1]*c_vec_h[i-1];			
-		        c_vec_h(i,*aux)=c_vec_h[i-1]; 
-			c_vec_h(i,*aux).add(-gamma(i-1,it-1),c_vec[i-1]);
-		 }                      
-		gamma(it-1,it-1) = std::sqrt(aux->add_and_dot(1.0 ,  c_vec_h[it-1], c_vec_h[it-1]) );  
-                c_vec(it-1,*aux).equ( (1./gamma(it-1,it-1)), c_vec_h[it-1] );
-		alpha_vec[it-1] = c_vec[it-1] * p; 
-		p.add( -alpha_vec[it-1] , c_vec[it-1] ); 
+		 for( unsigned int i=0 ; i< it ; i++ ){
+	                printf("Flag 2 \n");
+                        gamma(i,it) = c_vec[i]*c_vec_h[i];			
+		        c_vec_h(i+1,*aux)=c_vec_h[i]; 
+			c_vec_h(i+1,*aux).add(-gamma(i,it),c_vec[i]);
+		 }                    
+                printf("Flag 3 \n");
+		gamma(it,it) = std::sqrt(aux->add_and_dot(1.0 ,  c_vec_h[it], c_vec_h[it]) );  
+                c_vec(it,*aux).equ( (1./gamma(it,it)), c_vec_h[it] );
+		alpha_vec[it] = c_vec[it] * p; 
+		p.add( -alpha_vec[it] , c_vec[it] ); 
 		res = p.l2_norm();
+                printf("Flag 4 \n");
+		it++;
 	        conv = this->iteration_status(it, res, x); // I dont think we should send x here as we have not yet updated the solution
 	}
 	if (conv != SolverControl::success)
         	AssertThrow(false, SolverControl::NoConvergence(it, res));
        
+        printf("Flag 5 \n");
         u_vec.resize(it);
-        for( int j = it; j>=1 ; j--){
-        	for( int i = it; i>=j ; i--){
-        		if( i == j){
-       				u_vec[j-1] = alpha_vec[j-1]/gamma(j-1,i-1); 
-        		}else{
-        			alpha_vec[j-1] = alpha_vec[j-1] - gamma(j-1,i-1)*u_vec[i-1];
-        		}
-        	}
-        }
-	for( int i = 1; i<=it; i++){
-		x.add(u_vec[i-1],z_vec[i-1]);
+	for( int j = it-1; j >= 0; j--){
+	    for( int i = it-1; i >= j; i--){
+		if( i == j){
+		    u_vec[j] = alpha_vec[j] / gamma(j, i); 
+		}else{
+		    alpha_vec[j] = alpha_vec[j] - gamma(j, i) * u_vec[i];
+		}
+	    }
+	}
+        printf("Flag 6 \n");
+
+	for( int i = 0; i<it; i++){
+		x.add(u_vec[i],z_vec[i]);
 	}
         
         conv = this->iteration_status(it, res, x);
