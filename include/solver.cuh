@@ -382,32 +382,26 @@ namespace PSMF
 
       while (conv == SolverControl::iterate)
         {
-		  //it++;
-                  printf("Flag 1 \n");
 		  preconditioner.vmult(search, p);      
 		  z_vec(it,*aux)=search;  
 		  A.vmult(Asearch, search);
                   c_vec_h(0,*aux)=Asearch;
 		 for( unsigned int i=0 ; i< it ; i++ ){
-	                printf("Flag 2 \n");
                         gamma(i,it) = c_vec[i]*c_vec_h[i];			
 		        c_vec_h(i+1,*aux)=c_vec_h[i]; 
 			c_vec_h(i+1,*aux).add(-gamma(i,it),c_vec[i]);
 		 }                    
-                printf("Flag 3 \n");
 		gamma(it,it) = std::sqrt(aux->add_and_dot(1.0 ,  c_vec_h[it], c_vec_h[it]) );  
                 c_vec(it,*aux).equ( (1./gamma(it,it)), c_vec_h[it] );
 		alpha_vec[it] = c_vec[it] * p; 
 		p.add( -alpha_vec[it] , c_vec[it] ); 
 		res = p.l2_norm();
-                printf("Flag 4 \n");
 		it++;
 	        conv = this->iteration_status(it, res, x); // I dont think we should send x here as we have not yet updated the solution
 	}
 	if (conv != SolverControl::success)
         	AssertThrow(false, SolverControl::NoConvergence(it, res));
-       
-        printf("Flag 5 \n");
+
         u_vec.resize(it);
 	for( int j = it-1; j >= 0; j--){
 	    for( int i = it-1; i >= j; i--){
@@ -418,7 +412,6 @@ namespace PSMF
 		}
 	    }
 	}
-        printf("Flag 6 \n");
 
 	for( int i = 0; i<it; i++){
 		x.add(u_vec[i],z_vec[i]);
