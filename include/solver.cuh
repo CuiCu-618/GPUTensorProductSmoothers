@@ -322,11 +322,13 @@ namespace PSMF
     using VectorTypeF =
       LinearAlgebra::distributed::Vector<float, MemorySpace::CUDA>;
 
-    SolverGCR(SolverControl &solver_control, const unsigned int GCRmaxit = 20)
+    SolverGCR(SolverControl &solver_control, const unsigned int GCRmaxit = 20, double tol_current=1e-10)
       : SolverBase<VectorType>(solver_control)
       , GCRmaxit(GCRmaxit)
+      , tol_current(tol_current)
     {
       solver_control.set_max_steps(GCRmaxit);
+      //tol_current = solver_control.tolerance();
     }
 
     template <typename MatrixType, typename PreconditionerType>
@@ -357,13 +359,14 @@ namespace PSMF
       p *= -1;	// p = b-A*x # fix sign, this should perhaps be reorganized.
        
       double res = p.l2_norm();
+      double res_init = res;
       unsigned int it = 0;
 
       // Allocate "vectors of vectors"
       dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> z_vec(GCRmaxit, this->memory);
       dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> c_vec_h(GCRmaxit, this->memory);
       dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> c_vec(GCRmaxit, this->memory);
-
+      
       typename VectorMemory<VectorType>::Pointer aux(this->memory);
       aux->reinit(x);
 
@@ -376,11 +379,14 @@ namespace PSMF
       u_vec.reserve(GCRmaxit);             
       alpha_vec.resize(GCRmaxit);      
 
-      conv = this->iteration_status(it, res, x);
-      if (conv != SolverControl::iterate)
-        return;
+      //conv = true; //this->iteration_status(it, res, x);
+      //if (conv != SolverControl::iterate)
+      //  return;
+  
+      bool flag = true;
+      //double tol_current = solver_control.tolerance();
 
-      while (conv == SolverControl::iterate)
+      while(flag)//while(conv == SolverControl::iterate) //while(flag)
         {
 		  preconditioner.vmult(search, p);      
 		  z_vec(it,*aux)=search;  
@@ -396,11 +402,16 @@ namespace PSMF
 		alpha_vec[it] = c_vec[it] * p; 
 		p.add( -alpha_vec[it] , c_vec[it] ); 
 		res = p.l2_norm();
+		double res_abs = res;
+                res /= res_init ; // Relative stopping criteria
+                //printf("It = %d, Residual = %.9e ; rel. res = %.9e \n",it+1,res_abs, res);
 		it++;
-	        conv = this->iteration_status(it, res, x); // I dont think we should send x here as we have not yet updated the solution
+	        //conv = this->iteration_status(it, res, x); // I dont think we should send x here as we have not yet updated the solution
+		if(res< tol_current || res_abs<tol_current || it == GCRmaxit) flag=false; 
 	}
-	if (conv != SolverControl::success)
-        	AssertThrow(false, SolverControl::NoConvergence(it, res));
+
+	//if (conv != SolverControl::success)
+        //	AssertThrow(false, SolverControl::NoConvergence(it, res));
 
         u_vec.resize(it);
 	for( int j = it-1; j >= 0; j--){
@@ -413,18 +424,22 @@ namespace PSMF
 	    }
 	}
 
-	for( int i = 0; i<it; i++){
+	for(unsigned int i = 0; i<it; i++){
 		x.add(u_vec[i],z_vec[i]);
 	}
-        
-        conv = this->iteration_status(it, res, x);
-        if (conv != SolverControl::success)
-            AssertThrow(false, SolverControl::NoConvergence(it, res));
+
+        conv = this->iteration_status(it, res, x); // I dont think we should send x here as we have not yet updated the solution
+       
+ 
+        //conv = this->iteration_status(it, res, x);
+        //if (conv != SolverControl::success)
+        //    AssertThrow(false, SolverControl::NoConvergence(it, res));
          
         }
 
   private:
     const unsigned int GCRmaxit;
+    double tol_current;
   };
 
 
@@ -918,7 +933,9 @@ namespace PSMF
       solver_control.enable_history_data();
       solver_control.log_history(true);
 
-      SolverFGMRES<VectorTypeD> solver_gmres(solver_control);
+      //SolverFGMRES<VectorTypeD> solver_gmres(solver_control); // change solver here ivomod
+      SolverGCR<VectorTypeD> solver_gmres(solver_control,20,1e-10);
+
 
       solution        = solution_0;
       solution_old    = solution_0;
@@ -1118,7 +1135,7 @@ namespace PSMF
                                       CT::REDUCE_INNER_);
 
       typename SelectSolver<CT::SOLVER_, VectorType2>::type solver(
-        solver_control);
+        solver_control,10,1e-1); // inner solver ivomod
 
       for (unsigned int i = 0; i < n_stages; ++i)
         {
