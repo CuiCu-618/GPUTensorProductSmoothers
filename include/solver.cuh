@@ -328,6 +328,11 @@ namespace PSMF
       , tol_current(tol_current)
     {
       solver_control.set_max_steps(GCRmaxit);
+      z_vec_n.reserve(GCRmaxit);
+      c_vec_h_n.reserve(GCRmaxit);
+      c_vec_n.reserve(GCRmaxit);
+      base_vectors_initalized = false;
+      number_of_init_vectors = 0;
       //tol_current = solver_control.tolerance();
     }
 
@@ -342,93 +347,99 @@ namespace PSMF
 
       SolverControl::State conv = SolverControl::iterate;
 
-      typename VectorMemory<VectorType>::Pointer search_pointer(this->memory);
-      typename VectorMemory<VectorType>::Pointer Asearch_pointer(this->memory);
-      typename VectorMemory<VectorType>::Pointer p_pointer(this->memory);
+      if( !base_vectors_initalized ){
+         search_n.reinit(x);
+         Asearch_n.reinit(x);
+         p_n.reinit(x); 
 
-      VectorType &search  = *search_pointer;
-      VectorType &Asearch = *Asearch_pointer;
-      VectorType &p       = *p_pointer;
+         gamma_n.reinit(GCRmaxit,GCRmaxit); //If we want to keep in class
+         alpha_vec_n.reserve(GCRmaxit);
+         alpha_vec_n.resize(GCRmaxit);
 
-      search.reinit(x);
-      Asearch.reinit(x);
-      p.reinit(x);
+         u_vec_n.reserve(GCRmaxit);
+         u_vec_n.resize(GCRmaxit);
+	 printf("Initalization! \n");
+         base_vectors_initalized = true;
+      }
 
-      A.vmult(p, x);
-      p.add(-1., b); // p = A*x- b # Initalize residual
-      p *= -1;	// p = b-A*x # fix sign, this should perhaps be reorganized.
-       
-      double res = p.l2_norm();
-      double res_init = res;
+
+      //New
+      A.vmult(p_n, x);
+      p_n.add(-1., b); // p = A*x- b # Initalize residual
+      p_n *= -1;  // p = b-A*x # fix sign, this should perhaps be reorganized.
+
+      // new
+      double res_n = p_n.l2_norm();
+      double res_init_n = res_n;
+
+
       unsigned int it = 0;
 
-      // Allocate "vectors of vectors"
-      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> z_vec(GCRmaxit, this->memory);
-      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> c_vec_h(GCRmaxit, this->memory);
-      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> c_vec(GCRmaxit, this->memory);
-      
-      typename VectorMemory<VectorType>::Pointer aux(this->memory);
-      aux->reinit(x);
+      //FullMatrix<typename VectorType::value_type> gamma_n(GCRmaxit,GCRmaxit);
 
-      FullMatrix<double> gamma(GCRmaxit,GCRmaxit);
+      //std::vector<typename VectorType::value_type> alpha_vec_n;
+      //alpha_vec_n.reserve(GCRmaxit);
+      //alpha_vec_n.resize(GCRmaxit);
       
-      std::vector<typename VectorType::value_type> alpha_vec;
-      alpha_vec.reserve(GCRmaxit);       
-      
-      std::vector<typename VectorType::value_type> u_vec;
-      u_vec.reserve(GCRmaxit);             
-      alpha_vec.resize(GCRmaxit);      
+      //std::vector<typename VectorType::value_type> u_vec_n;
+      //u_vec_n.reserve(GCRmaxit);
 
-      //conv = true; //this->iteration_status(it, res, x);
+
+      //this->iteration_status(it, res, x);
       //if (conv != SolverControl::iterate)
       //  return;
-  
+
+ 
       bool flag = true;
-      //double tol_current = solver_control.tolerance();
+      
 
       while(flag)//while(conv == SolverControl::iterate) //while(flag)
         {
-		  preconditioner.vmult(search, p);      
-		  z_vec(it,*aux)=search;  
-		  A.vmult(Asearch, search);
-                  c_vec_h(0,*aux)=Asearch;
+		  if(number_of_init_vectors <= it){ // double check that this not reinitalize too often
+		  	z_vec_n.resize( z_vec_n.size() + 1);
+		 	c_vec_h_n.resize( c_vec_h_n.size() + 1);
+                        c_vec_n.resize( c_vec_h_n.size() + 1);
+		 	z_vec_n.back().reinit(x);
+		 	c_vec_h_n.back().reinit(x);
+                        c_vec_n.back().reinit(x);
+			number_of_init_vectors=it+1;
+		   }
+                  preconditioner.vmult(search_n, p_n);
+                  z_vec_n[it]=search_n;
+                  A.vmult(Asearch_n, search_n);
+                  c_vec_h_n[0]=Asearch_n;
 		 for( unsigned int i=0 ; i< it ; i++ ){
-                        gamma(i,it) = c_vec[i]*c_vec_h[i];			
-		        c_vec_h(i+1,*aux)=c_vec_h[i]; 
-			c_vec_h(i+1,*aux).add(-gamma(i,it),c_vec[i]);
-		 }                    
-		gamma(it,it) = std::sqrt(aux->add_and_dot(1.0 ,  c_vec_h[it], c_vec_h[it]) );  
-                c_vec(it,*aux).equ( (1./gamma(it,it)), c_vec_h[it] );
-		alpha_vec[it] = c_vec[it] * p; 
-		p.add( -alpha_vec[it] , c_vec[it] ); 
-		res = p.l2_norm();
-		double res_abs = res;
-                res /= res_init ; // Relative stopping criteria
+                        gamma_n(i,it) = c_vec_n[i]*c_vec_h_n[i];
+			c_vec_h_n[i+1] = c_vec_h_n[i];
+			c_vec_h_n[i+1].add(-gamma_n(i,it),c_vec_n[i]);
+		 }
+		gamma_n(it,it) = c_vec_h_n[it].l2_norm();
+		c_vec_n[it]=c_vec_h_n[it];
+		c_vec_n[it] *= 1./gamma_n(it,it);
+                alpha_vec_n[it] = c_vec_n[it] * p_n;
+		p_n.add( -alpha_vec_n[it] , c_vec_n[it] );
+                res_n = p_n.l2_norm();
+                double res_abs_n = res_n;
+                res_n /= res_init_n ; // Relative stopping criteria
                 //printf("It = %d, Residual = %.9e ; rel. res = %.9e \n",it+1,res_abs, res);
 		it++;
-	        //conv = this->iteration_status(it, res, x); // I dont think we should send x here as we have not yet updated the solution
-		if(res< tol_current || res_abs<tol_current || it == GCRmaxit) flag=false; 
+	        conv = this->iteration_status(it, res_n, x); // I dont think we should send x here as we have not yet updated the solution
+		if(res_n< tol_current || res_abs_n<tol_current || it == GCRmaxit) flag=false; 
 	}
-
-	//if (conv != SolverControl::success)
-        //	AssertThrow(false, SolverControl::NoConvergence(it, res));
-
-        u_vec.resize(it);
+        u_vec_n.resize(it);
 	for( int j = it-1; j >= 0; j--){
 	    for( int i = it-1; i >= j; i--){
 		if( i == j){
-		    u_vec[j] = alpha_vec[j] / gamma(j, i); 
+                    u_vec_n[j] = alpha_vec_n[j] / gamma_n(j, i); // new
 		}else{
-		    alpha_vec[j] = alpha_vec[j] - gamma(j, i) * u_vec[i];
+                    alpha_vec_n[j] = alpha_vec_n[j] - gamma_n(j, i) * u_vec_n[i]; // new
 		}
 	    }
 	}
-
 	for(unsigned int i = 0; i<it; i++){
-		x.add(u_vec[i],z_vec[i]);
+                x.add(u_vec_n[i],z_vec_n[i]);
 	}
-
-        conv = this->iteration_status(it, res, x); // I dont think we should send x here as we have not yet updated the solution
+        conv = this->iteration_status(it, res_n, x); 
        
  
         //conv = this->iteration_status(it, res, x);
@@ -440,6 +451,22 @@ namespace PSMF
   private:
     const unsigned int GCRmaxit;
     double tol_current;
+    unsigned int number_of_init_vectors; 
+    bool base_vectors_initalized; 
+
+    mutable VectorType search_n;
+    mutable VectorType Asearch_n;
+    mutable VectorType p_n;
+
+    mutable std::vector<VectorType> z_vec_n;
+    mutable std::vector<VectorType> c_vec_h_n;
+    mutable std::vector<VectorType> c_vec_n;
+
+    FullMatrix<typename VectorType::value_type> gamma_n;
+    mutable std::vector<typename VectorType::value_type> alpha_vec_n;
+    mutable std::vector<typename VectorType::value_type> u_vec_n;
+
+
   };
 
 
