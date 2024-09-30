@@ -315,7 +315,6 @@ namespace PSMF
 #endif
   };
 
-
   template <typename VectorType>
   class SolverGCR : public SolverBase<VectorType>
   {
@@ -323,11 +322,18 @@ namespace PSMF
     using VectorTypeF =
       LinearAlgebra::distributed::Vector<float, MemorySpace::CUDA>;
 
-    SolverGCR(SolverControl &solver_control, const unsigned int GCRmaxit = 20)
+    SolverGCR(SolverControl &solver_control, const unsigned int GCRmaxit = 20, double tol_current=1e-10)
       : SolverBase<VectorType>(solver_control)
       , GCRmaxit(GCRmaxit)
+      , tol_current(tol_current)
     {
       solver_control.set_max_steps(GCRmaxit);
+      z_vec_n.reserve(GCRmaxit);
+      c_vec_h_n.reserve(GCRmaxit);
+      c_vec_n.reserve(GCRmaxit);
+      base_vectors_initalized = false;
+      number_of_init_vectors = 0;
+      //tol_current = solver_control.tolerance();
     }
 
     template <typename MatrixType, typename PreconditionerType>
@@ -341,81 +347,128 @@ namespace PSMF
 
       SolverControl::State conv = SolverControl::iterate;
 
-      typename VectorMemory<VectorType>::Pointer search_pointer(this->memory);
-      typename VectorMemory<VectorType>::Pointer Asearch_pointer(this->memory);
-      typename VectorMemory<VectorType>::Pointer p_pointer(this->memory);
+      if( !base_vectors_initalized ){
+         search_n.reinit(x);
+         Asearch_n.reinit(x);
+         p_n.reinit(x); 
 
-      VectorType &search  = *search_pointer;
-      VectorType &Asearch = *Asearch_pointer;
-      VectorType &p       = *p_pointer;
+         gamma_n.reinit(GCRmaxit,GCRmaxit); //If we want to keep in class
+         alpha_vec_n.reserve(GCRmaxit);
+         alpha_vec_n.resize(GCRmaxit);
 
-      std::vector<typename VectorType::value_type> Hn_preloc;
-      Hn_preloc.reserve(GCRmaxit);
-
-      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType> H_vec(
-        GCRmaxit, this->memory);
-      dealii::internal::SolverGMRESImplementation::TmpVectors<VectorType>
-        Hd_vec(GCRmaxit, this->memory);
+         u_vec_n.reserve(GCRmaxit);
+         u_vec_n.resize(GCRmaxit);
+	 printf("Initalization! \n");
+         base_vectors_initalized = true;
+      }
 
 
-      search.reinit(x);
-      Asearch.reinit(x);
-      p.reinit(x);
+      //New
+      A.vmult(p_n, x);
+      p_n.add(-1., b); // p = A*x- b # Initalize residual
+      p_n *= -1;  // p = b-A*x # fix sign, this should perhaps be reorganized.
 
-      A.vmult(p, x);
-      p.add(-1., b);
+      // new
+      double res_n = p_n.l2_norm();
+      double res_init_n = res_n;
 
-      double res = p.l2_norm();
 
       unsigned int it = 0;
 
-      conv = this->iteration_status(it, res, x);
-      if (conv != SolverControl::iterate)
-        return;
+      //FullMatrix<typename VectorType::value_type> gamma_n(GCRmaxit,GCRmaxit);
 
-      while (conv == SolverControl::iterate)
+      //std::vector<typename VectorType::value_type> alpha_vec_n;
+      //alpha_vec_n.reserve(GCRmaxit);
+      //alpha_vec_n.resize(GCRmaxit);
+      
+      //std::vector<typename VectorType::value_type> u_vec_n;
+      //u_vec_n.reserve(GCRmaxit);
+
+
+      //this->iteration_status(it, res, x);
+      //if (conv != SolverControl::iterate)
+      //  return;
+
+ 
+      bool flag = true;
+      
+
+      while(flag)//while(conv == SolverControl::iterate) //while(flag)
         {
-          it++;
-
-          preconditioner.vmult(search, p);
-
-          H_vec(it - 1, x);
-          Hd_vec(it - 1, x);
-
-          Hn_preloc.resize(it);
-
-          A.vmult(Asearch, search);
-
-          for (unsigned int i = 0; i < it - 1; ++i)
-            {
-              const double temptest = (H_vec[i] * Asearch) / Hn_preloc[i];
-              Asearch.add(-temptest, H_vec[i]);
-              search.add(-temptest, Hd_vec[i]);
-            }
-
-          const double nAsearch_new = Asearch.norm_sqr();
-          Hn_preloc[it - 1]         = nAsearch_new;
-          H_vec[it - 1]             = Asearch;
-          Hd_vec[it - 1]            = search;
-
-          Assert(std::abs(nAsearch_new) != 0., ExcDivideByZero());
-
-          const double c_preloc = (Asearch * p) / nAsearch_new;
-          x.add(-c_preloc, search);
-          p.add(-c_preloc, Asearch);
-
-          res = p.l2_norm();
-
-          conv = this->iteration_status(it, res, x);
+		  if(number_of_init_vectors <= it){ // double check that this not reinitalize too often
+		  	z_vec_n.resize( z_vec_n.size() + 1);
+		 	c_vec_h_n.resize( c_vec_h_n.size() + 1);
+                        c_vec_n.resize( c_vec_h_n.size() + 1);
+		 	z_vec_n.back().reinit(x);
+		 	c_vec_h_n.back().reinit(x);
+                        c_vec_n.back().reinit(x);
+			number_of_init_vectors=it+1;
+		   }
+                  preconditioner.vmult(search_n, p_n);
+                  z_vec_n[it]=search_n;
+                  A.vmult(Asearch_n, search_n);
+                  c_vec_h_n[0]=Asearch_n;
+		 for( unsigned int i=0 ; i< it ; i++ ){
+                        gamma_n(i,it) = c_vec_n[i]*c_vec_h_n[i];
+			c_vec_h_n[i+1] = c_vec_h_n[i];
+			c_vec_h_n[i+1].add(-gamma_n(i,it),c_vec_n[i]);
+		 }
+		gamma_n(it,it) = c_vec_h_n[it].l2_norm();
+		c_vec_n[it]=c_vec_h_n[it];
+		c_vec_n[it] *= 1./gamma_n(it,it);
+                alpha_vec_n[it] = c_vec_n[it] * p_n;
+		p_n.add( -alpha_vec_n[it] , c_vec_n[it] );
+                res_n = p_n.l2_norm();
+                double res_abs_n = res_n;
+                res_n /= res_init_n ; // Relative stopping criteria
+                //printf("It = %d, Residual = %.9e ; rel. res = %.9e \n",it+1,res_abs, res);
+		it++;
+	        conv = this->iteration_status(it, res_n, x); // I dont think we should send x here as we have not yet updated the solution
+		if(res_n< tol_current || res_abs_n<tol_current || it == GCRmaxit) flag=false; 
+	}
+        u_vec_n.resize(it);
+	for( int j = it-1; j >= 0; j--){
+	    for( int i = it-1; i >= j; i--){
+		if( i == j){
+                    u_vec_n[j] = alpha_vec_n[j] / gamma_n(j, i); // new
+		}else{
+                    alpha_vec_n[j] = alpha_vec_n[j] - gamma_n(j, i) * u_vec_n[i]; // new
+		}
+	    }
+	}
+	for(unsigned int i = 0; i<it; i++){
+                x.add(u_vec_n[i],z_vec_n[i]);
+	}
+        conv = this->iteration_status(it, res_n, x); 
+       
+ 
+        //conv = this->iteration_status(it, res, x);
+        //if (conv != SolverControl::success)
+        //    AssertThrow(false, SolverControl::NoConvergence(it, res));
+         
         }
-
-      if (conv != SolverControl::success)
-        AssertThrow(false, SolverControl::NoConvergence(it, res));
-    }
 
   private:
     const unsigned int GCRmaxit;
+    double tol_current;
+    unsigned int number_of_init_vectors; 
+    bool base_vectors_initalized; 
+
+    mutable VectorType search_n;
+    mutable VectorType Asearch_n;
+    mutable VectorType p_n;
+
+    mutable std::vector<VectorType> z_vec_n;
+    mutable std::vector<VectorType> c_vec_h_n;
+    mutable std::vector<VectorType> c_vec_n;
+
+    FullMatrix<typename VectorType::value_type> gamma_n;
+    mutable std::vector<typename VectorType::value_type> alpha_vec_n;
+    mutable std::vector<typename VectorType::value_type> u_vec_n;
+
+
   };
+
 
 
 
@@ -907,7 +960,10 @@ namespace PSMF
       solver_control.enable_history_data();
       solver_control.log_history(true);
 
-      SolverFGMRES<VectorTypeD> solver_gmres(solver_control);
+      //SolverFGMRES<VectorTypeD> solver_gmres(solver_control); // change solver here ivomod
+      printf("Setting up outer solver... \n");
+      SolverGCR<VectorTypeD> solver_gmres(solver_control,20,1e-10);
+
 
       solution        = solution_0;
       solution_old    = solution_0;
@@ -976,7 +1032,8 @@ namespace PSMF
       solver_control.enable_history_data();
       solver_control.log_history(true);
 
-      SolverGMRES<VectorTypeD> solver_gmres(solver_control);
+      //SolverGMRES<VectorTypeD> solver_gmres(solver_control);
+      SolverGCR<VectorTypeD> solver_gmres(solver_control,20,1e-10); //ivomod outersolver test
 
       solution        = solution_0;
       solution_old    = solution_0;
@@ -1014,7 +1071,8 @@ namespace PSMF
           time.restart();
 
           // solver_gmres.solve(system_matrix, system_solution, system_rhs,
-          // *this);
+          // *this); //ivomod replace this w. outer solver
+
           auto   r     = system_rhs;
           auto   z     = system_rhs;
           auto   p     = z;
@@ -1106,8 +1164,8 @@ namespace PSMF
                                       1e-10,
                                       CT::REDUCE_INNER_);
 
-      typename SelectSolver<CT::SOLVER_, VectorType2>::type solver(
-        solver_control);
+      printf("Set up inner solver... \n");
+      typename SelectSolver<CT::SOLVER_, VectorType2>::type solver(solver_control,10,1e-1); // inner solver ivomod
 
       for (unsigned int i = 0; i < n_stages; ++i)
         {
@@ -1155,7 +1213,7 @@ namespace PSMF
           internal::vec_add(
             rhs, system_defect, tmp.size(), 1., 0, i * tmp.size());
 
-          solver.solve(matrix_dp[maxlevel], tmp, rhs, *precon);
+          solver.solve(matrix_dp[maxlevel], tmp, rhs, *precon); // inner solver call
 
           n_inner_its[i] += solver_control.last_step();
 
