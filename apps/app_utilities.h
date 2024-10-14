@@ -112,7 +112,8 @@ namespace Util
     const auto str_granularity = GranularityToString(CT::GRANULARITY_);
 
     oss << "biharm";
-    oss << std::scientific << std::setprecision(2);
+    // oss << std::scientific << std::setprecision(2);
+    oss << std::setprecision(2);
     oss << "_" << CT::DIMENSION_ << "D";
     oss << "_" << str_dof_layout;
     oss << CT::FE_DEGREE_;
@@ -123,6 +124,7 @@ namespace Util
     oss << str_granularity;
     oss << "_" << value_type;
     oss << "_" << CT::N_SMOOTH_STEPS_ << "s";
+    oss << "_damp" << CT::DAMPING_;
 
     return oss.str();
   }
@@ -191,6 +193,7 @@ namespace Util
         << "Number of MG cycles in V-cycle: " << 1 << std::endl
         << "Number of smoothing steps:      " << CT::N_SMOOTH_STEPS_
         << std::endl
+        << "Damping factor:                 " << CT::DAMPING_ << std::endl
         << std::endl;
 
 

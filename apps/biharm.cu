@@ -36,6 +36,7 @@
 
 #include "app_utilities.h"
 #include "ct_parameter.h"
+#include "patch_base.cuh"
 #include "solver.cuh"
 #include "utilities.cuh"
 
@@ -241,8 +242,8 @@ namespace Step64
     fout.open(filename + ".log", std::ios_base::out);
     pcout = std::make_shared<ConditionalOStream>(fout, true);
 
-    info_table.resize(
-      std::max(CT::LAPLACE_TYPE_.size(), CT::LOCAL_SOLVER_.size()));
+    auto tmp = std::max(CT::LAPLACE_TYPE_.size(), CT::LOCAL_SOLVER_.size());
+    info_table.resize(std::max(tmp, CT::SMOOTH_INV_.size()));
   }
 
   template <int dim, int fe_degree>
@@ -319,7 +320,7 @@ namespace Step64
           // level_constraints.close();
 
           typename MatrixFreeDP::AdditionalData additional_data;
-          additional_data.relaxation         = 1.;
+          additional_data.relaxation         = CT::DAMPING_;
           additional_data.use_coloring       = false;
           additional_data.patch_per_block    = CT::PATCH_PER_BLOCK_;
           additional_data.granularity_scheme = CT::GRANULARITY_;
@@ -395,6 +396,11 @@ namespace Step64
       *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
              << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
              << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+             << LocalSolverToString(CT::LOCAL_SOLVER_[0]) << "]\n";
+    else if (CT::SMOOTH_INV_.size() > 1)
+      *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
+             << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+             << SmootherToString(CT::SMOOTH_INV_[k]) << " "
              << LocalSolverToString(CT::LOCAL_SOLVER_[0]) << "]\n";
     else if (CT::LOCAL_SOLVER_.size() > 1)
       *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
@@ -543,6 +549,31 @@ namespace Step64
                 AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
             }
         }
+    else if (CT::SMOOTH_INV_.size() > 1)
+      for (unsigned int k = 0; k < CT::SMOOTH_INV_.size(); ++k)
+        {
+          switch (CT::SMOOTH_INV_[k])
+            {
+              case PSMF::SmootherVariant::GLOBAL:
+                {
+                  do_solve<CT::LOCAL_SOLVER_[0],
+                           CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           PSMF::SmootherVariant::GLOBAL>(k, call_count);
+                  break;
+                }
+              case PSMF::SmootherVariant::ConflictFree:
+                {
+                  do_solve<CT::LOCAL_SOLVER_[0],
+                           CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           PSMF::SmootherVariant::ConflictFree>(k, call_count);
+                  break;
+                }
+              default:
+                AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+            }
+        }
     else if (CT::LOCAL_SOLVER_.size() > 1)
       for (unsigned int k = 0; k < CT::LOCAL_SOLVER_.size(); ++k)
         {
@@ -659,6 +690,21 @@ namespace Step64
                   oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
                       << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
                       << SmootherToString(CT::SMOOTH_INV_[0]) << " "
+                      << LocalSolverToString(CT::LOCAL_SOLVER_[0]) << "]\n";
+                  info_table[index].write_text(oss);
+
+                  *pcout << oss.str() << std::endl;
+                }
+            else if (CT::SMOOTH_INV_.size() > 1)
+              for (unsigned int k = 0; k < CT::SMOOTH_INV_.size(); ++k)
+                {
+                  unsigned int index = k;
+
+                  std::ostringstream oss;
+
+                  oss << "\n[" << LaplaceToString(CT::LAPLACE_TYPE_[0]) << " "
+                      << LaplaceToString(CT::SMOOTH_VMULT_[0]) << " "
+                      << SmootherToString(CT::SMOOTH_INV_[k]) << " "
                       << LocalSolverToString(CT::LOCAL_SOLVER_[0]) << "]\n";
                   info_table[index].write_text(oss);
 
