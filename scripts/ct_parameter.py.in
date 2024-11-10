@@ -117,7 +117,7 @@ def parse_args():
         "--smooth_inv",
         default="G",
         nargs="+",
-        choices=["GLOBAL", "ConflictFree"],
+        choices=["GLOBAL", "AVS_colored", "AVS_atomic"],
         help="variant of the Schwarz smoother inverse operator",
     )
     parser.add_argument(
@@ -237,8 +237,11 @@ class Parameter:
             if kernel.startswith("G"):
                 kernel_str += r"PSMF::SmootherVariant::GLOBAL, "
                 count += 1
-            elif kernel.endswith("Free"):
-                kernel_str += r"PSMF::SmootherVariant::ConflictFree, "
+            elif kernel.endswith("colored"):
+                kernel_str += r"PSMF::SmootherVariant::AVS_colored, "
+                count += 1
+            elif kernel.endswith("atomic"):
+                kernel_str += r"PSMF::SmootherVariant::AVS_atomic, "
                 count += 1
         self.smooth_inv = (
             "constexpr std::array<PSMF::SmootherVariant, " + str(count) + ">",
@@ -321,4 +324,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

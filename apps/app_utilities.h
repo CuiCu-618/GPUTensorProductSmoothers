@@ -62,7 +62,7 @@
     return name##Strings[static_cast<int>(value)]; \
   }
 
-SMO_MACRO(Smoother, GLOBAL, FUSED_L, ConflictFree, TensorCore);
+SMO_MACRO(Smoother, GLOBAL, AVS_colored, AVS_atomic, ConflictFree);
 LA_MACRO(Laplace, Basic, BasicCell, ConflictFree, TensorCore, TensorCoreMMA);
 SMO_MACRO(LocalSolver, Exact, Bila, KSVD, NN);
 ENUM_MACRO(DoFLayout, DGQ, Q, RT);

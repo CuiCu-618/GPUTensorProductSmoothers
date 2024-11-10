@@ -176,7 +176,11 @@ namespace PSMF
 
             shared_data.local_src[index] = src[global_dof_indices];
 
+#if SCHWARZTYPE == 2
+            shared_data.local_dst[index] = 0;
+#else
             shared_data.local_dst[index] = dst[global_dof_indices];
+#endif
           }
 
         constexpr unsigned int matrix_size = Util::pow(local_dim, 2);
@@ -214,8 +218,13 @@ namespace PSMF
               (threadIdx.y + 1) * n_dofs_per_dim + local_tid_x + 1 +
               gpu_data.first_dof[patch];
 
+#if SCHWARZTYPE == 2
+            atomicAdd(&dst[global_dof_indices],
+                      shared_data.local_dst[index] * gpu_data.relaxation);
+#else
             dst[global_dof_indices] =
               shared_data.local_dst[index] * gpu_data.relaxation;
+#endif
           }
       }
   }
@@ -285,7 +294,11 @@ namespace PSMF
 
             shared_data.local_src[index] = src[global_dof_indices];
 
+#if SCHWARZTYPE == 2
+            shared_data.local_dst[index] = 0;
+#else
             shared_data.local_dst[index] = dst[global_dof_indices];
+#endif
           }
 
         evaluate_smooth_global<dim, fe_degree, Number, local_solver>(
@@ -303,8 +316,13 @@ namespace PSMF
               (threadIdx.y + 1) * n_dofs_per_dim + local_tid_x + 1 +
               gpu_data.first_dof[patch];
 
+#if SCHWARZTYPE == 2
+            atomicAdd(&dst[global_dof_indices],
+                      shared_data.local_dst[index] * gpu_data.relaxation);
+#else
             dst[global_dof_indices] =
               shared_data.local_dst[index] * gpu_data.relaxation;
+#endif
           }
       }
   }

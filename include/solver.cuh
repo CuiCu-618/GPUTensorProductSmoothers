@@ -363,7 +363,7 @@ namespace PSMF
         comp_data.push_back(data);
       };
 
-      for (unsigned int s = 0; s < 2; ++s)
+      for (unsigned int s = 0; s < 3; ++s)
         {
           switch (s)
             {
@@ -589,33 +589,52 @@ namespace PSMF
       solver_control.enable_history_data();
       solver_control.log_history(true);
 
+#if SCHWARZTYPE == 0
       SolverGMRES<VectorType> solver(solver_control);
-
-      {
-        solution[maxlevel] = 0;
-        solver.solve(matrix_dp[maxlevel],
-                     solution[maxlevel],
-                     rhs[maxlevel],
-                     *this);
-        print_timings();
-        clear_timings();
-      }
+      // SolverFGMRES<VectorType> solver(solver_control);
+#else
+      SolverCG<VectorType> solver(solver_control);
+#endif
 
       Timer              time;
       const unsigned int N         = 5;
       double             best_time = 1e10;
-      for (unsigned int i = 0; i < N; ++i)
+
+      bool is_converged = true;
+      try
         {
-          time.reset();
-          time.start();
+          {
+            solution[maxlevel] = 0;
+            solver.solve(matrix_dp[maxlevel],
+                         solution[maxlevel],
+                         rhs[maxlevel],
+                         *this);
+            print_timings();
+            clear_timings();
+          }
 
-          solution[maxlevel] = 0;
-          solver.solve(matrix_dp[maxlevel],
-                       solution[maxlevel],
-                       rhs[maxlevel],
-                       *this);
+          for (unsigned int i = 0; i < N; ++i)
+            {
+              time.reset();
+              time.start();
 
+              solution[maxlevel] = 0;
+              solver.solve(matrix_dp[maxlevel],
+                           solution[maxlevel],
+                           rhs[maxlevel],
+                           *this);
+
+              best_time = std::min(time.wall_time(), best_time);
+            }
+        }
+      catch (...)
+        {
           best_time = std::min(time.wall_time(), best_time);
+
+          is_converged = false;
+
+          *pcout << "\n!!! Solver not Converged within " << CT::MAX_STEPS_
+                 << " steps. !!!\n\n";
         }
 
       auto n_iter     = solver_control.last_step();
@@ -648,9 +667,13 @@ namespace PSMF
       data.mem_usage        = mem_usage;
       solver_data.push_back(data);
 
-      auto history_data = solver_control.get_history_data();
-      for (auto i = 1U; i < n_iter + 1; ++i)
-        *pcout << "step " << i << ": " << history_data[i] / residual_0 << "\n";
+      if (is_converged)
+        {
+          auto history_data = solver_control.get_history_data();
+          for (auto i = 1U; i < n_iter + 1; ++i)
+            *pcout << "step " << i << ": " << history_data[i] / residual_0
+                   << "\n";
+        }
 
       return solver_data;
     }
@@ -1381,33 +1404,51 @@ namespace PSMF
       solver_control.enable_history_data();
       solver_control.log_history(true);
 
+#if SCHWARZTYPE == 0
       SolverGMRES<VectorType> solver(solver_control);
-
-      {
-        solution[maxlevel] = 0;
-        solver.solve(matrix[maxlevel],
-                     solution[maxlevel],
-                     rhs[maxlevel],
-                     *this);
-        print_timings();
-        clear_timings();
-      }
+#else
+      SolverCG<VectorType> solver(solver_control);
+#endif
 
       Timer              time;
       const unsigned int N         = 5;
       double             best_time = 1e10;
-      for (unsigned int i = 0; i < N; ++i)
+
+      bool is_converged = true;
+      try
         {
-          time.reset();
-          time.start();
+          {
+            solution[maxlevel] = 0;
+            solver.solve(matrix[maxlevel],
+                         solution[maxlevel],
+                         rhs[maxlevel],
+                         *this);
+            print_timings();
+            clear_timings();
+          }
 
-          solution[maxlevel] = 0;
-          solver.solve(matrix[maxlevel],
-                       solution[maxlevel],
-                       rhs[maxlevel],
-                       *this);
+          for (unsigned int i = 0; i < N; ++i)
+            {
+              time.reset();
+              time.start();
 
+              solution[maxlevel] = 0;
+              solver.solve(matrix[maxlevel],
+                           solution[maxlevel],
+                           rhs[maxlevel],
+                           *this);
+
+              best_time = std::min(time.wall_time(), best_time);
+            }
+        }
+      catch (...)
+        {
           best_time = std::min(time.wall_time(), best_time);
+
+          is_converged = false;
+
+          *pcout << "\n!!! Solver not Converged within " << CT::MAX_STEPS_
+                 << " steps. !!!\n\n";
         }
 
       auto n_iter     = solver_control.last_step();
@@ -1442,9 +1483,13 @@ namespace PSMF
       data.mem_usage        = mem_usage;
       solver_data.push_back(data);
 
-      auto history_data = solver_control.get_history_data();
-      for (auto i = 1U; i < n_iter + 1; ++i)
-        *pcout << "step " << i << ": " << history_data[i] / residual_0 << "\n";
+      if (is_converged)
+        {
+          auto history_data = solver_control.get_history_data();
+          for (auto i = 1U; i < n_iter + 1; ++i)
+            *pcout << "step " << i << ": " << history_data[i] / residual_0
+                   << "\n";
+        }
 
       return solver_data;
     }

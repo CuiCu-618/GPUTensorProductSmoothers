@@ -22,6 +22,11 @@
 
 using namespace dealii;
 
+#define SCHWARZTYPE 0
+// 0: MVS
+// 1: AVS colored
+// 2: AVS atomic
+
 /**
  * Namespace for the Patch Smoother Matrix-Free
  */
@@ -74,21 +79,24 @@ namespace PSMF
     GLOBAL,
 
     /**
+     * Compute the residual globally, i.e.
+     * r = b - Ax, where A is the system matrix.
+     * additive smoother with coloring
+     */
+    AVS_colored,
+
+    /**
+     * Compute the residual globally, i.e.
+     * r = b - Ax, where A is the system matrix.
+     * additive smoother without coloring, atomic ops instead
+     */
+    AVS_atomic,
+
+    /**
      * Same as above, but with linear thread indicex instead of tmasking
      * boundary threads for local solver.
      */
-    FUSED_L,
-
-    /**
-     * A conflict-free implementation by restructuring shared memory access.
-     */
     ConflictFree,
-
-    /**
-     * Using the Warp Matrix Multiply and Accumulate (WMMA) API introduced in
-     * CUDA 11.0.
-     */
-    TensorCore
   };
 
   enum class LocalSolverVariant

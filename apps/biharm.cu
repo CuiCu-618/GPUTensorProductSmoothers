@@ -342,7 +342,7 @@ namespace Step64
             // level_constraints.close();
 
             typename MatrixFreeSP::AdditionalData additional_data;
-            additional_data.relaxation         = 1.;
+            additional_data.relaxation         = CT::DAMPING_;
             additional_data.use_coloring       = false;
             additional_data.patch_per_block    = CT::PATCH_PER_BLOCK_;
             additional_data.granularity_scheme = CT::GRANULARITY_;
@@ -556,18 +556,35 @@ namespace Step64
             {
               case PSMF::SmootherVariant::GLOBAL:
                 {
+#if SCHWARZTYPE != 0
+                  AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+#endif
                   do_solve<CT::LOCAL_SOLVER_[0],
                            CT::LAPLACE_TYPE_[0],
                            CT::SMOOTH_VMULT_[0],
                            PSMF::SmootherVariant::GLOBAL>(k, call_count);
                   break;
                 }
-              case PSMF::SmootherVariant::ConflictFree:
+              case PSMF::SmootherVariant::AVS_colored:
                 {
+#if SCHWARZTYPE != 1
+                  AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+#endif
                   do_solve<CT::LOCAL_SOLVER_[0],
                            CT::LAPLACE_TYPE_[0],
                            CT::SMOOTH_VMULT_[0],
-                           PSMF::SmootherVariant::ConflictFree>(k, call_count);
+                           PSMF::SmootherVariant::AVS_colored>(k, call_count);
+                  break;
+                }
+              case PSMF::SmootherVariant::AVS_atomic:
+                {
+#if SCHWARZTYPE != 2
+                  AssertThrow(false, ExcMessage("Invalid Smoother Variant."));
+#endif
+                  do_solve<CT::LOCAL_SOLVER_[0],
+                           CT::LAPLACE_TYPE_[0],
+                           CT::SMOOTH_VMULT_[0],
+                           PSMF::SmootherVariant::AVS_atomic>(k, call_count);
                   break;
                 }
               default:

@@ -11,6 +11,8 @@
 
 #include <deal.II/base/graph_coloring.h>
 
+#include <omp.h>
+
 #include <fstream>
 
 #include "loop_kernel.cuh"
@@ -174,7 +176,7 @@ namespace PSMF
                 collection.resize(patch_size);
               if (patch_size == regular_vpatch_size) // regular patch
                 collection[regular_vpatch_size - 1 - v] = cell;
-              else                                   // irregular patch
+              else // irregular patch
                 AssertThrow(false, ExcMessage("TODO irregular vertex patches"));
             }
         }
@@ -307,6 +309,7 @@ namespace PSMF
     graph_ptr_colored.clear();
     if (1)
       {
+#if SCHWARZTYPE != 2
         graph_ptr_colored.resize(regular_vpatch_size);
         for (auto patch = cell_collections.begin();
              patch != cell_collections.end();
@@ -318,6 +321,17 @@ namespace PSMF
                                 first_cell)]
               .push_back(patch);
           }
+#else
+        graph_ptr_colored.resize(1);
+        for (auto patch = cell_collections.begin();
+             patch != cell_collections.end();
+             ++patch)
+          {
+            auto first_cell = (*patch)[0];
+
+            graph_ptr_colored[0].push_back(patch);
+          }
+#endif
       }
     else
       {
@@ -507,7 +521,7 @@ namespace PSMF
                                                        VectorType &dst) const
   {
     op.setup_kernel(patch_per_block);
-
+#if SCHWARZTYPE == 0
     for (unsigned int i = 0; i < graph_ptr_colored.size(); ++i)
       if (n_patches_smooth[i] > 0)
         {
@@ -515,10 +529,29 @@ namespace PSMF
                          dst,
                          get_smooth_data(i),
                          grid_dim_smooth[i],
-                         block_dim_smooth[i]);
+                         block_dim_smooth[i],
+                         i);
 
           AssertCudaKernel();
         }
+#else
+    VectorType tmp(dst);
+
+    for (unsigned int i = 0; i < graph_ptr_colored.size(); ++i)
+      if (n_patches_smooth[i] > 0)
+        {
+          op.loop_kernel(src,
+                         tmp,
+                         get_smooth_data(i),
+                         grid_dim_smooth[i],
+                         block_dim_smooth[i],
+                         i);
+
+          AssertCudaKernel();
+        }
+
+    dst.add(dim == 2 ? 0.25 : 0.1, tmp);
+#endif
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -674,6 +707,7 @@ namespace PSMF
 
     constexpr unsigned dim_z = dim == 2 ? 1 : 3;
 
+#pragma omp parallel for collapse(3) num_threads(dim_z * 3 * 3) schedule(static)
     for (unsigned int i = 0; i < dim_z; ++i)
       for (unsigned int j = 0; j < 3; ++j)
         for (unsigned int k = 0; k < 3; ++k)
@@ -1429,7 +1463,7 @@ namespace PSMF
 
 } // namespace PSMF
 
-  /**
-   * \page patch_base.template
-   * \include patch_base.template.cuh
-   */
+/**
+ * \page patch_base.template
+ * \include patch_base.template.cuh
+ */
