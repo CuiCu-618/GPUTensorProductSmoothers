@@ -108,18 +108,28 @@ DEAL_II_NAMESPACE_OPEN
 
 template class MGTransferBase<
   LinearAlgebra::distributed::Vector<float, MemorySpace::CUDA>>;
+template class MGTransferBase<
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA>>;
 
 template class MGSmootherBase<
   LinearAlgebra::distributed::Vector<float, MemorySpace::CUDA>>;
+template class MGSmootherBase<
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA>>;
 
 template class MGMatrixBase<
   LinearAlgebra::distributed::Vector<float, MemorySpace::CUDA>>;
+template class MGMatrixBase<
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA>>;
 
 template class MGCoarseGridBase<
   LinearAlgebra::distributed::Vector<float, MemorySpace::CUDA>>;
+template class MGCoarseGridBase<
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA>>;
 
 template class Multigrid<
   LinearAlgebra::distributed::Vector<float, MemorySpace::CUDA>>;
+template class Multigrid<
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA>>;
 
 
 template <typename VectorType>

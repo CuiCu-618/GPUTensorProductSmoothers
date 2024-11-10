@@ -118,9 +118,9 @@ namespace Step64
     std::fstream                        fout;
     std::shared_ptr<ConditionalOStream> pcout;
 
-    AffineConstraints<double> constraints;
+    AffineConstraints<full_number> constraints;
 
-    LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+    LinearAlgebra::distributed::Vector<full_number, MemorySpace::Host>
       ghost_solution_host;
   };
 
@@ -175,7 +175,7 @@ namespace Step64
     constraints.clear();
     VectorTools::interpolate_boundary_values(dof_handler,
                                              0,
-                                             Solution<dim>(),
+                                             Solution<dim, full_number>(),
                                              constraints);
     constraints.close();
   }
@@ -184,12 +184,12 @@ namespace Step64
   void
   LaplaceProblem<dim, fe_degree>::solve(unsigned int n_mg_cycles)
   {
-    Solution<dim> analytic_solution;
+    Solution<dim, full_number> analytic_solution;
     PSMF::MultigridSolvers<dim, fe_degree, vcycle_number, full_number> solver(
       dof_handler,
       analytic_solution,
-      RightHandSide<dim>(),
-      Functions::ConstantFunction<dim>(1.),
+      RightHandSide<dim, full_number>(),
+      Functions::ConstantFunction<dim, full_number>(1.),
       pcout,
       n_mg_cycles);
 
@@ -211,7 +211,7 @@ namespace Step64
     *pcout << "GPU Memory stats [MB]: " << mem_usage << "\n\n";
 
     double best_time = 1e10, tot_time = 0;
-    for (unsigned int i = 0; i < 7; ++i)
+    for (unsigned int i = 0; i < 5; ++i)
       {
         time.reset();
         time.start();
@@ -226,15 +226,17 @@ namespace Step64
     {
       auto solution = solver.get_solution();
 
-      LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
-                                             solution_host(solution.size());
-      LinearAlgebra::ReadWriteVector<double> rw_vector(solution.size());
+      LinearAlgebra::distributed::Vector<full_number, MemorySpace::Host>
+        solution_host(solution.size());
+      LinearAlgebra::ReadWriteVector<full_number> rw_vector(solution.size());
       rw_vector.import(solution, VectorOperation::insert);
       solution_host.import(rw_vector, VectorOperation::insert);
       ghost_solution_host = solution_host;
       constraints.distribute(ghost_solution_host);
     }
     const auto [l2_error, H1_error] = compute_error();
+    // auto l2_error = 0;
+    // auto H1_error = 0;
 
     *pcout << "L2 error: " << l2_error << std::endl
            << "H1 error: " << H1_error << std::endl
@@ -265,15 +267,19 @@ namespace Step64
     {
       auto solution = solver.get_solution();
 
-      LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
-                                             solution_host(solution.size());
-      LinearAlgebra::ReadWriteVector<double> rw_vector(solution.size());
+      LinearAlgebra::distributed::Vector<full_number, MemorySpace::Host>
+        solution_host(solution.size());
+      LinearAlgebra::ReadWriteVector<full_number> rw_vector(solution.size());
       rw_vector.import(solution, VectorOperation::insert);
       solution_host.import(rw_vector, VectorOperation::insert);
       ghost_solution_host = solution_host;
       constraints.distribute(ghost_solution_host);
     }
     const auto [l2_error_gmres, H1_error_gmres] = compute_error();
+
+    auto history_data = solver_control->get_history_data();
+    for (auto i = 1U; i < n_iter + 1; ++i)
+      *pcout << "step " << i << ": " << history_data[i] / residual_0 << "\n";
 
     *pcout << "Iterations: " << n_iter << std::endl
            << "frac Its. : " << n_frac << std::endl
@@ -351,7 +357,7 @@ namespace Step64
     Vector<double> cellwise_norm(triangulation.n_active_cells());
     VectorTools::integrate_difference(dof_handler,
                                       ghost_solution_host,
-                                      Solution<dim>(),
+                                      Solution<dim, full_number>(),
                                       cellwise_norm,
                                       QGauss<dim>(fe->degree + 1),
                                       VectorTools::L2_norm);
@@ -363,7 +369,7 @@ namespace Step64
     Vector<double> cellwise_h1norm(triangulation.n_active_cells());
     VectorTools::integrate_difference(dof_handler,
                                       ghost_solution_host,
-                                      Solution<dim>(),
+                                      Solution<dim, full_number>(),
                                       cellwise_h1norm,
                                       QGauss<dim>(fe->degree + 1),
                                       VectorTools::H1_seminorm);
@@ -386,6 +392,8 @@ namespace Step64
         smoother_mem = 0;
 
         *pcout << "Cycle " << cycle << std::endl;
+
+        deallog << "\nCycle " << cycle << std::endl << std::endl;
 
         long long unsigned int n_dofs =
           std::pow(std::pow(2, triangulation.n_global_levels()) * fe_degree + 1,
@@ -462,10 +470,28 @@ main(int argc, char *argv[])
     {
       using namespace Step64;
 
+      std::string value_type = "";
+      if (std::is_same_v<float, CT::VCYCLE_NUMBER_>)
+        value_type = "mixed";
+      else if (std::is_same_v<double, CT::VCYCLE_NUMBER_>)
+        value_type = "double";
+      else
+        AssertThrow(false, ExcMessage("Invalid Vcycle number type."));
+
+      deallog.depth_console(2);
+      std::ofstream logfile("deallog_D" + std::to_string(CT::DIMENSION_) +
+                            "_Q" + std::to_string(CT::FE_DEGREE_) + "_" +
+                            value_type);
+      deallog.attach(logfile);
+
       {
         int device_id = findCudaDevice(argc, (const char **)argv);
         AssertCuda(cudaSetDevice(device_id));
       }
+
+      deallog << "Dim:    " << CT::DIMENSION_ << std::endl
+              << "Degree: " << CT::FE_DEGREE_ << std::endl
+              << std::endl;
 
       {
         LaplaceProblem<CT::DIMENSION_, CT::FE_DEGREE_> Laplace_problem;

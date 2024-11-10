@@ -105,10 +105,7 @@ namespace PSMF
            const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
              &src) const
     {
-      dst = 0.;
-      LocalLaplaceOperator<dim, fe_degree, Number> Laplace_operator;
-      mf_data->cell_loop(Laplace_operator, src, dst);
-      mf_data->copy_constrained_values(src, dst);
+      vmult(dst, src);
     }
 
     void

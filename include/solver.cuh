@@ -22,9 +22,16 @@
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_gmres.h>
 
+#include <deal.II/multigrid/mg_coarse.h>
+#include <deal.II/multigrid/mg_matrix.h>
+#include <deal.II/multigrid/mg_smoother.h>
+#include <deal.II/multigrid/mg_tools.h>
+#include <deal.II/multigrid/multigrid.h>
+
 #include <functional>
 #include <optional>
 
+#include "ct_parameter.h"
 #include "cuda_mg_transfer.cuh"
 #include "dealii/cuda_mf.cuh"
 #include "laplace_operator.cuh"
@@ -1536,9 +1543,9 @@ namespace PSMF
   {
   public:
     MultigridSolvers(const DoFHandler<dim>              &dof_handler,
-                     const Function<dim>                &boundary_values,
-                     const Function<dim>                &right_hand_side,
-                     const Function<dim>                &coefficient,
+                     const Function<dim, Number2>       &boundary_values,
+                     const Function<dim, Number2>       &right_hand_side,
+                     const Function<dim, Number2>       &coefficient,
                      std::shared_ptr<ConditionalOStream> pcout,
                      const unsigned int                  n_cycles = 1)
       : dof_handler(&dof_handler)
@@ -1717,6 +1724,22 @@ namespace PSMF
 
           smooth[level].initialize(matrix[level], smoother_data);
         }
+
+      {
+        MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
+        smoother_data.resize(minlevel, maxlevel);
+        for (unsigned int level = minlevel; level <= maxlevel; ++level)
+          {
+            smoother_data[level].relaxation = 1.;
+            smoother_data[level].patch_per_block =
+              fe_degree == 1 ? 16 : (fe_degree == 2 ? 2 : 1);
+            smoother_data[level].granularity_scheme = CT::GRANULARITY_;
+          }
+
+        mg_smoother.initialize(matrix, smoother_data);
+        mg_coarse.initialize(mg_smoother);
+      }
+
       *pcout << "Time initial smoother:    " << time.wall_time() << std::endl;
     }
 
@@ -1842,13 +1865,43 @@ namespace PSMF
     std::optional<ReductionControl>
     solve_gmres(const bool do_analyze)
     {
-      ReductionControl         solver_control(1000, 1e-16, CT::REDUCE_);
+      mg::Matrix<VectorType> mg_matrix(matrix);
+
+      Multigrid<VectorType> mg(mg_matrix,
+                               mg_coarse,
+                               transfer,
+                               mg_smoother,
+                               mg_smoother,
+                               minlevel,
+                               maxlevel);
+
+      preconditioner_mg = std::make_unique<
+        PreconditionMG<dim,
+                       VectorType,
+                       MGTransferCUDA<dim, Number, CT::DOF_LAYOUT_>>>(
+        *dof_handler, mg, transfer);
+
+
+      ReductionControl solver_control(CT::MAX_STEPS_, 1e-16, CT::REDUCE_);
+      solver_control.enable_history_data();
+      solver_control.log_history(true);
+
+      // typename SolverGMRES<VectorType2>::AdditionalData additional_data;
+      // additional_data.use_default_residual = true;
+      // SolverGMRES<VectorType2> solver_gmres(solver_control, additional_data);
+
       SolverGMRES<VectorType2> solver_gmres(solver_control);
       solution[maxlevel] = 0;
-      solver_gmres.solve(matrix_dp[maxlevel],
-                         solution[maxlevel],
-                         rhs[maxlevel],
-                         *this);
+
+      try
+        {
+          solver_gmres.solve(matrix_dp[maxlevel],
+                             solution[maxlevel],
+                             rhs[maxlevel],
+                             *this);
+        }
+      catch (...)
+        {}
 
       if (do_analyze)
         return solver_control;
@@ -2126,6 +2179,18 @@ namespace PSMF
      */
     MGCoarseFromSmoother<VectorType, MGLevelObject<SmootherType>> coarse;
 
+    MGSmootherPrecondition<
+      LaplaceOperator<dim, fe_degree, Number, CT::DOF_LAYOUT_>,
+      SmootherType,
+      VectorType>
+                                          mg_smoother;
+    MGCoarseGridApplySmoother<VectorType> mg_coarse;
+    mutable std::unique_ptr<
+      PreconditionMG<dim,
+                     VectorType,
+                     MGTransferCUDA<dim, Number, CT::DOF_LAYOUT_>>>
+      preconditioner_mg;
+
     /**
      * Number of cycles to be done in the FMG cycle
      */
@@ -2139,7 +2204,7 @@ namespace PSMF
     /**
      * Function for boundary values that we keep as analytic solution
      */
-    const Function<dim> &analytic_solution;
+    const Function<dim, Number2> &analytic_solution;
 
     std::shared_ptr<ConditionalOStream> pcout;
   };
