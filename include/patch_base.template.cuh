@@ -554,6 +554,9 @@ namespace PSMF
                               h_interior_host_dg.end());
 
     auto copy_mappings_const = [](auto &device, const auto &host) {
+      if (fe_degree >= 4) // TODO:
+        return;
+
       cudaError_t cuda_error =
         cudaMemcpyToSymbol(device,
                            host.data(),
@@ -924,6 +927,9 @@ namespace PSMF
     };
 
     auto fast_diag = [&](auto indices, auto dir) {
+      if (fe_degree >= 4) // TODO:
+        return;
+
       std::array<Table<2, Number>, dim> patch_mass_inv;
       std::array<Table<2, Number>, dim> patch_laplace_inv;
 

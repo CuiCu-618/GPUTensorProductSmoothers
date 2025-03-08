@@ -29,7 +29,17 @@ namespace PSMF
 
     mutable std::size_t shared_mem;
 
+    LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> *buf1;
+    LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> *buf2;
+    LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> *buf3;
+
     LocalLaplace()
+      : shared_mem(0){};
+
+    LocalLaplace(
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &,
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &,
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &)
       : shared_mem(0){};
 
     void
@@ -77,8 +87,21 @@ namespace PSMF
     mutable std::size_t shared_mem;
     mutable dim3        block_dim;
 
+    LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> *buf1;
+    LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> *buf2;
+    LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> *buf3;
+
     LocalLaplace()
       : shared_mem(0){};
+
+    LocalLaplace(
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &b1,
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &b2,
+      LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> &b3)
+      : shared_mem(0)
+      , buf1(&b1)
+      , buf2(&b2)
+      , buf3(&b3){};
 
     void
     setup_kernel(const unsigned int patch_per_block) const
@@ -94,11 +117,15 @@ namespace PSMF
       static constexpr unsigned int n_patch_dofs =
         n_patch_dofs_rt + n_patch_dofs_dg;
 
-      // local_src, local_dst
-      shared_mem += 2 * patch_per_block * n_patch_dofs * sizeof(Number);
+      if constexpr (fe_degree <= 4)
+        {
+          // local_src, local_dst
+          shared_mem += 2 * patch_per_block * n_patch_dofs * sizeof(Number);
 
-      // tmp
-      shared_mem += (dim - 1) * patch_per_block * n_patch_dofs * sizeof(Number);
+          // tmp
+          shared_mem +=
+            (dim - 1) * patch_per_block * n_patch_dofs * sizeof(Number);
+        }
 
       // L M
       shared_mem += dim * patch_per_block * dim * 2 *
@@ -107,10 +134,20 @@ namespace PSMF
       shared_mem += patch_per_block * Util::pow(2 * fe_degree + 3, 2) * dim *
                     dim * sizeof(Number);
 
-      AssertCuda(
-        cudaFuncSetAttribute(laplace_kernel_basic<dim, fe_degree, Number>,
-                             cudaFuncAttributeMaxDynamicSharedMemorySize,
-                             shared_mem));
+      if constexpr (fe_degree <= 4)
+        {
+          AssertCuda(
+            cudaFuncSetAttribute(laplace_kernel_basic<dim, fe_degree, Number>,
+                                 cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 shared_mem));
+        }
+      else
+        {
+          AssertCuda(cudaFuncSetAttribute(
+            laplace_kernel_basic_L2<dim, fe_degree, Number>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            shared_mem));
+        }
 
       block_dim =
         dim3(2 * fe_degree + 3, patch_per_block * dim * (2 * fe_degree + 3));
@@ -124,10 +161,19 @@ namespace PSMF
                 const dim3       &grid_dim,
                 const dim3 &) const
     {
-      laplace_kernel_basic<dim, fe_degree, Number>
-        <<<grid_dim, block_dim, shared_mem>>>(src.get_values(),
-                                              dst.get_values(),
-                                              gpu_data);
+      if constexpr (fe_degree <= 4)
+        laplace_kernel_basic<dim, fe_degree, Number>
+          <<<grid_dim, block_dim, shared_mem>>>(src.get_values(),
+                                                dst.get_values(),
+                                                gpu_data);
+      else
+        laplace_kernel_basic_L2<dim, fe_degree, Number>
+          <<<grid_dim, block_dim, shared_mem>>>(src.get_values(),
+                                                dst.get_values(),
+                                                gpu_data,
+                                                buf1->get_values(),
+                                                buf2->get_values(),
+                                                buf3->get_values());
     }
   };
 
@@ -292,7 +338,9 @@ namespace PSMF
 
       data->set_constrained_values(tmp);
 
-      LocalLaplace<dim, fe_degree, Number, kernel> local_laplace;
+      LocalLaplace<dim, fe_degree, Number, kernel> local_laplace(buf1,
+                                                                 buf2,
+                                                                 buf3);
 
       data->cell_loop(local_laplace, tmp, dst);
 
@@ -313,6 +361,13 @@ namespace PSMF
     {
       const unsigned int n_dofs = dof_handler->n_dofs(mg_level);
       vec.reinit(n_dofs);
+
+      if constexpr (fe_degree > 4)
+        {
+          buf1.reinit(n_dofs * 2);
+          buf2.reinit(n_dofs * 2);
+          buf3.reinit(n_dofs * 2);
+        }
     }
 
     void
@@ -525,6 +580,10 @@ namespace PSMF
     const DoFHandler<dim> *dof_handler;
     const DoFHandler<dim> *dof_handler_v;
     unsigned int           mg_level;
+
+    mutable LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> buf1;
+    mutable LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> buf2;
+    mutable LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA> buf3;
   };
 } // namespace PSMF
 

@@ -240,6 +240,177 @@ namespace PSMF
   }
 
 
+  // higher order elements using L2 cache for local computation
+  template <int dim, int fe_degree, typename Number>
+  __global__ void __launch_bounds__(1024, 1) laplace_kernel_basic_L2(
+    const Number                                                 *src,
+    Number                                                       *dst,
+    const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data,
+    Number                                                       *buf1,
+    Number                                                       *buf2,
+    Number                                                       *buf3)
+  {
+    constexpr int n_dofs_1d = 2 * fe_degree + 3;
+    constexpr int n_dofs_2d = n_dofs_1d * n_dofs_1d;
+
+    constexpr int n_patch_dofs_rt =
+      dim * Util::pow(2 * fe_degree + 2, dim - 1) * (2 * fe_degree + 3);
+    constexpr int n_patch_dofs_dg = Util::pow(2 * fe_degree + 2, dim);
+    constexpr int n_patch_dofs    = n_patch_dofs_rt + n_patch_dofs_dg;
+    constexpr int block_size      = n_dofs_2d * dim;
+
+    constexpr int n_first_dof_rt = n_first_dofs_rt<dim>();
+    constexpr int n_first_dof_dg = 1 << dim;
+
+    const int patch_per_block = gpu_data.patch_per_block;
+    const int local_patch     = threadIdx.y / (n_dofs_1d * dim);
+    const int patch           = local_patch + patch_per_block * blockIdx.x;
+
+    const int tid_y     = threadIdx.y % (n_dofs_1d * dim);
+    const int tid_x     = threadIdx.x;
+    const int tid       = tid_y * n_dofs_1d + tid_x;
+    const int tid_c     = (threadIdx.y % n_dofs_1d) * n_dofs_1d + tid_x;
+    const int component = (threadIdx.y / n_dofs_1d) % dim;
+
+    SharedDataOp<dim, Number, LaplaceVariant::Basic> shared_data(
+      get_shared_data_ptr<Number>(), patch_per_block, n_dofs_1d);
+
+    shared_data.local_src = buf1 + local_patch * n_patch_dofs;
+    shared_data.local_dst = buf2 + local_patch * n_patch_dofs;
+    shared_data.tmp       = buf3 + local_patch * n_patch_dofs;
+
+    if (patch < gpu_data.n_patches)
+      {
+        // L M
+        for (int d = 0; d < dim; ++d)
+          if ((d == 0 && tid_c < n_dofs_2d) ||
+              (d != 0 && tid_c < (n_dofs_1d - 1) * (n_dofs_1d - 1)))
+            {
+              auto dd = component == 0 ? d :
+                        component == 1 ? (d == 0 ? 1 :
+                                          d == 1 ? 0 :
+                                                   2) :
+                                         (d == 0 ? 2 :
+                                          d == 1 ? 0 :
+                                                   1);
+
+              const int shift = local_patch * n_dofs_2d * dim * dim;
+              shared_data
+                .local_mass[shift + (component * dim + d) * n_dofs_2d + tid_c] =
+                gpu_data.rt_mass_1d[d][gpu_data.patch_type[patch * dim + dd] *
+                                         n_dofs_2d +
+                                       tid_c];
+              shared_data
+                .local_laplace[shift + (component * dim + d) * n_dofs_2d +
+                               tid_c] =
+                gpu_data
+                  .rt_laplace_1d[d][gpu_data.patch_type[patch * dim + dd] *
+                                      n_dofs_2d +
+                                    tid_c];
+            }
+
+        {
+          // D
+          const int shift1 = local_patch * n_dofs_2d * dim;
+          if (tid_c < n_dofs_1d * (n_dofs_1d - 1))
+            shared_data.local_mix_der[shift1 + component * n_dofs_2d + tid_c] =
+              -gpu_data
+                 .mix_der_1d[0][gpu_data.patch_type[patch * dim + component] *
+                                  n_dofs_2d +
+                                tid_c];
+          // M
+          const int shift2 = local_patch * n_dofs_2d * dim * (dim - 1);
+          auto      dd1    = component == 0 ? 1 : 0;
+          if (tid_c < (n_dofs_1d - 1) * (n_dofs_1d - 1))
+            shared_data
+              .local_mix_mass[shift2 + component * n_dofs_2d * (dim - 1) +
+                              tid_c] =
+              gpu_data.mix_mass_1d[1][gpu_data.patch_type[patch * dim + dd1] *
+                                        n_dofs_2d +
+                                      tid_c];
+          if (dim == 3)
+            {
+              auto dd2 = component == 2 ? 1 : 2;
+              if (tid_c < (n_dofs_1d - 1) * (n_dofs_1d - 1))
+                shared_data
+                  .local_mix_mass[shift2 + component * n_dofs_2d * (dim - 1) +
+                                  n_dofs_2d + tid_c] =
+                  gpu_data
+                    .mix_mass_1d[2][gpu_data.patch_type[patch * dim + dd2] *
+                                      n_dofs_2d +
+                                    tid_c];
+            }
+        }
+
+
+        for (unsigned int i = 0; i < n_patch_dofs_rt / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_rt)
+            {
+              unsigned int global_dof_index =
+                gpu_data
+                  .first_dof_rt[patch * n_first_dof_rt +
+                                gpu_data.base_dof_rt
+                                  [gpu_data.htol_rt[tid + i * block_size]]] +
+                gpu_data.dof_offset_rt[gpu_data.htol_rt[tid + i * block_size]];
+
+              shared_data
+                .local_src[local_patch * n_patch_dofs + tid + i * block_size] =
+                src[global_dof_index];
+            }
+        for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_dg)
+            {
+              unsigned int global_dof_index_n =
+                gpu_data
+                  .first_dof_dg[patch * n_first_dof_dg +
+                                gpu_data.base_dof_dg
+                                  [gpu_data.htol_dgn[tid + i * block_size]]] +
+                gpu_data.dof_offset_dg[gpu_data.htol_dgn[tid + i * block_size]];
+
+              shared_data.local_src[local_patch * n_patch_dofs +
+                                    n_patch_dofs_rt + tid + i * block_size] =
+                src[global_dof_index_n];
+            }
+
+
+        evaluate_laplace<dim, fe_degree, Number, LaplaceVariant::Basic>(
+          local_patch, &shared_data, &gpu_data);
+        __syncthreads();
+
+        for (unsigned int i = 0; i < n_patch_dofs_rt / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_rt)
+            {
+              unsigned int global_dof_index =
+                gpu_data
+                  .first_dof_rt[patch * n_first_dof_rt +
+                                gpu_data.base_dof_rt
+                                  [gpu_data.htol_rt[tid + i * block_size]]] +
+                gpu_data.dof_offset_rt[gpu_data.htol_rt[tid + i * block_size]];
+
+              atomicAdd(&dst[global_dof_index],
+                        shared_data.local_dst[local_patch * n_patch_dofs + tid +
+                                              i * block_size]);
+            }
+        __syncthreads();
+        for (unsigned int i = 0; i < n_patch_dofs_dg / block_size + 1; ++i)
+          if (tid + i * block_size < n_patch_dofs_dg)
+            {
+              unsigned int global_dof_index =
+                gpu_data
+                  .first_dof_dg[patch * n_first_dof_dg +
+                                gpu_data.base_dof_dg[tid + i * block_size]] +
+                gpu_data.dof_offset_dg[tid + i * block_size];
+
+              atomicAdd(
+                &dst[global_dof_index],
+                shared_data.local_dst[local_patch * n_patch_dofs +
+                                      n_patch_dofs_rt + tid + i * block_size]);
+            }
+      }
+  }
+
+
+
   template <int dim, int fe_degree, typename Number>
   __global__ void
   laplace_kernel_basicpadding(

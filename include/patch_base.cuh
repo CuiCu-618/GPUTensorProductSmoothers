@@ -964,6 +964,17 @@ namespace PSMF
 
       tmp = local_mix_der + n_buff * n_dofs_1d * n_dofs_1d * dim;
     }
+
+    __device__
+    SharedDataOp(Number *data, unsigned int n_buff, unsigned int n_dofs_1d)
+    {
+      local_mass    = data;
+      local_laplace = local_mass + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_mass =
+        local_laplace + n_buff * n_dofs_1d * n_dofs_1d * dim * dim;
+      local_mix_der =
+        local_mix_mass + n_buff * n_dofs_1d * n_dofs_1d * dim * (dim - 1);
+    }
   };
 
   template <int dim, typename Number>

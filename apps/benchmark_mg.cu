@@ -214,6 +214,10 @@ LaplaceProblem<dim, fe_degree>::setup_system()
          << dof_handler_velocity.n_dofs() << " + "
          << dof_handler_pressure.n_dofs() << ")" << std::endl;
 
+  std::cout << "Number of degrees of freedom: " << dof_handler.n_dofs()
+            << " = (" << dof_handler_velocity.n_dofs() << " + "
+            << dof_handler_pressure.n_dofs() << ")" << std::endl;
+
   *pcout << "DoF setup time:         " << time.wall_time() << "s" << std::endl;
 
   time.restart();
@@ -978,8 +982,8 @@ LaplaceProblem<dim, fe_degree>::run()
   setup_system();
   // assemble_rhs();
   bench_Ax();
-  bench_transfer();
-  bench_smooth();
+  // bench_transfer();
+  // bench_smooth();
 #elif MODE == 1
   for (unsigned int cycle = 0; cycle < n_refinement; ++cycle)
     {
@@ -987,8 +991,8 @@ LaplaceProblem<dim, fe_degree>::run()
       setup_system();
       // assemble_rhs();
       bench_Ax();
-      bench_transfer();
-      bench_smooth();
+      // bench_transfer();
+      // bench_smooth();
     }
 #endif
 
