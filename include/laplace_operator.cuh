@@ -33,21 +33,27 @@ namespace PSMF
       : shared_mem(0){};
 
     void
-    setup_kernel(const unsigned int patch_per_block) const
+    setup_kernel(const unsigned int) const
     {
       constexpr unsigned int n =
         kernel == LaplaceVariant::ConflictFree ? 2 : (dim - 1);
 
       shared_mem = 0;
 
+#if N_PATCH == 1
+      unsigned int patch_per_block1 = 1;
+#else
+      unsigned int patch_per_block1 = 2;
+#endif
+
       const unsigned int local_dim = Util::pow(n_dofs_1d, dim);
       // local_src, local_dst
-      shared_mem += 2 * patch_per_block * local_dim * sizeof(Number);
+      shared_mem += 2 * patch_per_block1 * local_dim * sizeof(Number);
       // local_mass, local_derivative
       shared_mem +=
-        2 * patch_per_block * n_dofs_1d * n_dofs_1d * 3 * sizeof(Number);
+        2 * patch_per_block1 * n_dofs_1d * n_dofs_1d * 3 * sizeof(Number);
       // temp
-      shared_mem += n * patch_per_block * local_dim * sizeof(Number);
+      shared_mem += n * patch_per_block1 * local_dim * sizeof(Number);
 
       AssertCuda(cudaFuncSetAttribute(
         laplace_kernel_basic<dim, fe_degree, Number, kernel>,
@@ -63,10 +69,12 @@ namespace PSMF
                 const dim3       &grid_dim,
                 const dim3       &block_dim) const
     {
+      auto grid_dim1 = dim3((grid_dim.x + N_PATCH - 1) / N_PATCH);
+
       laplace_kernel_basic<dim, fe_degree, Number, kernel>
-        <<<grid_dim, block_dim, shared_mem>>>(src.get_values(),
-                                              dst.get_values(),
-                                              gpu_data);
+        <<<grid_dim1, block_dim, shared_mem>>>(src.get_values(),
+                                               dst.get_values(),
+                                               gpu_data);
     }
   };
 

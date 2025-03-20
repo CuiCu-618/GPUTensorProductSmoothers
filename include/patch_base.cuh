@@ -17,6 +17,13 @@
 #include "tensor_product.h"
 #include "utilities.cuh"
 
+#define PIPELINE 0
+// 0 - no pipeline
+// 1 - register blocking
+// 2 - pipeline with shared memory <-> register
+
+#define N_PATCH 1
+
 #define GACCESS 1
 // 0 - no global memory access
 // 1 - load/store global memeory

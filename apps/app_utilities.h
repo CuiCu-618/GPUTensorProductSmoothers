@@ -129,7 +129,8 @@ namespace Util
     oss << "_" << value_type;
     oss << "_K" << MMAKERNEL;
     oss << "_E" << ERRCOR;
-#ifdef DUPLICATE
+    oss << "_P" << PIPELINE;
+    #ifdef DUPLICATE
     oss << "_DUPLICATE";
 #endif
 
@@ -196,6 +197,8 @@ namespace Util
         << "Number of MG cycles in V-cycle  " << 1 << std::endl
         << "MMAKERNEL                       " << MMAKERNEL << std::endl
         << "Error Correction                " << ERRCOR << std::endl
+        << "Pipeline                        " << PIPELINE << std::endl
+        << "Number of patches per block     " << N_PATCH << std::endl
 #ifdef DUPLICATE
         << "Duplicate" << std::endl
 #endif

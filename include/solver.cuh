@@ -412,7 +412,7 @@ namespace PSMF
     std::vector<SolverData>
     solve()
     {
-      *pcout << "Solving...\n";
+      *pcout << "Solving in mixed...\n";
 
       std::string solver_name = "GMRES";
 
@@ -1113,7 +1113,7 @@ namespace PSMF
     std::vector<SolverData>
     solve()
     {
-      *pcout << "Solving...\n";
+      *pcout << "Solving in DP...\n";
 
       std::string solver_name = "GMRES";
 
@@ -1139,7 +1139,7 @@ namespace PSMF
       SolverGMRES<VectorType> solver(solver_control);
 
       Timer              time;
-      const unsigned int N         = 10;
+      const unsigned int N         = 1;
       double             best_time = 1e10;
       for (unsigned int i = 0; i < N; ++i)
         {

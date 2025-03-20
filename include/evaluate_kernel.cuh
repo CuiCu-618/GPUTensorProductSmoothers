@@ -288,7 +288,7 @@ namespace PSMF
       static_cast<T *>(this)->vmult_impl(
         dst, src, mass_matrix, derivative_matrix, tmp);
     }
-
+#if PIPELINE == 0
     template <int direction, bool add, bool sub = false>
     __device__ void
     apply(const Number *shape_data, const Number *in, Number *out)
@@ -340,6 +340,102 @@ namespace PSMF
         }
     }
   };
+#elif PIPELINE == 1
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      constexpr int multiple = std::is_same<Number, double>::value ?
+                                 Util::calculate_multiple<n_dofs_1d, 16>() :
+                                 Util::calculate_multiple<n_dofs_1d, 32>();
+
+      constexpr int stride = n_dofs_1d * n_dofs_1d;
+
+      const int row = threadIdx.y;
+      const int col = threadIdx.x % n_dofs_1d;
+
+      constexpr int K_PIPE_A = 2; // direction == 2 ? 2 : 1;
+      constexpr int K_PIPE_B = 2;
+
+      Number pval[n_dofs_1d];
+      Number rA[K_PIPE_A][n_dofs_1d];
+      Number rB[K_PIPE_B][n_dofs_1d];
+
+      // kernel product: A kdot src, [N x N] * [N^dim, 1]
+#  pragma unroll
+      for (int k = 0; k < n_dofs_1d; ++k)
+        {
+          if (direction == 0)
+            rA[0][k] =
+              shape_data[col * n_dofs_1d + (k + col / multiple) % n_dofs_1d];
+          else if (direction == 1)
+            rA[0][k] = shape_data[row * n_dofs_1d + k];
+          else if (direction == 2)
+            rA[0][k] = shape_data[k];
+
+          rA[1][k] = rA[0][k];
+        }
+      for (int k = 0; k < n_dofs_1d; ++k)
+        {
+          if (direction == 0)
+            rB[0][k] = in[row * n_dofs_1d + (k + col / multiple) % n_dofs_1d];
+          else if (direction == 1)
+            rB[0][k] = in[k * n_dofs_1d + col];
+          else
+            rB[0][k] = in[row * n_dofs_1d + col + k * stride];
+        }
+
+      int pipe = 0;
+      for (int z = 1; z < n_dofs_1d; ++z)
+        {
+          pval[z - 1] = 0;
+
+          if (direction == 2)
+            for (int k = 0; k < n_dofs_1d; ++k)
+              rA[pipe ^ 1][k] = shape_data[z * n_dofs_1d + k];
+
+          for (int k = 0; k < n_dofs_1d; ++k)
+            {
+              if (direction == 0)
+                rB[pipe ^ 1][k] =
+                  in[row * n_dofs_1d + (k + col / multiple) % n_dofs_1d +
+                     z * stride];
+              else if (direction == 1)
+                rB[pipe ^ 1][k] = in[k * n_dofs_1d + col + z * stride];
+              else
+                rB[pipe ^ 1][k] = in[row * n_dofs_1d + col + k * stride];
+            }
+
+#  pragma unroll
+          for (int k = 0; k < n_dofs_1d; ++k)
+            pval[z - 1] += rA[pipe][k] * rB[pipe][k];
+
+          pipe = pipe ^ 1;
+        }
+
+      pval[n_dofs_1d - 1] = 0;
+#  pragma unroll
+      for (int k = 0; k < n_dofs_1d; ++k)
+        pval[n_dofs_1d - 1] += rA[pipe][k] * rB[pipe][k];
+
+#  pragma unroll
+      for (int z = 0; z < n_dofs_1d; ++z)
+        {
+          const int destination_idx = row * n_dofs_1d + col + z * stride;
+
+          if (add)
+            out[destination_idx] += pval[z];
+          else if (sub)
+            out[destination_idx] -= pval[z];
+          else
+            out[destination_idx] = pval[z];
+        }
+    }
+  };
+
+#elif PIPELINE == 2
+
+#endif
 
   template <typename T, int n_dofs_1d, typename Number>
   struct TPEvaluatorBase<T,

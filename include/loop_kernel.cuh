@@ -17,7 +17,6 @@
 
 namespace PSMF
 {
-
   /**
    * Shared data for laplace operator kernel.
    * We have to use the following thing to avoid
@@ -45,10 +44,54 @@ namespace PSMF
     return data_f;
   }
 
+  /// Cast shared memory pointer to uint32_t
+  __device__ inline uint32_t
+  cast_smem_ptr_to_uint(void const *const ptr)
+  {
+    return static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
+  }
 
+  /// Copy via cp.async with caching at all levels
+  template <class TS, class TD = TS>
+  inline __device__ void
+  copy(TS const &gmem_src, TD &smem_dst)
+  {
+    TS const *gmem_ptr     = &gmem_src;
+    uint32_t  smem_int_ptr = cast_smem_ptr_to_uint(&smem_dst);
+    asm volatile("cp.async.ca.shared.global.L2::128B [%0], [%1], %2;\n" ::"r"(
+                   smem_int_ptr),
+                 "l"(gmem_ptr),
+                 "n"(sizeof(TS)));
+  }
+
+  /// Establishes an ordering w.r.t previously issued cp.async instructions.
+  /// Does not block.
+  inline __device__ void
+  cp_async_fence()
+  {
+    asm volatile("cp.async.commit_group;\n" ::);
+  }
+
+  /// Blocks until all but N previous cp.async.commit_group operations have
+  /// committed.
+  template <int N>
+  inline __device__ void
+  cp_async_wait()
+  {
+    if constexpr (N == 0)
+      {
+        asm volatile("cp.async.wait_all;\n" ::);
+      }
+    else
+      {
+        asm volatile("cp.async.wait_group %0;\n" ::"n"(N));
+      }
+  }
+
+#if N_PATCH == 1
   template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
-  __global__ void
-  laplace_kernel_basic(
+  __global__
+  __launch_bounds__(Util::pow(2 * fe_degree + 2, 2)) void laplace_kernel_basic(
     const Number                                                 *src,
     Number                                                       *dst,
     const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
@@ -116,6 +159,158 @@ namespace PSMF
           }
       }
   }
+#else // N_PATCH > 1
+
+  template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
+  __global__
+  __launch_bounds__(Util::pow(2 * fe_degree + 2, 2)) void laplace_kernel_basic(
+    const Number                                                 *src,
+    Number                                                       *dst,
+    const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
+  {
+    constexpr int n_dofs_1d = 2 * fe_degree + 2;
+    constexpr int local_dim = Util::pow(n_dofs_1d, dim);
+    constexpr int n_dofs_z  = dim == 2 ? 1 : n_dofs_1d;
+
+    const int patch_0     = blockIdx.x * N_PATCH;
+    const int local_tid_x = threadIdx.x;
+    const int tid         = threadIdx.y * n_dofs_1d + local_tid_x;
+
+    SharedMemData<dim, Number, true> shared_data[2] = {
+      SharedMemData<dim, Number, true>(
+        get_shared_data_ptr<Number>(), 1, n_dofs_1d, local_dim),
+      SharedMemData<dim, Number, true>(get_shared_data_ptr<Number>() +
+                                         4 * local_dim +
+                                         6 * n_dofs_1d * n_dofs_1d,
+                                       1,
+                                       n_dofs_1d,
+                                       local_dim),
+    };
+
+    int patch = patch_0;
+    int pipe  = 0;
+
+    for (unsigned int d = 0; d < dim; ++d)
+      {
+        copy(gpu_data.laplace_mass_1d[gpu_data.patch_type[patch * dim + d] *
+                                        n_dofs_1d * n_dofs_1d +
+                                      tid],
+             shared_data[pipe].local_mass[d * n_dofs_1d * n_dofs_1d + tid]);
+
+        copy(
+          gpu_data.laplace_stiff_1d[gpu_data.patch_type[patch * dim + d] *
+                                      n_dofs_1d * n_dofs_1d +
+                                    tid],
+          shared_data[pipe].local_derivative[d * n_dofs_1d * n_dofs_1d + tid]);
+      }
+    for (unsigned int z = 0; z < n_dofs_z; ++z)
+      {
+        const unsigned int index = z * n_dofs_1d * n_dofs_1d + tid;
+        const unsigned int global_dof_indices =
+          Util::compute_indices<dim, fe_degree>(
+            &gpu_data.first_dof[patch * (1 << dim)],
+            0,
+            local_tid_x,
+            threadIdx.y,
+            z);
+
+        copy(src[global_dof_indices], shared_data[pipe].local_src[index]);
+        shared_data[pipe].local_dst[index] = 0.;
+      }
+    cp_async_fence();
+
+    for (; patch < patch_0 + N_PATCH - 1; ++patch)
+      {
+        if (patch + 1 < gpu_data.n_patches)
+          {
+            for (unsigned int d = 0; d < dim; ++d)
+              {
+                copy(gpu_data.laplace_mass_1d
+                       [gpu_data.patch_type[(patch + 1) * dim + d] * n_dofs_1d *
+                          n_dofs_1d +
+                        tid],
+                     shared_data[pipe ^ 1]
+                       .local_mass[d * n_dofs_1d * n_dofs_1d + tid]);
+
+                copy(gpu_data.laplace_stiff_1d
+                       [gpu_data.patch_type[(patch + 1) * dim + d] * n_dofs_1d *
+                          n_dofs_1d +
+                        tid],
+                     shared_data[pipe ^ 1]
+                       .local_derivative[d * n_dofs_1d * n_dofs_1d + tid]);
+              }
+
+            for (unsigned int z = 0; z < n_dofs_z; ++z)
+              {
+                const unsigned int index = z * n_dofs_1d * n_dofs_1d + tid;
+
+                const unsigned int global_dof_indices =
+                  Util::compute_indices<dim, fe_degree>(
+                    &gpu_data.first_dof[(patch + 1) * (1 << dim)],
+                    0,
+                    local_tid_x,
+                    threadIdx.y,
+                    z);
+
+                copy(src[global_dof_indices],
+                     shared_data[pipe ^ 1].local_src[index]);
+
+                shared_data[pipe ^ 1].local_dst[index] = 0.;
+              }
+            cp_async_fence();
+            cp_async_wait<1>();
+            __syncthreads();
+          }
+
+        evaluate_laplace<dim, fe_degree, Number, laplace>(0,
+                                                          &(shared_data[pipe]));
+
+        for (unsigned int z = 0; z < n_dofs_z; ++z)
+          {
+            const unsigned int index = z * n_dofs_1d * n_dofs_1d + tid;
+
+            const unsigned int global_dof_indices =
+              Util::compute_indices<dim, fe_degree>(
+                &gpu_data.first_dof[patch * (1 << dim)],
+                0,
+                local_tid_x,
+                threadIdx.y,
+                z);
+
+            atomicAdd(&dst[global_dof_indices],
+                      shared_data[pipe].local_dst[index]);
+          }
+        pipe ^= 1;
+      }
+
+    if (patch < gpu_data.n_patches)
+      {
+        cp_async_wait<0>();
+        __syncthreads();
+
+        evaluate_laplace<dim, fe_degree, Number, laplace>(0,
+                                                          &(shared_data[pipe]));
+
+        for (unsigned int z = 0; z < n_dofs_z; ++z)
+          {
+            const unsigned int index = z * n_dofs_1d * n_dofs_1d + tid;
+
+            const unsigned int global_dof_indices =
+              Util::compute_indices<dim, fe_degree>(
+                &gpu_data.first_dof[patch * (1 << dim)],
+                0,
+                local_tid_x,
+                threadIdx.y,
+                z);
+
+            atomicAdd(&dst[global_dof_indices],
+                      shared_data[pipe].local_dst[index]);
+          }
+      }
+  }
+#endif
+
+
 
   // Load patch data cell by cell
   template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
