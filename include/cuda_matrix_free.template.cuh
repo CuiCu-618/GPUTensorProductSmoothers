@@ -64,7 +64,7 @@ namespace PSMF
     (mf_max_elem_degree + 1) * (mf_max_elem_degree + 1);
 
   // Default initialized to false
-  std::array<std::atomic_bool, mf_n_concurrent_objects> used_objects;
+  inline std::array<std::atomic_bool, mf_n_concurrent_objects> used_objects;
 
   template <typename NumberType>
   using DataArray = NumberType[data_array_size];

@@ -783,10 +783,16 @@ namespace PSMF
                           gpu_data.global_to_local(global_index);
                       }
 
-                    solution[global_dof_indices] =
-                      shared_data
-                        .tmp[(dim - 1) * local_patch * local_dim + index] *
-                      gpu_data.relaxation;
+                    if constexpr (is_ghost)
+                      solution[global_dof_indices] =
+                        shared_data
+                          .tmp[(dim - 1) * local_patch * local_dim + index] *
+                        gpu_data.relaxation;
+                    else
+                      dst[global_dof_indices] +=
+                        shared_data
+                          .tmp[(dim - 1) * local_patch * local_dim + index] *
+                        gpu_data.relaxation;
                   }
               }
           }

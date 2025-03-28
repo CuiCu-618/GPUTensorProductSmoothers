@@ -662,6 +662,7 @@ namespace PSMF
       solution_ghosted;
 
     cudaStream_t stream;
+    cudaStream_t stream1;
     cudaStream_t stream_g;
   };
 

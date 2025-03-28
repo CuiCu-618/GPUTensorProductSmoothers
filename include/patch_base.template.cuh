@@ -9,8 +9,13 @@
  *
  */
 
+#include <random>
+
+#include "cuda_matrix_free.cuh"
 #include "loop_kernel.cuh"
 #include "renumbering.h"
+
+#define OVERLAP
 
 namespace PSMF
 {
@@ -153,6 +158,7 @@ namespace PSMF
     l_to_h_host.shrink_to_fit();
 
     AssertCuda(cudaStreamDestroy(stream));
+    AssertCuda(cudaStreamDestroy(stream1));
     AssertCuda(cudaStreamDestroy(stream_g));
   }
 
@@ -286,6 +292,7 @@ namespace PSMF
 
     { // ASSIGN GHOSTS
       const auto my_subdomain_id = tria.locally_owned_subdomain();
+      const auto n_mpi_procs = Utilities::MPI::n_mpi_processes(MPI_COMM_WORLD);
       /**
        * logic: if the mpi-proc owns more than half of the cells within
        *        a ghost patch he takes ownership
@@ -357,8 +364,13 @@ namespace PSMF
 
       /**
        * logic: the owner of the cell with the lowest CellId takes ownership
+       * NOTE: random
        */
       {
+        std::random_device          rd;
+        std::mt19937                gen(rd());
+        std::bernoulli_distribution coin_flip(0.5);
+
         //: (2) determine mpi-proc with the minimal CellId for all GhostPatches
         std::set<types::global_dof_index> to_be_owned;
         for (const auto &key_value : global_to_ghost_id)
@@ -379,11 +391,31 @@ namespace PSMF
               return min_cell_id_lhs < min_cell_id_rhs;
             };
 
-            const auto min = std::min_element(proc_to_cell_ids.cbegin(),
-                                              proc_to_cell_ids.cend(),
-                                              get_proc_with_min_cellid);
 
-            const auto subdomain_id_min = min->first;
+            int subdomain_id_min = 0;
+            if (n_mpi_procs % 2 == 0)
+              {
+                int random_decision = 0;
+                if (my_subdomain_id == 0)
+                  random_decision = coin_flip(gen) ? 1 : 0;
+                MPI_Bcast(&random_decision, 1, MPI_INT, 0, MPI_COMM_WORLD);
+                subdomain_id_min =
+                  std::max_element(proc_to_cell_ids.cbegin(),
+                                   proc_to_cell_ids.cend(),
+                                   [&random_decision](const auto &a,
+                                                      const auto &b) {
+                                     if (a.second.size() == b.second.size())
+                                       return (bool)random_decision;
+                                     return a.second.size() < b.second.size();
+                                   })
+                    ->first;
+              }
+            else
+              subdomain_id_min = std::min_element(proc_to_cell_ids.cbegin(),
+                                                  proc_to_cell_ids.cend(),
+                                                  get_proc_with_min_cellid)
+                                   ->first;
+
             if (my_subdomain_id == subdomain_id_min)
               to_be_owned.insert(global_index);
           }
@@ -520,7 +552,7 @@ namespace PSMF
     if (use_coloring)
       n_colors = regular_vpatch_size;
     else
-      n_colors = 1;
+      n_colors = 2;
 
     switch (granularity_scheme)
       {
@@ -544,8 +576,10 @@ namespace PSMF
 
     graph_ptr_raw.clear();
     graph_ptr_raw_ghost.clear();
-    graph_ptr_raw.resize(1);
+    graph_ptr_raw.resize(2);
     graph_ptr_raw_ghost.resize(1);
+
+    int c = 0;
     for (auto patch = cell_collections.begin(); patch != cell_collections.end();
          ++patch)
       {
@@ -558,16 +592,33 @@ namespace PSMF
             }
 
         if (is_local)
-          graph_ptr_raw[0].push_back(patch);
+          {
+            graph_ptr_raw[c].push_back(patch);
+            c = c ^ 1;
+          }
         else
           graph_ptr_raw_ghost[0].push_back(patch);
       }
 
+    // {
+    //   std::cout << graph_ptr_raw_ghost[0].size() << std::endl;
+    //   const auto my_subdomain_id =
+    //     dof_handler->get_triangulation().locally_owned_subdomain();
+    //   for (auto p : graph_ptr_raw[0])
+    //     std::cout << "onwed " << my_subdomain_id << ": " << (*p)[0]
+    //               << std::endl;
+    //   for (auto p : graph_ptr_raw_ghost[0])
+    //     std::cout << "ghost " << my_subdomain_id << ": " << (*p)[0]
+    //               << std::endl;
+    // }
+
     // coloring
     graph_ptr_colored.clear();
     graph_ptr_colored_ghost.clear();
-    graph_ptr_colored.resize(regular_vpatch_size);
+    graph_ptr_colored.resize(regular_vpatch_size * 2);
     graph_ptr_colored_ghost.resize(regular_vpatch_size);
+
+    std::vector<int> cs(regular_vpatch_size, 0);
     for (auto patch = cell_collections.begin(); patch != cell_collections.end();
          ++patch)
       {
@@ -582,9 +633,14 @@ namespace PSMF
         auto first_cell = (*patch)[0];
 
         if (is_local)
-          graph_ptr_colored[first_cell->parent()->child_iterator_to_index(
-                              first_cell)]
-            .push_back(patch);
+          {
+            int color =
+              first_cell->parent()->child_iterator_to_index(first_cell);
+
+            graph_ptr_colored[2 * color + cs[color]].push_back(patch);
+
+            cs[color] = cs[color] ^ 1;
+          }
         else
           graph_ptr_colored_ghost[first_cell->parent()->child_iterator_to_index(
                                     first_cell)]
@@ -594,7 +650,7 @@ namespace PSMF
 
     setup_color_arrays(n_colors);
 
-    for (unsigned int i = 0; i < regular_vpatch_size; ++i)
+    for (unsigned int i = 0; i < regular_vpatch_size * 2; ++i)
       {
         auto n_patches      = graph_ptr_colored[i].size();
         n_patches_smooth[i] = n_patches;
@@ -691,7 +747,7 @@ namespace PSMF
         AssertCuda(error_code);
       }
 
-    for (unsigned int i = 0; i < n_colors; ++i)
+    for (unsigned int i = 0; i < 1; ++i)
       {
         auto n_patches             = graph_ptr_raw_ghost[i].size();
         n_patches_laplace_ghost[i] = n_patches;
@@ -828,6 +884,7 @@ namespace PSMF
     reinit_tensor_product_smoother();
 
     AssertCuda(cudaStreamCreate(&stream));
+    AssertCuda(cudaStreamCreate(&stream1));
     AssertCuda(cudaStreamCreate(&stream_g));
 
     // ghost
@@ -982,14 +1039,86 @@ namespace PSMF
     Util::adjust_ghost_range_if_necessary(src, partitioner);
     Util::adjust_ghost_range_if_necessary(dst, partitioner);
 
+#ifdef OVERLAP
+    src.update_ghost_values_start(2);
+
+    for (unsigned int i = 0; i < regular_vpatch_size; ++i)
+      {
+        // (*solution_ghosted) = 0;
+        cudaMemsetAsync(solution_ghosted->get_values(),
+                        0.0,
+                        solution_ghosted->locally_owned_size() * sizeof(Number),
+                        stream_g);
+
+        // if (n_patches_smooth_ghost[i] > 0)
+        dst.update_ghost_values_start(1);
+
+        op.template setup_kernel<false>(patch_per_block);
+
+        if (n_patches_smooth[2 * i] > 0)
+          {
+            op.template loop_kernel<VectorType, Data, false>(
+              src,
+              dst,
+              dst,
+              get_smooth_data(2 * i),
+              grid_dim_smooth[2 * i],
+              block_dim_smooth[2 * i],
+              stream);
+
+            AssertCudaKernel();
+          }
+
+        op.template setup_kernel<true>(patch_per_block);
+
+        if (i == 0)
+          src.update_ghost_values_finish();
+
+        // if (n_patches_smooth_ghost[i] > 0)
+        dst.update_ghost_values_finish();
+
+        if (n_patches_smooth_ghost[i] > 0)
+          {
+            op.template loop_kernel<VectorType, Data, true>(
+              src,
+              dst,
+              *solution_ghosted,
+              get_smooth_data_ghost(i),
+              grid_dim_smooth_ghost[i],
+              block_dim_smooth[i],
+              stream_g);
+
+            AssertCudaKernel();
+          }
+
+        solution_ghosted->compress_start(0, VectorOperation::add);
+        dst.zero_out_ghost_values();
+
+        if (n_patches_smooth[2 * i + 1] > 0)
+          {
+            op.template loop_kernel<VectorType, Data, false>(
+              src,
+              dst,
+              dst,
+              get_smooth_data(2 * i + 1),
+              grid_dim_smooth[2 * i + 1],
+              block_dim_smooth[2 * i + 1],
+              stream1);
+
+            AssertCudaKernel();
+          }
+
+        solution_ghosted->compress_finish(VectorOperation::add);
+        dst.add(1., *solution_ghosted);
+      }
+    src.zero_out_ghost_values();
+#else
     src.update_ghost_values();
 
-    // TODO
     for (unsigned int i = 0; i < regular_vpatch_size; ++i)
       {
         (*solution_ghosted) = 0;
-        // dst.update_ghost_values();
-        dst.update_ghost_values_start(0);
+        dst.update_ghost_values();
 
         op.template setup_kernel<false>(patch_per_block);
 
@@ -1009,8 +1138,6 @@ namespace PSMF
 
         op.template setup_kernel<true>(patch_per_block);
 
-        dst.update_ghost_values_finish();
-
         if (n_patches_smooth_ghost[i] > 0)
           {
             op.template loop_kernel<VectorType, Data, true>(
@@ -1028,7 +1155,9 @@ namespace PSMF
         solution_ghosted->compress(VectorOperation::add);
         dst.add(1., *solution_ghosted);
       }
+#endif
   }
+
 
   template <int dim, int fe_degree, typename Number>
   template <typename Operator, typename VectorType>
@@ -1040,11 +1169,13 @@ namespace PSMF
     Util::adjust_ghost_range_if_necessary(src, partitioner);
     Util::adjust_ghost_range_if_necessary(dst, partitioner);
 
+    op.template setup_kernel<false>(patch_per_block);
+    op.template setup_kernel<true>(patch_per_block);
+
+#ifdef OVERLAP
     src.update_ghost_values_start(1);
 
-    op.template setup_kernel<false>(patch_per_block);
-
-    for (unsigned int i = 0; i < n_colors; ++i)
+    for (unsigned int i = 0; i < 1; ++i)
       if (n_patches_laplace[i] > 0)
         {
           op.template loop_kernel<VectorType, Data, false>(src,
@@ -1059,9 +1190,8 @@ namespace PSMF
 
     src.update_ghost_values_finish();
 
-    op.template setup_kernel<true>(patch_per_block);
 
-    for (unsigned int i = 0; i < n_colors; ++i)
+    for (unsigned int i = 0; i < 1; ++i)
       if (n_patches_laplace_ghost[i] > 0)
         {
           op.template loop_kernel<VectorType, Data, true>(
@@ -1074,7 +1204,69 @@ namespace PSMF
 
           AssertCudaKernel();
         }
-    dst.compress(VectorOperation::add);
+
+    dst.compress_start(0, dealii::VectorOperation::add);
+    for (unsigned int i = 1; i < 2; ++i)
+      if (n_patches_laplace[i] > 0)
+        {
+          op.template loop_kernel<VectorType, Data, false>(src,
+                                                           dst,
+                                                           get_laplace_data(i),
+                                                           grid_dim_lapalce[i],
+                                                           block_dim_laplace[i],
+                                                           stream1);
+
+          AssertCudaKernel();
+        }
+    dst.compress_finish(dealii::VectorOperation::add);
+    src.zero_out_ghost_values();
+#else
+    src.update_ghost_values();
+
+    for (unsigned int i = 0; i < 1; ++i)
+      if (n_patches_laplace[i] > 0)
+        {
+          op.template loop_kernel<VectorType, Data, false>(src,
+                                                           dst,
+                                                           get_laplace_data(i),
+                                                           grid_dim_lapalce[i],
+                                                           block_dim_laplace[i],
+                                                           stream);
+
+          AssertCudaKernel();
+        }
+    for (unsigned int i = 1; i < 2; ++i)
+      if (n_patches_laplace[i] > 0)
+        {
+          op.template loop_kernel<VectorType, Data, false>(src,
+                                                           dst,
+                                                           get_laplace_data(i),
+                                                           grid_dim_lapalce[i],
+                                                           block_dim_laplace[i],
+                                                           stream1);
+
+          AssertCudaKernel();
+        }
+
+    op.template setup_kernel<true>(patch_per_block);
+
+    for (unsigned int i = 0; i < 1; ++i)
+      if (n_patches_laplace_ghost[i] > 0)
+        {
+          op.template loop_kernel<VectorType, Data, true>(
+            src,
+            dst,
+            get_laplace_data_ghost(i),
+            grid_dim_lapalce_ghost[i],
+            block_dim_laplace[i],
+            stream_g);
+
+          AssertCudaKernel();
+        }
+
+    dst.compress(dealii::VectorOperation::add);
+
+#endif
   }
 
   template <int dim, int fe_degree, typename Number>
@@ -1541,19 +1733,19 @@ namespace PSMF
     this->patch_id.resize(n_colors);
     this->patch_type.resize(n_colors);
 
-    this->n_patches_smooth.resize(regular_vpatch_size);
-    this->grid_dim_smooth.resize(regular_vpatch_size);
-    this->block_dim_smooth.resize(regular_vpatch_size);
-    this->first_dof_smooth.resize(regular_vpatch_size);
+    this->n_patches_smooth.resize(regular_vpatch_size * 2);
+    this->grid_dim_smooth.resize(regular_vpatch_size * 2);
+    this->block_dim_smooth.resize(regular_vpatch_size * 2);
+    this->first_dof_smooth.resize(regular_vpatch_size * 2);
 
-    this->n_patches_laplace_ghost.resize(n_colors);
-    this->grid_dim_lapalce_ghost.resize(n_colors);
-    this->patch_type_ghost.resize(n_colors);
+    this->n_patches_laplace_ghost.resize(1);
+    this->grid_dim_lapalce_ghost.resize(1);
+    this->patch_type_ghost.resize(1);
 
     this->n_patches_smooth_ghost.resize(regular_vpatch_size);
     this->grid_dim_smooth_ghost.resize(regular_vpatch_size);
 
-    this->patch_dofs_laplace.resize(n_colors);
+    this->patch_dofs_laplace.resize(1);
     this->patch_dofs_smooth.resize(regular_vpatch_size);
   }
 
@@ -1580,7 +1772,7 @@ namespace PSMF
         grid_dim_lapalce_ghost[i] = dim3(apply_n_blocks);
       }
 
-    for (unsigned int i = 0; i < regular_vpatch_size; ++i)
+    for (unsigned int i = 0; i < regular_vpatch_size * 2; ++i)
       {
         auto   n_patches      = n_patches_smooth[i];
         double apply_n_blocks = std::ceil(static_cast<double>(n_patches) /
@@ -1588,6 +1780,9 @@ namespace PSMF
 
         grid_dim_smooth[i]  = dim3(apply_n_blocks);
         block_dim_smooth[i] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
+
+        if (i >= regular_vpatch_size)
+          continue;
 
         n_patches      = n_patches_smooth_ghost[i];
         apply_n_blocks = std::ceil(static_cast<double>(n_patches) /

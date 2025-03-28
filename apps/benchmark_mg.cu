@@ -55,6 +55,38 @@
 #include "patch_base.cuh"
 #include "patch_smoother.cuh"
 
+// #define USE_NVTX
+
+#ifdef USE_NVTX
+#  include <nvToolsExt.h>
+const uint32_t colors[]   = {0x0000ff00,
+                             0x000000ff,
+                             0x00ffff00,
+                             0x00ff00ff,
+                             0x0000ffff,
+                             0x00ff0000,
+                             0x00ffffff};
+const int      num_colors = sizeof(colors) / sizeof(uint32_t);
+
+#  define PUSH_RANGE(name, cid)                                          \
+    {                                                                    \
+      int color_id                      = cid;                           \
+      color_id                          = color_id % num_colors;         \
+      nvtxEventAttributes_t eventAttrib = {0};                           \
+      eventAttrib.version               = NVTX_VERSION;                  \
+      eventAttrib.size                  = NVTX_EVENT_ATTRIB_STRUCT_SIZE; \
+      eventAttrib.colorType             = NVTX_COLOR_ARGB;               \
+      eventAttrib.color                 = colors[color_id];              \
+      eventAttrib.messageType           = NVTX_MESSAGE_TYPE_ASCII;       \
+      eventAttrib.message.ascii         = name;                          \
+      nvtxRangePushEx(&eventAttrib);                                     \
+    }
+#  define POP_RANGE nvtxRangePop();
+#else
+#  define PUSH_RANGE(name, cid)
+#  define POP_RANGE
+#endif
+
 using namespace dealii;
 
 template <int dim, int fe_degree>
@@ -169,8 +201,8 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   dof_handler.distribute_mg_dofs();
 
   n_dofs = dof_handler.n_dofs();
-  N      = 5;
-  n_mv   = dof_handler.n_dofs() < 10000000 ? 100 : 20;
+  N      = 4;
+  n_mv   = 20; // dof_handler.n_dofs() < 10000000 ? 100 : 20;
 
   const unsigned int nlevels = triangulation.n_global_levels();
 
@@ -230,6 +262,26 @@ LaplaceProblem<dim, fe_degree>::setup_system()
   *pcout << "Memory stats [MB]: " << memory.min << " [p" << memory.min_index
          << "] " << memory.avg << " " << memory.max << " [p" << memory.max_index
          << "]" << std::endl;
+
+  auto locally_owned_dofs = dof_handler.locally_owned_dofs();
+  auto locally_relevant_dofs =
+    DoFTools::extract_locally_relevant_dofs(dof_handler);
+
+  LinearAlgebra::distributed::Vector<double, MemorySpace::CUDA>
+    ghost_solution_host;
+  PUSH_RANGE("init", 0)
+  ghost_solution_host.reinit(locally_owned_dofs,
+                             locally_relevant_dofs,
+                             mpi_communicator);
+  ghost_solution_host = 1.;
+  POP_RANGE
+  PUSH_RANGE("update_ghost_values", 0)
+  ghost_solution_host.update_ghost_values();
+  POP_RANGE
+  ghost_solution_host = 0.;
+  PUSH_RANGE("compress", 0)
+  ghost_solution_host.compress(VectorOperation::add);
+  POP_RANGE
 }
 template <int dim, int fe_degree>
 template <PSMF::LaplaceVariant kernel>
@@ -253,11 +305,15 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
         time.restart();
         for (unsigned int i = 0; i < n_mv; ++i)
           {
+            PUSH_RANGE("Ax in Double", 5)
             matrix_dp.vmult(solution_dp, system_rhs_dp);
+            POP_RANGE
             cudaDeviceSynchronize();
           }
         best_time = std::min(time.wall_time() / n_mv, best_time);
       }
+
+    std::cout << solution_dp.l2_norm() << std::endl;
 
     Utilities::MPI::MinMaxAvg stat =
       Utilities::MPI::min_max_avg(best_time, MPI_COMM_WORLD);
@@ -292,8 +348,10 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
         time.restart();
         for (unsigned int i = 0; i < n_mv; ++i)
           {
+            PUSH_RANGE("Ax in Single", 5)
             matrix_sp.vmult(solution_sp, system_rhs_sp);
             cudaDeviceSynchronize();
+            POP_RANGE
           }
         best_time = std::min(time.wall_time() / n_mv, best_time);
       }
@@ -444,11 +502,15 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
         time.restart();
         for (unsigned int i = 0; i < n_mv; ++i)
           {
+            PUSH_RANGE("do smooth", 5)
             smooth_dp.step(solution_dp, system_rhs_dp);
+            POP_RANGE
             cudaDeviceSynchronize();
           }
         best_time = std::min(time.wall_time() / n_mv, best_time);
       }
+
+    printf("%f\n", solution_dp.l2_norm());
 
     Utilities::MPI::MinMaxAvg stat =
       Utilities::MPI::min_max_avg(best_time, MPI_COMM_WORLD);
@@ -469,6 +531,7 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
 
   {
     // SP
+    PUSH_RANGE("Init smooth", 5)
     using MatrixTypeSP =
       PSMF::LaplaceOperator<dim, fe_degree, vcycle_number, smooth_vmult>;
     MatrixTypeSP matrix_sp;
@@ -481,6 +544,7 @@ LaplaceProblem<dim, fe_degree>::do_smooth()
     smoother_data_sp.data = mfdata_sp;
 
     smooth_sp.initialize(matrix_sp, smoother_data_sp);
+    POP_RANGE
 
     system_rhs_sp = 1.;
 
@@ -631,10 +695,18 @@ LaplaceProblem<dim, fe_degree>::run()
     static_cast<unsigned int>(std::log2(n_dofs_1d / (fe_degree + 1)));
   triangulation.refine_global(n_refinement);
 
+  PUSH_RANGE("Setup system", 0)
   setup_system();
+  POP_RANGE
+  PUSH_RANGE("Benchmark Ax", 1)
   bench_Ax();
+  POP_RANGE
+  PUSH_RANGE("Benchmark transfer", 2)
   bench_transfer();
+  POP_RANGE
+  PUSH_RANGE("Benchmark smoother", 3)
   bench_smooth();
+  POP_RANGE
 
   *pcout << std::endl;
 

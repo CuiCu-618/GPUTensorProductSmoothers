@@ -40,6 +40,39 @@ using namespace dealii;
 
 // #define LOCALREF
 
+// #define USE_NVTX
+
+#ifdef USE_NVTX
+#  include <nvToolsExt.h>
+const uint32_t colors[]   = {0x0000ff00,
+                             0x000000ff,
+                             0x00ffff00,
+                             0x00ff00ff,
+                             0x0000ffff,
+                             0x00ff0000,
+                             0x00ffffff};
+const int      num_colors = sizeof(colors) / sizeof(uint32_t);
+
+#  define PUSH_RANGE(name, cid)                                          \
+    {                                                                    \
+      int color_id                      = cid;                           \
+      color_id                          = color_id % num_colors;         \
+      nvtxEventAttributes_t eventAttrib = {0};                           \
+      eventAttrib.version               = NVTX_VERSION;                  \
+      eventAttrib.size                  = NVTX_EVENT_ATTRIB_STRUCT_SIZE; \
+      eventAttrib.colorType             = NVTX_COLOR_ARGB;               \
+      eventAttrib.color                 = colors[color_id];              \
+      eventAttrib.messageType           = NVTX_MESSAGE_TYPE_ASCII;       \
+      eventAttrib.message.ascii         = name;                          \
+      nvtxRangePushEx(&eventAttrib);                                     \
+    }
+#  define POP_RANGE nvtxRangePop();
+#else
+#  define PUSH_RANGE(name, cid)
+#  define POP_RANGE
+#endif
+
+
 namespace PSMF
 {
   template <bool is_zero, typename Number>
@@ -1432,6 +1465,7 @@ namespace PSMF
       , rhs(minlevel, maxlevel)
       , defect(minlevel, maxlevel)
       , t(minlevel, maxlevel)
+      , t1(minlevel, maxlevel)
       , n_cycles(n_cycles)
       , analytic_solution(boundary_values)
       , pcout(pcout)
@@ -1448,6 +1482,7 @@ namespace PSMF
           defect[level] = solution[level];
           rhs[level]    = solution[level];
           t[level]      = solution[level];
+          t1[level]     = solution[level];
         }
 
       // set up a mapping for the geometry representation
@@ -1510,6 +1545,7 @@ namespace PSMF
             time.restart();
             for (unsigned int i = 0; i < n_mv; ++i)
               kernel(this);
+            cudaDeviceSynchronize();
             best_time = std::min(time.wall_time() / n_mv, best_time);
           }
 
@@ -1520,7 +1556,7 @@ namespace PSMF
         comp_data.push_back(data);
       };
 
-      for (unsigned int s = 0; s < 4; ++s)
+      for (unsigned int s = 0; s < 2; ++s)
         {
           switch (s)
             {
@@ -1645,9 +1681,11 @@ namespace PSMF
           const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
             &src) const
     {
+      PUSH_RANGE("PreconditionMG", 5)
       defect[maxlevel] = src;
       v_cycle(maxlevel, false);
       dst = solution[maxlevel];
+      POP_RANGE
     }
 
     // Solve with the conjugate gradient method preconditioned by the V-cycle
@@ -1675,10 +1713,12 @@ namespace PSMF
           time.start();
 
           solution[maxlevel] = 0;
+          PUSH_RANGE("GMRES", 0)
           solver.solve(matrix[maxlevel],
                        solution[maxlevel],
                        rhs[maxlevel],
                        *this);
+          POP_RANGE
 
           best_time = std::min(time.wall_time(), best_time);
         }
@@ -1822,7 +1862,7 @@ namespace PSMF
     do_smooth()
     {
       (mg_smoother).smooth(maxlevel, solution[maxlevel], rhs[maxlevel]);
-      cudaDeviceSynchronize();
+      // cudaDeviceSynchronize();
     }
 
     // run matrix-vector product in double precision
@@ -1830,7 +1870,7 @@ namespace PSMF
     do_matvec()
     {
       matrix[maxlevel].vmult(solution[maxlevel], rhs[maxlevel]);
-      cudaDeviceSynchronize();
+      // cudaDeviceSynchronize();
     }
 
   private:
@@ -1840,14 +1880,19 @@ namespace PSMF
     {
       if (level == minlevel)
         {
-          (mg_coarse)(level, solution[level], defect[level]);
+          // (mg_coarse)(level, solution[level], defect[level]);
+          smoother_wrapper<1>(level, solution[level], defect[level]);
           return;
         }
 
+      // if (outer_solution == false)
+      //   (mg_smoother).apply(level, solution[level], defect[level]);
+      // else
+      //   (mg_smoother).smooth(level, solution[level], defect[level]);
       if (outer_solution == false)
-        (mg_smoother).apply(level, solution[level], defect[level]);
+        smoother_wrapper<1>(level, solution[level], defect[level]);
       else
-        (mg_smoother).smooth(level, solution[level], defect[level]);
+        smoother_wrapper<0>(level, solution[level], defect[level]);
 
       matrix[level].vmult(t[level], solution[level]);
 
@@ -1862,7 +1907,25 @@ namespace PSMF
 
       // solution[level] += t[level];
 
-      (mg_smoother).smooth(level, solution[level], defect[level]);
+      // (mg_smoother).smooth(level, solution[level], defect[level]);
+      smoother_wrapper<0>(level, solution[level], defect[level]);
+    }
+
+    template <int is_apply>
+    void
+    smoother_wrapper(const int level, VectorType &u, const VectorType &r) const
+    {
+      t1[level] = 0;
+      if (is_apply)
+        {
+          u = 0;
+          (mg_smoother).smooth(level, u, r);
+        }
+
+      matrix[level].vmult(t[level], u);
+      t[level].sadd(-1., r);
+      (mg_smoother).smooth(level, t1[level], t[level]);
+      u += t1[level];
     }
 
     template <bool is_zero = false>
@@ -1970,11 +2033,13 @@ namespace PSMF
      * Auxiliary vector.
      */
     mutable MGLevelObject<VectorType> t;
+    mutable MGLevelObject<VectorType> t1;
 
 
     // MGLevelObject<SmootherType> smooth;
 
-    MGSmootherPrecondition<MatrixType, SmootherType, VectorType> mg_smoother;
+    // MGSmootherPrecondition<MatrixType, SmootherType, VectorType> mg_smoother;
+    MGSmootherRelaxation<MatrixType, SmootherType, VectorType> mg_smoother;
 
     /**
      * The coarse solver
