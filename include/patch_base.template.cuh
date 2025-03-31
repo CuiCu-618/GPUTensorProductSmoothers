@@ -1114,16 +1114,30 @@ namespace PSMF
 
         op.template setup_kernel<false>(patch_per_block);
 
-        if (n_patches_smooth[i] > 0)
+        if (n_patches_smooth[2 * i] > 0)
           {
             op.template loop_kernel<VectorType, Data, false>(
               src,
               dst,
-              *solution_ghosted,
-              get_smooth_data(i),
-              grid_dim_smooth[i],
-              block_dim_smooth[i],
+              dst,
+              get_smooth_data(2 * i),
+              grid_dim_smooth[2 * i],
+              block_dim_smooth[2 * i],
               stream);
+
+            AssertCudaKernel();
+          }
+
+        if (n_patches_smooth[2 * i + 1] > 0)
+          {
+            op.template loop_kernel<VectorType, Data, false>(
+              src,
+              dst,
+              dst,
+              get_smooth_data(2 * i + 1),
+              grid_dim_smooth[2 * i + 1],
+              block_dim_smooth[2 * i + 1],
+              stream1);
 
             AssertCudaKernel();
           }
@@ -1143,10 +1157,12 @@ namespace PSMF
 
             AssertCudaKernel();
           }
+        dst.zero_out_ghost_values();
 
         solution_ghosted->compress(VectorOperation::add);
         dst.add(1., *solution_ghosted);
       }
+    src.zero_out_ghost_values();
 #endif
   }
 
