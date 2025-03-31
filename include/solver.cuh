@@ -1920,6 +1920,7 @@ namespace PSMF
         {
           u = 0;
           (mg_smoother).smooth(level, u, r);
+          return;
         }
 
       matrix[level].vmult(t[level], u);

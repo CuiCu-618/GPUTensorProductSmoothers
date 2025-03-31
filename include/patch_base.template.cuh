@@ -392,29 +392,20 @@ namespace PSMF
             };
 
 
-            int subdomain_id_min = 0;
-            if (n_mpi_procs % 2 == 0)
-              {
-                int random_decision = 0;
-                if (my_subdomain_id == 0)
-                  random_decision = coin_flip(gen) ? 1 : 0;
-                MPI_Bcast(&random_decision, 1, MPI_INT, 0, MPI_COMM_WORLD);
-                subdomain_id_min =
-                  std::max_element(proc_to_cell_ids.cbegin(),
-                                   proc_to_cell_ids.cend(),
-                                   [&random_decision](const auto &a,
-                                                      const auto &b) {
-                                     if (a.second.size() == b.second.size())
-                                       return (bool)random_decision;
-                                     return a.second.size() < b.second.size();
-                                   })
-                    ->first;
-              }
-            else
-              subdomain_id_min = std::min_element(proc_to_cell_ids.cbegin(),
-                                                  proc_to_cell_ids.cend(),
-                                                  get_proc_with_min_cellid)
-                                   ->first;
+            int subdomain_id_min =
+              std::max_element(
+                proc_to_cell_ids.cbegin(),
+                proc_to_cell_ids.cend(),
+                [&my_subdomain_id](const auto &a, const auto &b) {
+                  if (a.second.size() == b.second.size())
+                    {
+                      int cell_id1 = a.second.begin()->to_string().back() - '0';
+                      return cell_id1 <= (1 << dim) / 2;
+                    }
+                  else
+                    return a.second.size() < b.second.size();
+                })
+                ->first;
 
             if (my_subdomain_id == subdomain_id_min)
               to_be_owned.insert(global_index);
@@ -601,7 +592,6 @@ namespace PSMF
       }
 
     // {
-    //   std::cout << graph_ptr_raw_ghost[0].size() << std::endl;
     //   const auto my_subdomain_id =
     //     dof_handler->get_triangulation().locally_owned_subdomain();
     //   for (auto p : graph_ptr_raw[0])
@@ -610,6 +600,8 @@ namespace PSMF
     //   for (auto p : graph_ptr_raw_ghost[0])
     //     std::cout << "ghost " << my_subdomain_id << ": " << (*p)[0]
     //               << std::endl;
+    //   std::cout << my_subdomain_id << " " << graph_ptr_raw_ghost[0].size()
+    //             << std::endl;
     // }
 
     // coloring
