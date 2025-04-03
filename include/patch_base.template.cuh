@@ -831,10 +831,12 @@ namespace PSMF
     DoFMapping<dim, fe_degree> dm;
 
     auto hl_dg          = dm.get_h_to_l_dg_normal();
+    auto lh_dg          = dm.get_l_to_h_dg_normal();
     auto hl_dg_interior = dm.get_h_to_l_dg_normal_interior();
 
     alloc_arrays(&l_to_h, hl_dg_interior.size());
     alloc_arrays(&h_to_l, hl_dg.size());
+    alloc_arrays(&l_to_h_dg, lh_dg.size());
 
     cudaError_t error_code =
       cudaMemcpy(l_to_h,
@@ -846,6 +848,12 @@ namespace PSMF
     error_code = cudaMemcpy(h_to_l,
                             hl_dg.data(),
                             hl_dg.size() * sizeof(types::global_dof_index),
+                            cudaMemcpyHostToDevice);
+    AssertCuda(error_code);
+
+    error_code = cudaMemcpy(l_to_h_dg,
+                            lh_dg.data(),
+                            lh_dg.size() * sizeof(types::global_dof_index),
                             cudaMemcpyHostToDevice);
     AssertCuda(error_code);
 
@@ -931,6 +939,7 @@ namespace PSMF
     data_copy.patch_id         = patch_id[color];
     data_copy.patch_type       = patch_type[color];
     data_copy.l_to_h           = l_to_h;
+    data_copy.l_to_h_dg        = l_to_h_dg;
     data_copy.h_to_l           = h_to_l;
     data_copy.laplace_mass_1d  = laplace_mass_1d;
     data_copy.laplace_stiff_1d = laplace_stiff_1d;

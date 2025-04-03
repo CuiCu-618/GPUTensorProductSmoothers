@@ -262,14 +262,19 @@ namespace PSMF
       unsigned int *patch_type;
 
       /**
-       * Pointer to mapping from l to h
+       * Pointer to mapping from h to l for the interior
        */
       types::global_dof_index *l_to_h;
 
       /**
-       * Pointer to mapping from l to h
+       * Pointer to mapping from h to l
        */
       types::global_dof_index *h_to_l;
+
+      /**
+       * Pointer to mapping from l to h
+       */
+      types::global_dof_index *l_to_h_dg;
 
       /**
        * Pointer to 1D mass matrix for lapalace operator.
@@ -593,6 +598,7 @@ namespace PSMF
      * Pointer to mapping from l to h
      */
     types::global_dof_index *l_to_h;
+    types::global_dof_index *l_to_h_dg;
 
     std::vector<unsigned int> l_to_h_host;
 

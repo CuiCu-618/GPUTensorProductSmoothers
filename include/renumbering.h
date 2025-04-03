@@ -59,6 +59,8 @@ namespace PSMF
           form_patch_dg_lexicographic_numbering_normal(cell_dofs);
         h_to_l_dg_normal_interior =
           get_patch_dg_lexicographic_numbering_interior(h_to_l_dg_normal);
+
+        l_to_h_dg_normal = reverse_numbering(h_to_l_dg_normal);
       }
     }
 
@@ -71,6 +73,11 @@ namespace PSMF
     get_h_to_l_dg_normal_interior()
     {
       return h_to_l_dg_normal_interior;
+    }
+    std::vector<value_type>
+    get_l_to_h_dg_normal()
+    {
+      return l_to_h_dg_normal;
     }
 
   private:
@@ -140,6 +147,7 @@ namespace PSMF
 
     std::vector<value_type> h_to_l_dg_normal;
     std::vector<value_type> h_to_l_dg_normal_interior;
+    std::vector<value_type> l_to_h_dg_normal;
   };
 
 } // namespace PSMF

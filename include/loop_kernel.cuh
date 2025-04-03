@@ -12,6 +12,8 @@
 #ifndef LOOP_KERNEL_CUH
 #define LOOP_KERNEL_CUH
 
+#include <strings.h>
+
 #include "evaluate_kernel.cuh"
 #include "patch_base.cuh"
 
@@ -91,6 +93,26 @@ namespace PSMF
                                         threadIdx.y * n_dofs_1d + local_tid_x];
           }
 
+#if 0
+        constexpr int n_cell_dofs = Util::pow(fe_degree + 1, dim);
+
+        auto index = threadIdx.y * n_dofs_1d + local_tid_x;
+        for (int cell = 0; cell < (1 << dim); ++cell)
+          {
+            auto first_dof = gpu_data.first_dof[patch * (1 << dim) + cell];
+            for (int ind = index; ind < n_cell_dofs;
+                 ind += n_dofs_1d * n_dofs_1d)
+              {
+                types::global_dof_index global_dof_indices = first_dof + ind;
+
+                shared_data
+                  .local_src[gpu_data.l_to_h_dg[cell * n_cell_dofs + ind]] =
+                  src[global_dof_indices];
+
+                shared_data.local_dst[cell * n_cell_dofs + ind] = 0.;
+              }
+          }
+#else
         for (unsigned int z = 0; z < n_dofs_z; ++z)
           {
             const unsigned int index =
@@ -118,6 +140,7 @@ namespace PSMF
 
             shared_data.local_dst[local_patch * local_dim + index] = 0.;
           }
+#endif
 
         evaluate_laplace<dim, fe_degree, Number, laplace>(local_patch,
                                                           &shared_data);
