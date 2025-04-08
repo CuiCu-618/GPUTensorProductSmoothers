@@ -213,6 +213,9 @@ LaplaceProblem<dim, fe_degree>::setup_system()
          << n_replicate << " x (" << (1 << (nlevels - 1)) << " x ("
          << fe->degree << " + 1))^" << dim << std::endl;
 
+  std::cout << "Number of degrees of freedom: " << dof_handler.n_dofs()
+            << std::endl;
+
   Utilities::System::MemoryStats stats;
   Utilities::System::get_memory_stats(stats);
   Utilities::MPI::MinMaxAvg memory =

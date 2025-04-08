@@ -714,11 +714,6 @@ namespace PSMF
     Number *local_dst;
 
     /**
-     * Shared memory for local and interior residual.
-     */
-    Number *local_residual;
-
-    /**
      * Shared memory for computed 1D mass matrix.
      */
     Number *local_mass;
@@ -727,16 +722,6 @@ namespace PSMF
      * Shared memory for computed 1D Laplace matrix.
      */
     Number *local_derivative;
-
-    /**
-     * Shared memory for computed 1D eigenvalues.
-     */
-    Number *local_eigenvalues;
-
-    /**
-     * Shared memory for computed 1D eigenvectors.
-     */
-    Number *local_eigenvectors;
 
     /**
      * Shared memory for internal buffer.

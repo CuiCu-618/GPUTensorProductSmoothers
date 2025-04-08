@@ -20,7 +20,7 @@
 namespace PSMF
 {
   template <int dim, int fe_degree, typename Number>
-  __device__ bool
+  __device__ inline bool
   LevelVertexPatch<dim, fe_degree, Number>::Data::is_ghost(
     const unsigned int global_index) const
   {
@@ -29,22 +29,23 @@ namespace PSMF
   }
 
   template <int dim, int fe_degree, typename Number>
-  __device__ types::global_dof_index
-             LevelVertexPatch<dim, fe_degree, Number>::Data::global_to_local(
+  __device__ inline types::global_dof_index
+  LevelVertexPatch<dim, fe_degree, Number>::Data::global_to_local(
     const types::global_dof_index global_index) const
   {
     if (local_range_start <= global_index && global_index < local_range_end)
       return global_index - local_range_start;
     else
       {
-        printf("*************** ERROR index: %lu ***************\n",
-               global_index);
-        printf("******** All indices should be local **********\n");
+        return 0;
+        // printf("*************** ERROR index: %lu ***************\n",
+        //        global_index);
+        // printf("******** All indices should be local **********\n");
 
-        const unsigned int index_within_ghosts =
-          binary_search(global_index, 0, n_ghost_indices - 1);
-
-        return local_range_end - local_range_start + index_within_ghosts;
+        // const unsigned int index_within_ghosts =
+        //   binary_search(global_index, 0, n_ghost_indices - 1);
+        //
+        // return local_range_end - local_range_start + index_within_ghosts;
       }
   }
 
@@ -564,6 +565,9 @@ namespace PSMF
     // create patches
     std::vector<std::vector<CellIterator>> cell_collections;
     cell_collections = std::move(gather_vertex_patches(*dof_handler, level));
+    std::sort(cell_collections.begin(),
+              cell_collections.end(),
+              [](auto &a, auto &b) { return a[0] < b[0]; });
 
     graph_ptr_raw.clear();
     graph_ptr_raw_ghost.clear();
@@ -1780,7 +1784,7 @@ namespace PSMF
                                           static_cast<double>(patch_per_block));
 
         grid_dim_lapalce[i]  = dim3(apply_n_blocks);
-        block_dim_laplace[i] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
+        block_dim_laplace[i] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d, 2);
 
         n_patches      = n_patches_laplace_ghost[i];
         apply_n_blocks = std::ceil(static_cast<double>(n_patches) /
@@ -1796,7 +1800,7 @@ namespace PSMF
                                           static_cast<double>(patch_per_block));
 
         grid_dim_smooth[i]  = dim3(apply_n_blocks);
-        block_dim_smooth[i] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
+        block_dim_smooth[i] = dim3(patch_per_block * n_dofs_1d, n_dofs_1d, 2);
 
         if (i >= regular_vpatch_size)
           continue;

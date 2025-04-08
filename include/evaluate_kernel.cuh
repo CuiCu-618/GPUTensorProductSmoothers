@@ -295,11 +295,11 @@ namespace PSMF
       constexpr int stride   = n_dofs_1d * n_dofs_1d;
 
       const unsigned int row = threadIdx.y;
-      const unsigned int col = threadIdx.x % n_dofs_1d;
+      const unsigned int col = threadIdx.x;
 
-      Number pval[n_dofs_1d];
+      Number pval[n_dofs_1d / 2];
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
         {
           pval[z] = 0;
           // #pragma unroll
@@ -308,24 +308,27 @@ namespace PSMF
               const unsigned int shape_idx =
                 (direction == 0) ?
                   col * n_dofs_1d + (k + col / multiple) % n_dofs_1d :
-                (direction == 1) ? row * n_dofs_1d + k :
-                                   z * n_dofs_1d + k;
+                (direction == 1) ?
+                  row * n_dofs_1d + k :
+                  (z + threadIdx.z * n_dofs_1d / 2) * n_dofs_1d + k;
 
               const unsigned int source_idx =
                 (direction == 0) ?
                   (row * n_dofs_1d + (k + col / multiple) % n_dofs_1d +
-                   z * stride) :
-                (direction == 1) ? (k * n_dofs_1d + col + z * stride) :
-                                   (row * n_dofs_1d + col + k * stride);
+                   (z + threadIdx.z * n_dofs_1d / 2) * stride) :
+                (direction == 1) ?
+                  (k * n_dofs_1d + col +
+                   (z + threadIdx.z * n_dofs_1d / 2) * stride) :
+                  (row * n_dofs_1d + col + k * stride);
 
               pval[z] += shape_data[shape_idx] * in[source_idx];
             }
         }
 
-      for (unsigned int z = 0; z < n_dofs_1d; ++z)
+      for (unsigned int z = 0; z < n_dofs_1d / 2; ++z)
         {
           const unsigned int destination_idx =
-            row * n_dofs_1d + col + z * stride;
+            row * n_dofs_1d + col + (z + threadIdx.z * n_dofs_1d / 2) * stride;
 
           if (add)
             out[destination_idx] += pval[z];
@@ -2239,10 +2242,13 @@ namespace PSMF
       apply<2, true>(eigenvectors, src, tmp);
       __syncthreads();
       if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
-        for (unsigned int z = 0; z < n_dofs_1d - 2; ++z)
+        for (unsigned int z = 0; z < (n_dofs_1d - 2) / 2; ++z)
           {
-            tmp[z * n_dofs_1d * n_dofs_1d + row * (n_dofs_1d - 2) + col] /=
-              (eigenvalues[z] + eigenvalues[row] + eigenvalues[col]);
+            tmp[(z + threadIdx.z * (n_dofs_1d - 2) / 2) * n_dofs_1d *
+                  n_dofs_1d +
+                row * (n_dofs_1d - 2) + col] /=
+              (eigenvalues[(z + threadIdx.z * (n_dofs_1d - 2) / 2)] +
+               eigenvalues[row] + eigenvalues[col]);
           }
       __syncthreads();
       apply<0, false>(eigenvectors, tmp, src);
@@ -2269,11 +2275,11 @@ namespace PSMF
       const unsigned int row = linear_tid / n_dofs_1d_i;
       const unsigned int col = linear_tid % n_dofs_1d_i;
 
-      Number pval[n_dofs_1d_i];
+      Number pval[n_dofs_1d_i / 2];
 
       // kernel product: A kdot src, [N x N] * [N^dim, 1]
       if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
-        for (unsigned int z = 0; z < n_dofs_1d_i; ++z)
+        for (unsigned int z = 0; z < n_dofs_1d_i / 2; ++z)
           {
             pval[z] = 0;
             // #pragma unroll
@@ -2284,29 +2290,34 @@ namespace PSMF
                     ((direction == 0) ?
                        ((k + col / multiple) % n_dofs_1d_i) * n_dofs_1d_i +
                          col :
-                     (direction == 1) ? k * n_dofs_1d_i + row :
-                                        k * n_dofs_1d_i + z) :
+                     (direction == 1) ?
+                       k * n_dofs_1d_i + row :
+                       k * n_dofs_1d_i + (z + threadIdx.z * n_dofs_1d_i / 2)) :
                     ((direction == 0) ?
                        col * n_dofs_1d_i + (k + col / multiple) % n_dofs_1d_i :
-                     (direction == 1) ? row * n_dofs_1d_i + k :
-                                        z * n_dofs_1d_i + k);
+                     (direction == 1) ?
+                       row * n_dofs_1d_i + k :
+                       (z + threadIdx.z * n_dofs_1d_i / 2) * n_dofs_1d_i + k);
 
                 const unsigned int source_idx =
                   (direction == 0) ?
                     (row * n_dofs_1d_i + (k + col / multiple) % n_dofs_1d_i +
-                     z * stride) :
-                  (direction == 1) ? (k * n_dofs_1d_i + col + z * stride) :
-                                     (row * n_dofs_1d_i + col + k * stride);
+                     (z + threadIdx.z * n_dofs_1d_i / 2) * stride) :
+                  (direction == 1) ?
+                    (k * n_dofs_1d_i + col +
+                     (z + threadIdx.z * n_dofs_1d_i / 2) * stride) :
+                    (row * n_dofs_1d_i + col + k * stride);
 
                 pval[z] += shape_data[shape_idx] * in[source_idx];
               }
           }
 
       if (linear_tid < n_dofs_1d_i * n_dofs_1d_i)
-        for (unsigned int z = 0; z < n_dofs_1d_i; ++z)
+        for (unsigned int z = 0; z < n_dofs_1d_i / 2; ++z)
           {
             const unsigned int destination_idx =
-              row * n_dofs_1d_i + col + z * stride;
+              row * n_dofs_1d_i + col +
+              (z + threadIdx.z * n_dofs_1d_i / 2) * stride;
 
             if (add)
               out[destination_idx] += pval[z];
@@ -2483,22 +2494,20 @@ namespace PSMF
   evaluate_laplace(const unsigned int                local_patch,
                    SharedMemData<dim, Number, true> *shared_data)
   {
-    constexpr unsigned int n_dofs_1d         = 2 * fe_degree + 2;
-    constexpr unsigned int n_dofs_1d_padding = n_dofs_1d + Util::padding;
-    constexpr unsigned int local_dim         = Util::pow(n_dofs_1d, dim);
-    constexpr unsigned int local_dim_padding =
-      Util::pow(n_dofs_1d, dim - 1) * n_dofs_1d_padding;
+    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 2;
+    // constexpr unsigned int n_dofs_1d_padding = n_dofs_1d + Util::padding;
+    // constexpr unsigned int local_dim         = Util::pow(n_dofs_1d, dim);
+    // constexpr unsigned int local_dim_padding =
+    //   Util::pow(n_dofs_1d, dim - 1) * n_dofs_1d_padding;
 
     TPEvaluatorLaplace<laplace, Number, n_dofs_1d, dim> eval;
     __syncthreads();
 
-    eval.vmult(&shared_data->local_dst[local_patch * local_dim_padding],
-               &shared_data->local_src[local_patch * local_dim_padding],
-               &shared_data->local_mass[local_patch * n_dofs_1d *
-                                        n_dofs_1d_padding * dim],
-               &shared_data->local_derivative[local_patch * n_dofs_1d *
-                                              n_dofs_1d_padding * dim],
-               &shared_data->tmp[local_patch * local_dim_padding * (dim - 1)]);
+    eval.vmult(shared_data->local_dst,
+               shared_data->local_src,
+               shared_data->local_mass,
+               shared_data->local_derivative,
+               shared_data->tmp);
     __syncthreads();
   }
 
@@ -2580,7 +2589,7 @@ namespace PSMF
     const unsigned int linear_tid =
       threadIdx.x % n_dofs_1d + threadIdx.y * n_dofs_1d;
 
-    if (linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
+    if (threadIdx.z == 0 && linear_tid < (n_dofs_1d - 2) * (n_dofs_1d - 2))
       {
         unsigned int row = linear_tid / (n_dofs_1d - 2);
         unsigned int col = linear_tid % (n_dofs_1d - 2);
@@ -2597,7 +2606,7 @@ namespace PSMF
         unsigned int row = linear_tid / (n_dofs_1d - 2) + 1;
         unsigned int col = linear_tid % (n_dofs_1d - 2) + 1;
 
-        for (unsigned int z = 0; z < n_dofs_1d_z; ++z)
+        for (unsigned int z = threadIdx.z; z < n_dofs_1d_z; z += 2)
           {
             shared_data
               ->tmp[2 * local_patch * local_dim + z * n_dofs_1d * n_dofs_1d +
