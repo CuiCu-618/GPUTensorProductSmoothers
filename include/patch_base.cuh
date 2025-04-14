@@ -64,7 +64,7 @@
 // #define USECONSTMEM
 // stote shape data into constant memory
 
-#define USETEXTURE
+// #define USETEXTURE
 // stote shape data into texture memory
 
 using namespace dealii;

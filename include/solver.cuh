@@ -30,6 +30,7 @@
 
 #include <functional>
 
+#include "ct_parameter.h"
 #include "cuda_mg_transfer.cuh"
 #include "laplace_operator.cuh"
 #include "patch_base.cuh"
@@ -1104,7 +1105,10 @@ namespace PSMF
           const LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>
             &src) const
     {
+      Timer time;
       preconditioner_mg->vmult(dst, src);
+      cudaDeviceSynchronize();
+      mg_time += time.wall_time();
     }
 
     // Solve with the conjugate gradient method preconditioned by the V-cycle
@@ -1131,6 +1135,7 @@ namespace PSMF
         PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number>>>(
         *dof_handler, mg, *transfer);
 
+      mg_time = 0;
 
       ReductionControl solver_control(CT::MAX_STEPS_, 1e-15, CT::REDUCE_);
       solver_control.enable_history_data();
@@ -1152,6 +1157,7 @@ namespace PSMF
                        rhs[maxlevel],
                        *this);
 
+          cudaDeviceSynchronize();
           best_time = std::min(time.wall_time(), best_time);
         }
 
@@ -1188,6 +1194,8 @@ namespace PSMF
       auto history_data = solver_control.get_history_data();
       for (auto i = 1U; i < n_iter + 1; ++i)
         *pcout << "step " << i << ": " << history_data[i] / residual_0 << "\n";
+
+      *pcout << "Preconditioner time: " << mg_time / N << " s\n";
 
       return solver_data;
     }
@@ -1235,32 +1243,79 @@ namespace PSMF
     }
 
     // Solve with the FMG cycle and return the reduction rate of a V-cycle
-    std::tuple<int, double, double>
+    std::vector<SolverData>
     solve_vcycle()
     {
-      double init_residual = 0;
-      double res_norm      = 0;
+      solve_fmg();
 
-      init_residual = rhs[maxlevel].l2_norm();
+      std::vector<double> history_data(CT::MAX_STEPS_);
 
-      solution[maxlevel] = 0;
+      double       init_residual = 0;
+      double       res_norm      = 0;
+      unsigned int it;
 
-      unsigned int it = 0;
-      for (; it < CT::MAX_STEPS_; ++it)
+      init_residual   = rhs[maxlevel].l2_norm();
+      history_data[0] = init_residual;
+
+      Timer              time;
+      const unsigned int N         = 10;
+      double             best_time = 1e10;
+      for (unsigned int i = 0; i < N; ++i)
         {
-          v_cycle(maxlevel, true);
+          time.reset();
+          time.start();
 
-          // set_inhomogeneous_bc<true>(maxlevel);
+          solution[maxlevel] = 0;
 
-          matrix[maxlevel].vmult(t[maxlevel], solution[maxlevel]);
-          t[maxlevel].sadd(-1., 1., rhs[maxlevel]);
-          res_norm = t[maxlevel].l2_norm();
+          it = 1;
+          for (; it < CT::MAX_STEPS_; ++it)
+            {
+              v_cycle(maxlevel, true);
 
-          if (res_norm / init_residual < CT::REDUCE_)
-            break;
+              // set_inhomogeneous_bc<true>(maxlevel);
+
+              matrix[maxlevel].vmult(t[maxlevel], solution[maxlevel]);
+              t[maxlevel].sadd(-1., 1., rhs[maxlevel]);
+              res_norm = t[maxlevel].l2_norm();
+
+              history_data[it] = res_norm;
+
+              if (history_data[it] < CT::REDUCE_)
+                break;
+              if (std::abs(history_data[it] - history_data[it - 1]) <
+                  CT::REDUCE_)
+                break;
+            }
+
+          best_time = std::min(time.wall_time(), best_time);
         }
 
-      return std::make_tuple(it + 1, res_norm, init_residual);
+      for (auto i = 1U; i < it; ++i)
+        *pcout << "step " << i << ": " << history_data[i] << "\n";
+
+      auto n_iter     = it - 1;
+      auto residual_0 = history_data[0];
+      auto residual_n = history_data[it];
+      auto reduction =
+        std::pow(10, std::ceil(std::log10(residual_n / residual_0)));
+
+      // *** average reduction: r_n = rho^n * r_0
+      const double rho =
+        std::pow(residual_n / residual_0, static_cast<double>(1. / n_iter));
+      const double convergence_rate =
+        1. / n_iter * std::log10(residual_0 / residual_n);
+
+      const auto n_frac = std::log(reduction) / std::log(rho);
+
+      SolverData data;
+      data.solver_name = "V-cycle";
+      data.n_iteration = n_iter;
+      data.n_step      = n_frac;
+      data.timing      = best_time;
+
+      solver_data.push_back(data);
+
+      return solver_data;
     }
 
     // run v-cycle in double precision
@@ -1287,6 +1342,7 @@ namespace PSMF
     do_vcycle()
     {
       v_cycle(maxlevel, true);
+      cudaDeviceSynchronize();
     }
 
     // run smooth in double precision
@@ -1476,6 +1532,8 @@ namespace PSMF
     const Function<dim, Number> &analytic_solution;
 
     std::shared_ptr<ConditionalOStream> pcout;
+
+    mutable double mg_time;
   };
 
 } // namespace PSMF

@@ -508,6 +508,7 @@ namespace Step64
 
     *pcout << std::endl;
 
+    // std::vector<PSMF::SolverData> solver_data = solver.solve_vcycle();
     std::vector<PSMF::SolverData> solver_data = solver.solve();
     for (auto &data : solver_data)
       {
