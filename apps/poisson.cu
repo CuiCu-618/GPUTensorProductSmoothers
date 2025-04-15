@@ -38,6 +38,7 @@
 
 #include "app_utilities.h"
 #include "ct_parameter.h"
+#include "cuda_matrix_free.cuh"
 #include "solver.cuh"
 #include "utilities.cuh"
 
@@ -59,7 +60,7 @@ namespace Step64
       Number val = 1.;
       for (unsigned int d = 0; d < dim; ++d)
         val *= std::sin(numbers::PI * p[d]);
-      return val;
+      return -val;
     }
 
     virtual Tensor<1, dim, Number>
@@ -90,7 +91,7 @@ namespace Step64
       Number       val = 1.;
       for (unsigned int d = 0; d < dim; ++d)
         val *= std::sin(arg * p[d]);
-      return dim * arg * arg * val;
+      return -dim * arg * arg * val;
     }
   };
 
@@ -100,6 +101,7 @@ namespace Step64
   public:
     using full_number   = double;
     using vcycle_number = CT::VCYCLE_NUMBER_;
+    using MatrixFree    = PSMF::MatrixFree<dim, full_number>;
     using MatrixFreeDP  = PSMF::LevelVertexPatch<dim, fe_degree, full_number>;
     using MatrixFreeSP  = PSMF::LevelVertexPatch<dim, fe_degree, vcycle_number>;
 
@@ -115,6 +117,8 @@ namespace Step64
     assemble_mg();
     void
     solve_mg(unsigned int n_mg_cycles);
+    std::pair<double, double>
+    compute_error();
 
     template <PSMF::LaplaceVariant  laplace,
               PSMF::LaplaceVariant  smooth_vmult,
@@ -137,11 +141,16 @@ namespace Step64
     std::fstream                        fout;
     std::shared_ptr<ConditionalOStream> pcout;
 
+    MGLevelObject<std::shared_ptr<MatrixFree>>   level_mfdata;
     MGLevelObject<std::shared_ptr<MatrixFreeDP>> mfdata_dp;
     MGLevelObject<std::shared_ptr<MatrixFreeSP>> mfdata_sp;
     MGConstrainedDoFs                            mg_constrained_dofs;
+    AffineConstraints<double>                    constraints;
 
     PSMF::MGTransferCUDA<dim, vcycle_number, CT::DOF_LAYOUT_> transfer;
+
+    LinearAlgebra::distributed::Vector<full_number, MemorySpace::Host>
+      ghost_solution_host;
   };
 
   template <int dim, int fe_degree>
@@ -155,7 +164,11 @@ namespace Step64
       if (CT::DOF_LAYOUT_ == PSMF::DoFLayout::Q)
         return std::make_shared<FE_Q<dim>>(fe_degree);
       else if (CT::DOF_LAYOUT_ == PSMF::DoFLayout::DGQ)
+#ifdef CHEBYSHEV
+        return std::make_shared<FE_DGQ<dim>>(fe_degree);
+#else
         return std::make_shared<FE_DGQHermite<dim>>(fe_degree);
+#endif
       return std::shared_ptr<FiniteElement<dim>>();
     }())
     , dof_handler(triangulation)
@@ -201,6 +214,9 @@ namespace Step64
     setup_time += time.wall_time();
 
     *pcout << "DoF setup time:         " << setup_time << "s" << std::endl;
+
+    constraints.clear();
+    constraints.close();
   }
   template <int dim, int fe_degree>
   void
@@ -216,13 +232,18 @@ namespace Step64
     // set up a mapping for the geometry representation
     MappingQ1<dim> mapping;
 
+#ifdef CHEBYSHEV
+    unsigned int minlevel = 0;
+#else
     unsigned int minlevel = 1;
+#endif
     unsigned int maxlevel = triangulation.n_global_levels() - 1;
 
-    mfdata_dp.resize(1, maxlevel);
+    mfdata_dp.resize(minlevel, maxlevel);
+    level_mfdata.resize(minlevel, maxlevel);
 
     if (std::is_same_v<vcycle_number, float>)
-      mfdata_sp.resize(1, maxlevel);
+      mfdata_sp.resize(minlevel, maxlevel);
 
     Timer time;
     for (unsigned int level = minlevel; level <= maxlevel; ++level)
@@ -247,6 +268,25 @@ namespace Step64
 
           mfdata_dp[level] = std::make_shared<MatrixFreeDP>();
           mfdata_dp[level]->reinit(dof_handler, level, additional_data);
+        }
+
+        {
+          typename MatrixFree::AdditionalData additional_data;
+          additional_data.mapping_update_flags =
+            update_values | update_gradients | update_JxW_values;
+          additional_data.mapping_update_flags_inner_faces =
+            update_values | update_gradients | update_JxW_values |
+            update_normal_vectors;
+          additional_data.mg_level    = level;
+          additional_data.matrix_type = PSMF::MatrixType::level_matrix;
+
+          level_mfdata[level] = std::make_shared<MatrixFree>();
+          level_mfdata[level]->reinit(mapping,
+                                      dof_handler,
+                                      constraints,
+                                      QGauss<1>(fe_degree + 1),
+                                      IteratorFilters::LocallyOwnedLevelCell(),
+                                      additional_data);
         }
 
         // single-precision matrix-free data
@@ -303,10 +343,26 @@ namespace Step64
              mfdata_dp,
              mfdata_sp,
              transfer,
-             Functions::ZeroFunction<dim, full_number>(),
-             Functions::ConstantFunction<dim, full_number>(1.),
+             Solution<dim, full_number>(),
+             RightHandSide<dim, full_number>(),
              pcout,
              1);
+
+#ifdef CHEBYSHEV
+    PSMF::MultigridSolverChebyshev<dim,
+                                   fe_degree,
+                                   CT::DOF_LAYOUT_,
+                                   full_number,
+                                   laplace>
+      solver_cheby(dof_handler,
+                   mfdata_dp,
+                   level_mfdata,
+                   transfer,
+                   Solution<dim, full_number>(),
+                   RightHandSide<dim, full_number>(),
+                   pcout,
+                   1);
+#endif
 
     *pcout << "\nMG with [" << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " "
            << LaplaceToString(CT::SMOOTH_VMULT_[j]) << " "
@@ -318,8 +374,11 @@ namespace Step64
     info_table[index].add_value("level", triangulation.n_global_levels());
     info_table[index].add_value("cells", triangulation.n_global_active_cells());
     info_table[index].add_value("dofs", dof_handler.n_dofs());
-
-    std::vector<PSMF::SolverData> comp_data = solver.static_comp();
+#ifdef CHEBYSHEV
+    std::vector<PSMF::SolverData> comp_data = solver_cheby.static_comp();
+#else
+    std::vector<PSMF::SolverData> comp_data   = solver.static_comp();
+#endif
     for (auto &data : comp_data)
       {
         *pcout << data.print_comp();
@@ -346,7 +405,11 @@ namespace Step64
 
     *pcout << std::endl;
 
+#ifdef CHEBYSHEV
+    std::vector<PSMF::SolverData> solver_data = solver_cheby.solve_cheby();
+#else
     std::vector<PSMF::SolverData> solver_data = solver.solve();
+#endif
     for (auto &data : solver_data)
       {
         *pcout << data.print_solver();
@@ -379,6 +442,75 @@ namespace Step64
             info_table[index].add_column_to_supercolumn(mem, data.solver_name);
           }
       }
+
+    if (CT::SETS_ == "error_analysis")
+      {
+#ifdef CHEBYSHEV
+        auto solution = solver_cheby.get_solution();
+#else
+        auto solution = solver.get_solution();
+#endif
+        LinearAlgebra::distributed::Vector<double, MemorySpace::Host>
+                                               solution_host(solution.size());
+        LinearAlgebra::ReadWriteVector<double> rw_vector(solution.size());
+        rw_vector.import(solution, VectorOperation::insert);
+        solution_host.import(rw_vector, VectorOperation::insert);
+        ghost_solution_host = solution_host;
+        constraints.distribute(ghost_solution_host);
+
+        const auto [l2_error, H1_error] = compute_error();
+
+        *pcout << "L2 error: " << l2_error << std::endl
+               << "H1 error: " << H1_error << std::endl
+               << std::endl;
+
+        // ghost_solution_host.print(std::cout);
+
+        info_table[index].add_value("L2_error", l2_error);
+        info_table[index].set_scientific("L2_error", true);
+        info_table[index].set_precision("L2_error", 3);
+
+        info_table[index].evaluate_convergence_rates(
+          "L2_error", "dofs", ConvergenceTable::reduction_rate_log2, dim);
+
+        info_table[index].add_value("H1_error", H1_error);
+        info_table[index].set_scientific("H1_error", true);
+        info_table[index].set_precision("H1_error", 3);
+
+        info_table[index].evaluate_convergence_rates(
+          "H1_error", "dofs", ConvergenceTable::reduction_rate_log2, dim);
+      }
+  }
+
+  template <int dim, int fe_degree>
+  std::pair<double, double>
+  LaplaceProblem<dim, fe_degree>::compute_error()
+  {
+    Vector<double> cellwise_norm(triangulation.n_active_cells());
+    VectorTools::integrate_difference(dof_handler,
+                                      ghost_solution_host,
+                                      Solution<dim, full_number>(),
+                                      cellwise_norm,
+                                      QGauss<dim>(fe->degree + 1),
+                                      VectorTools::L2_norm);
+    const double global_norm =
+      VectorTools::compute_global_error(triangulation,
+                                        cellwise_norm,
+                                        VectorTools::L2_norm);
+
+    Vector<double> cellwise_h1norm(triangulation.n_active_cells());
+    VectorTools::integrate_difference(dof_handler,
+                                      ghost_solution_host,
+                                      Solution<dim, full_number>(),
+                                      cellwise_h1norm,
+                                      QGauss<dim>(fe->degree + 1),
+                                      VectorTools::H1_seminorm);
+    const double global_h1norm =
+      VectorTools::compute_global_error(triangulation,
+                                        cellwise_h1norm,
+                                        VectorTools::H1_seminorm);
+
+    return std::make_pair(global_norm, global_h1norm);
   }
 
   template <int dim, int fe_degree>

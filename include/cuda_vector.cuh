@@ -129,7 +129,7 @@ namespace PSMF
       {
         const int idx = idx_base + c * BKSIZE_ELEMWISE_OP;
         if (idx < N)
-          v[idx] = 1.0 / v[idx];
+          v[idx] = (abs(v[idx]) < 1e-10) ? 1.0 : 1.0 / v[idx];
       }
   }
 

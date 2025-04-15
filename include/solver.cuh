@@ -42,6 +42,8 @@ using namespace dealii;
 
 // #define USE_NVTX
 
+#define DEALIIMG
+
 #ifdef USE_NVTX
 #  include <nvToolsExt.h>
 const uint32_t colors[]   = {0x0000ff00,
@@ -1682,10 +1684,21 @@ namespace PSMF
             &src) const
     {
       PUSH_RANGE("PreconditionMG", 5)
+#  ifdef DEALIIMG
+      preconditioner_mg->vmult(dst, src);
+#  else
       defect[maxlevel] = src;
       v_cycle(maxlevel, false);
       dst = solution[maxlevel];
+#  endif
       POP_RANGE
+    }
+
+    // Return the solution vector for further processing
+    const VectorType &
+    get_solution()
+    {
+      return solution[maxlevel];
     }
 
     // Solve with the conjugate gradient method preconditioned by the V-cycle
@@ -1696,7 +1709,27 @@ namespace PSMF
     {
       *pcout << "Solving...\n";
 
-      std::string solver_name = "GMRES";
+      std::string            solver_name = "GMRES";
+
+#  ifdef DEALIIMG
+      mg::Matrix<VectorType> mg_matrix(matrix);
+
+      Multigrid<VectorType> mg(mg_matrix,
+                               mg_coarse,
+                               *transfer,
+                               mg_smoother,
+                               mg_smoother,
+                               minlevel,
+                               maxlevel);
+
+      preconditioner_mg = std::make_unique<
+        PreconditionMG<dim,
+                       VectorType,
+                       MGTransferCUDA<dim, Number, dof_layout>>>(*dof_handler,
+                                                                 mg,
+                                                                 *transfer);
+
+#  endif
 
       ReductionControl solver_control(CT::MAX_STEPS_, 1e-15, CT::REDUCE_);
       solver_control.enable_history_data();
@@ -1915,14 +1948,14 @@ namespace PSMF
     void
     smoother_wrapper(const int level, VectorType &u, const VectorType &r) const
     {
-      t1[level] = 0;
       if (is_apply)
         {
-          u = 0;
-          (mg_smoother).smooth(level, u, r);
+          // u = 0;
+          (mg_smoother).apply(level, u, r);
           return;
         }
 
+      t1[level] = 0;
       matrix[level].vmult(t[level], u);
       t[level].sadd(-1., r);
       (mg_smoother).smooth(level, t1[level], t[level]);
@@ -2039,8 +2072,11 @@ namespace PSMF
 
     // MGLevelObject<SmootherType> smooth;
 
-    // MGSmootherPrecondition<MatrixType, SmootherType, VectorType> mg_smoother;
+#  ifdef DEALIIMG
+    MGSmootherPrecondition<MatrixType, SmootherType, VectorType> mg_smoother;
+#  else
     MGSmootherRelaxation<MatrixType, SmootherType, VectorType> mg_smoother;
+#  endif
 
     /**
      * The coarse solver
@@ -2065,22 +2101,33 @@ namespace PSMF
     const Function<dim, Number> &analytic_solution;
 
     std::shared_ptr<ConditionalOStream> pcout;
+
+    mutable std::unique_ptr<
+      PreconditionMG<dim, VectorType, MGTransferCUDA<dim, Number, dof_layout>>>
+      preconditioner_mg;
   };
 
 #endif
 
 
 
-  template <int dim, int fe_degree, DoFLayout dof_layout, typename Number>
+  template <int       dim,
+            int       fe_degree,
+            DoFLayout dof_layout,
+            typename Number,
+            LaplaceVariant lapalace_kernel = LaplaceVariant::ConflictFree>
   class MultigridSolverChebyshev
   {
   public:
     using VectorType =
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>;
-    using MatrixType     = LaplaceDGOperator<dim, fe_degree, Number>;
+    using MatrixOp   = LaplaceOperator<dim, fe_degree, Number, lapalace_kernel>;
+    using MatrixType = LaplaceDGOperator<dim, fe_degree, Number>;
     using EdgeMatrixType = LaplaceDGEdgeOperator<dim, fe_degree, Number>;
     using SmootherType   = PreconditionChebyshev<MatrixType, VectorType>;
+    using SmootherOpType = PreconditionChebyshev<MatrixOp, VectorType>;
     using MatrixFree     = MatrixFree<dim, Number>;
+    using MatrixFreeType = LevelVertexPatch<dim, fe_degree, Number>;
 
     MultigridSolverChebyshev(
       const DoFHandler<dim>                            &dof_handler,
@@ -2160,6 +2207,73 @@ namespace PSMF
       }
     }
 
+    MultigridSolverChebyshev(
+      const DoFHandler<dim>                                &dof_handler,
+      const MGLevelObject<std::shared_ptr<MatrixFreeType>> &mfdata_patch,
+      const MGLevelObject<std::shared_ptr<MatrixFree>>     &level_mfdata,
+      const MGTransferCUDA<dim, Number, dof_layout>        &transfer_dp,
+      const Function<dim, Number>                          &boundary_values,
+      const Function<dim, Number>                          &right_hand_side,
+      std::shared_ptr<ConditionalOStream>                   pcout,
+      const unsigned int                                    n_cycles = 1)
+      : dof_handler(&dof_handler)
+      , transfer(&transfer_dp)
+      , minlevel(0)
+      , maxlevel(dof_handler.get_triangulation().n_global_levels() - 1)
+      , n_cycles(n_cycles)
+      , analytic_solution(boundary_values)
+      , pcout(pcout)
+    {
+      AssertDimension(fe_degree, dof_handler.get_fe().degree);
+
+      matrix.resize(minlevel, maxlevel);
+      matrix_op.resize(minlevel, maxlevel);
+
+      for (unsigned int level = minlevel; level <= maxlevel; ++level)
+        {
+          matrix[level].initialize(level_mfdata[level], dof_handler, level);
+          matrix[level].compute_diagonal();
+
+          matrix_op[level].initialize(mfdata_patch[level], dof_handler, level);
+        }
+
+      matrix_op[maxlevel].initialize_dof_vector(solution);
+      rhs = solution;
+
+      // set up a mapping for the geometry representation
+      MappingQ1<dim> mapping;
+
+      // interpolate the inhomogeneous boundary conditions
+      inhomogeneous_bc.clear();
+      inhomogeneous_bc.resize(maxlevel + 1);
+
+      // evaluate the right hand side in the equation, including the
+      // residual from the inhomogeneous boundary conditions
+      rhs = 0.;
+      if (CT::SETS_ == "error_analysis")
+        matrix_op[maxlevel].compute_residual(
+          rhs, solution, right_hand_side, boundary_values, maxlevel);
+      else
+        rhs = 1.;
+
+      {
+        MGLevelObject<typename SmootherOpType::AdditionalData> smoother_data;
+        smoother_data.resize(minlevel, maxlevel);
+        for (unsigned int level = minlevel; level <= maxlevel; ++level)
+          {
+            smoother_data[level].smoothing_range     = 15;
+            smoother_data[level].degree              = 5;
+            smoother_data[level].eig_cg_n_iterations = 15;
+            smoother_data[level].preconditioner =
+              matrix[level].get_diagonal_inverse();
+          }
+
+        mg_smoother_op.initialize(matrix_op, smoother_data);
+        mg_coarse.initialize(matrix[minlevel]);
+        mg_coarse_op.initialize(mg_smoother);
+      }
+    }
+
     std::vector<SolverData>
     static_comp()
     {
@@ -2191,7 +2305,7 @@ namespace PSMF
         comp_data.push_back(data);
       };
 
-      for (unsigned int s = 0; s < 1; ++s)
+      for (unsigned int s = 0; s < 2; ++s)
         {
           switch (s)
             {
@@ -2477,11 +2591,173 @@ namespace PSMF
       return solver_data;
     }
 
+    std::vector<SolverData>
+    solve_cheby()
+    {
+      *pcout << "Solving...\n";
+
+      mg::Matrix<VectorType> mg_matrix(matrix_op);
+
+      Multigrid<VectorType> mg(mg_matrix,
+                               mg_coarse,
+                               *transfer,
+                               mg_smoother_op,
+                               mg_smoother_op,
+                               minlevel,
+                               maxlevel);
+
+      preconditioner_mg = std::make_unique<
+        PreconditionMG<dim,
+                       VectorType,
+                       MGTransferCUDA<dim, Number, dof_layout>>>(*dof_handler,
+                                                                 mg,
+                                                                 *transfer);
+
+      // timers
+      if (true)
+        {
+          all_mg_timers.resize((maxlevel - minlevel + 1));
+          for (unsigned int i = 0; i < all_mg_timers.size(); ++i)
+            all_mg_timers[i].resize(7);
+
+          const auto create_mg_timer_function = [&](const unsigned int i,
+                                                    const std::string &label) {
+            return [i, label, this](const bool flag, const unsigned int level) {
+              if (false && flag)
+                std::cout << label << " " << level << std::endl;
+              if (flag)
+                all_mg_timers[level - minlevel][i].second =
+                  std::chrono::system_clock::now();
+              else
+                all_mg_timers[level - minlevel][i].first +=
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now() -
+                    all_mg_timers[level - minlevel][i].second)
+                    .count() /
+                  1e9;
+            };
+          };
+
+          {
+            mg.connect_pre_smoother_step(
+              create_mg_timer_function(0, "pre_smoother_step"));
+            mg.connect_residual_step(
+              create_mg_timer_function(1, "residual_step"));
+            mg.connect_restriction(create_mg_timer_function(2, "restriction"));
+            mg.connect_coarse_solve(
+              create_mg_timer_function(3, "coarse_solve"));
+            mg.connect_prolongation(
+              create_mg_timer_function(4, "prolongation"));
+            mg.connect_edge_prolongation(
+              create_mg_timer_function(5, "edge_prolongation"));
+            mg.connect_post_smoother_step(
+              create_mg_timer_function(6, "post_smoother_step"));
+          }
+
+          all_mg_precon_timers.resize(2);
+
+          const auto create_mg_precon_timer_function =
+            [&](const unsigned int i) {
+              return [i, this](const bool flag) {
+                if (flag)
+                  all_mg_precon_timers[i].second =
+                    std::chrono::system_clock::now();
+                else
+                  all_mg_precon_timers[i].first +=
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::system_clock::now() -
+                      all_mg_precon_timers[i].second)
+                      .count() /
+                    1e9;
+              };
+            };
+
+          preconditioner_mg->connect_transfer_to_mg(
+            create_mg_precon_timer_function(0));
+          preconditioner_mg->connect_transfer_to_global(
+            create_mg_precon_timer_function(1));
+        }
+
+      std::string solver_name = "CG";
+
+      ReductionControl solver_control(CT::MAX_STEPS_, 1e-14, CT::REDUCE_);
+      solver_control.enable_history_data();
+      solver_control.log_history(true);
+
+      SolverCG<VectorType> solver(solver_control);
+
+      try
+        {
+          solution = 0;
+          solver.solve(matrix_op[maxlevel], solution, rhs, *this);
+          print_timings();
+          clear_timings();
+        }
+      catch (...)
+        {
+          auto history_data = solver_control.get_history_data();
+          for (auto i = 1U; i < solver_control.last_step() + 1; ++i)
+            *pcout << "step " << i << ": "
+                   << history_data[i] / solver_control.initial_value() << "\n";
+        }
+
+      Timer              time;
+      const unsigned int N         = 5;
+      double             best_time = 1e10;
+      for (unsigned int i = 0; i < N; ++i)
+        {
+          time.reset();
+          time.start();
+
+          solution = 0;
+          solver.solve(matrix_op[maxlevel], solution, rhs, *this);
+          cudaDeviceSynchronize();
+
+          best_time = std::min(time.wall_time(), best_time);
+        }
+
+      auto n_iter     = solver_control.last_step();
+      auto residual_0 = solver_control.initial_value();
+      auto residual_n = solver_control.last_value();
+      auto reduction  = solver_control.reduction();
+
+      // *** average reduction: r_n = rho^n * r_0
+      const double rho =
+        std::pow(residual_n / residual_0, static_cast<double>(1. / n_iter));
+      const double convergence_rate =
+        1. / n_iter * std::log10(residual_0 / residual_n);
+
+      const auto n_step = -10 * std::log10(rho);
+      const auto n_frac = std::log(reduction) / std::log(rho);
+
+      size_t free_mem, total_mem;
+      AssertCuda(cudaMemGetInfo(&free_mem, &total_mem));
+
+      int mem_usage = (total_mem - free_mem) / 1024 / 1024;
+
+      SolverData data;
+      data.solver_name      = solver_name;
+      data.n_iteration      = n_iter;
+      data.n_step           = n_frac;
+      data.residual         = residual_n;
+      data.reduction_rate   = rho;
+      data.convergence_rate = convergence_rate;
+      data.timing           = best_time;
+      data.mem_usage        = mem_usage;
+      solver_data.push_back(data);
+
+      auto history_data = solver_control.get_history_data();
+      for (auto i = 1U; i < n_iter + 1; ++i)
+        *pcout << "step " << i << ": " << history_data[i] / residual_0 << "\n";
+
+      return solver_data;
+    }
+
     // run smooth in double precision
     void
     do_smooth()
     {
-      (mg_smoother).smooth(maxlevel, solution, rhs);
+      (mg_smoother_op).smooth(maxlevel, solution, rhs);
       cudaDeviceSynchronize();
     }
 
@@ -2489,7 +2765,7 @@ namespace PSMF
     void
     do_matvec()
     {
-      active_matrix.vmult(solution, rhs);
+      matrix_op[maxlevel].vmult(solution, rhs);
       cudaDeviceSynchronize();
     }
 
@@ -2499,6 +2775,7 @@ namespace PSMF
 
     MatrixType                    active_matrix;
     MGLevelObject<MatrixType>     matrix;
+    MGLevelObject<MatrixOp>       matrix_op;
     MGLevelObject<EdgeMatrixType> edge_up_matrix;
     MGLevelObject<EdgeMatrixType> edge_down_matrix;
 
@@ -2532,11 +2809,13 @@ namespace PSMF
     // MGLevelObject<SmootherType> smooth;
 
     MGSmootherPrecondition<MatrixType, SmootherType, VectorType> mg_smoother;
+    MGSmootherPrecondition<MatrixOp, SmootherOpType, VectorType> mg_smoother_op;
 
     /**
      * The coarse solver
      */
     MGCoarseIterative<MatrixType, VectorType> mg_coarse;
+    MGCoarseGridApplySmoother<VectorType>     mg_coarse_op;
 
     /**
      * Number of cycles to be done in the FMG cycle

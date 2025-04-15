@@ -260,6 +260,11 @@ namespace PSMF
       data        = data_;
       dof_handler = &mg_dof;
       mg_level    = level;
+
+      if (mg_level == numbers::invalid_unsigned_int)
+        n_dofs = dof_handler->n_dofs();
+      else
+        n_dofs = dof_handler->n_dofs(mg_level);
     }
 
     void
@@ -416,6 +421,20 @@ namespace PSMF
     }
 
     unsigned int
+    m() const
+    {
+      return n_dofs;
+    }
+
+    // we cannot access matrix elements of a matrix free operator directly.
+    Number
+    el(const unsigned int, const unsigned int) const
+    {
+      ExcNotImplemented();
+      return -1000000000000000000;
+    }
+
+    unsigned int
     get_mg_level() const
     {
       return mg_level;
@@ -438,6 +457,7 @@ namespace PSMF
     std::shared_ptr<const LevelVertexPatch<dim, fe_degree, Number>> data;
     const DoFHandler<dim>                                          *dof_handler;
     unsigned int                                                    mg_level;
+    unsigned int                                                    n_dofs;
   };
 
 

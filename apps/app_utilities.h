@@ -17,6 +17,8 @@
 #include "ct_parameter.h"
 #include "git_version.h"
 
+// #define CHEBYSHEV
+
 #define LA_MACRO(name, v1, v2, v3, v4, v5)                 \
   enum class name                                          \
   {                                                        \
@@ -115,8 +117,12 @@ namespace Util
     oss << n_mpi_procs << "prcs_";
     oss << n_coarse << "cell";
     oss << "_" << str_laplace_variant;
+#ifdef CHEBYSHEV
+    oss << "chebyshev_";
+#else
     oss << str_smooth_vmult_variant;
     oss << str_smooth_inv_variant;
+#endif
     oss << str_granularity;
     oss << "_" << value_type;
     oss << "_" << CT::SETS_;
@@ -175,12 +181,16 @@ namespace Util
       oss << LaplaceToString(CT::LAPLACE_TYPE_[k]) << " ";
     oss << std::endl;
     oss << "Smoother Vmult Variant:         ";
+#ifdef CHEBYSHEV
+    oss << "Chebyshev";
+#else
     for (unsigned int k = 0; k < CT::SMOOTH_VMULT_.size(); ++k)
       oss << LaplaceToString(CT::SMOOTH_VMULT_[k]) << " ";
     oss << std::endl;
     oss << "Smoother Inverse Variant:       ";
     for (unsigned int k = 0; k < CT::SMOOTH_INV_.size(); ++k)
       oss << SmootherToString(CT::SMOOTH_INV_[k]) << " ";
+#endif
     oss << std::endl;
     oss << "Granularity Scheme:             "
         << GranularityToString(CT::GRANULARITY_) << std::endl
