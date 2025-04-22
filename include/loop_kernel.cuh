@@ -297,7 +297,7 @@ namespace PSMF
 #if SCHWARZTYPE == 2
             shared_data.local_dst[index] = 0;
 #else
-            shared_data.local_dst[index] = dst[global_dof_indices];
+            shared_data.local_dst[index] = 0;
 #endif
           }
 
@@ -320,7 +320,7 @@ namespace PSMF
             atomicAdd(&dst[global_dof_indices],
                       shared_data.local_dst[index] * gpu_data.relaxation);
 #else
-            dst[global_dof_indices] =
+            dst[global_dof_indices] +=
               shared_data.local_dst[index] * gpu_data.relaxation;
 #endif
           }
