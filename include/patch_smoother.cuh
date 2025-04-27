@@ -67,7 +67,7 @@ namespace PSMF
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              shared_mem));
 
-      block_dim = dim3(patch_per_block * n_dofs_1d, n_dofs_1d);
+      block_dim = dim3(patch_per_block * n_dofs_1d, n_dofs_1d, 2);
     }
 
     template <typename VectorType, typename DataType, bool is_ghost>
