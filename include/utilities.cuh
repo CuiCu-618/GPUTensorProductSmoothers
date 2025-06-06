@@ -135,6 +135,17 @@ namespace Util
 
   template <>
   __host__ __device__ inline unsigned int
+  get_base<8, float>(const unsigned int row, const unsigned int z)
+  {
+    auto base1 = (z & 1) << 2;
+    auto base2 = (z & 3) < 2 ? 0 : 8;
+    auto base3 = (row & 1) << 4;
+
+    return base1 ^ base2 ^ base3;
+  }
+
+  template <>
+  __host__ __device__ inline unsigned int
   get_base<10, double>(const unsigned int row, const unsigned int z)
   {
     auto base1 = (row & 1) < 1 ? 0 : 8;
@@ -183,25 +194,22 @@ namespace Util
     return base1 ^ base2 ^ base3 ^ base4;
   }
 
-  // template <>
-  // __host__ __device__ inline unsigned int
-  // get_base<16, float>(const unsigned int row, const unsigned int z)
-  // {
-  //   auto base1 = (row & 3) < 2 ? 0 : 8;
-  //   auto base2 = (row & 7) < 4 ? 0 : 4;
-  //   auto base3 = (z & 1) < 1 ? 0 : 16;
-  //   auto base4 = (z & 3) < 2 ? 0 : 8;
-  //   auto base5 = (z & 7) < 4 ? 0 : 4;
-
-  //   return base1 ^ base2 ^ base3 ^ base4 ^ base5;
-  // }
-
+#if 1
   template <>
   __host__ __device__ inline unsigned int
   get_base<16, float>(const unsigned int row, const unsigned int z)
   {
-    // return 0;
+    auto base1 = (row & 3) < 2 ? 0 : 4;
+    auto base2 = (z & 1) < 1 ? 0 : 8;
+    auto base3 = (z & 3) < 2 ? 0 : 4;
 
+    return base1 ^ base2 ^ base3;
+  }
+#else
+  template <>
+  __host__ __device__ inline unsigned int
+  get_base<16, float>(const unsigned int row, const unsigned int z)
+  {
     auto base1 = (row & 3) < 2 ? 0 : 8;
     auto base2 = (row & 7) < 4 ? 0 : 16;
     auto base3 = (z & 1) < 1 ? 0 : 16;
@@ -210,6 +218,7 @@ namespace Util
 
     return base1 ^ base2 ^ base3 ^ base4 ^ base5;
   }
+#endif
 
   template <>
   __host__ __device__ inline unsigned int

@@ -17,10 +17,10 @@
 #include "tensor_product.h"
 #include "utilities.cuh"
 
-#define PIPELINE 0
+#define PIPELINE 2
 // 0 - no pipeline
 // 1 - register blocking
-// 2 - pipeline with shared memory <-> register
+// 2 - register blocking n x n x 1 
 
 #define N_PATCH 1
 

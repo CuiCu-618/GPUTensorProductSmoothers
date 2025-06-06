@@ -113,20 +113,31 @@ namespace PSMF
       {
         for (unsigned int d = 0; d < dim; ++d)
           {
-            shared_data.local_mass[d * n_dofs_1d * n_dofs_1d + tid] =
-              gpu_data.laplace_mass_1d[gpu_data.patch_type[patch * dim + d] *
-                                         n_dofs_1d * n_dofs_1d +
-                                       tid];
+            const int src_idx =
+              gpu_data.patch_type[patch * dim + d] * n_dofs_1d * n_dofs_1d +
+              tid;
+#  if PIPELINE == 2
+            const int dst_idx =
+              d * n_dofs_1d * n_dofs_1d +
+              (tid ^ Util::get_base<n_dofs_1d, Number>(threadIdx.y));
+#  else
+            const int          dst_idx = d * n_dofs_1d * n_dofs_1d + tid;
+#  endif
 
-            shared_data.local_derivative[d * n_dofs_1d * n_dofs_1d + tid] =
-              gpu_data.laplace_stiff_1d[gpu_data.patch_type[patch * dim + d] *
-                                          n_dofs_1d * n_dofs_1d +
-                                        tid];
+            shared_data.local_mass[dst_idx] = gpu_data.laplace_mass_1d[src_idx];
+            shared_data.local_derivative[dst_idx] =
+              gpu_data.laplace_stiff_1d[src_idx];
           }
 
         for (unsigned int z = 0; z < n_dofs_z; ++z)
           {
-            const unsigned int index = z * n_dofs_1d * n_dofs_1d + tid;
+#  if PIPELINE == 2
+            const unsigned int index =
+              (z * n_dofs_1d * n_dofs_1d + tid) ^
+              Util::get_base<n_dofs_1d, Number>(threadIdx.y, z);
+#  else
+            const unsigned int index   = z * n_dofs_1d * n_dofs_1d + tid;
+#  endif
 
             const unsigned int global_dof_indices =
               Util::compute_indices<dim, fe_degree>(
@@ -145,7 +156,13 @@ namespace PSMF
 
         for (unsigned int z = 0; z < n_dofs_z; ++z)
           {
-            const unsigned int index = z * n_dofs_1d * n_dofs_1d + tid;
+#  if PIPELINE == 2
+            const unsigned int index =
+              (z * n_dofs_1d * n_dofs_1d + tid) ^
+              Util::get_base<n_dofs_1d, Number>(threadIdx.y, z);
+#  else
+            const unsigned int index   = z * n_dofs_1d * n_dofs_1d + tid;
+#  endif
 
             const unsigned int global_dof_indices =
               Util::compute_indices<dim, fe_degree>(
@@ -156,6 +173,8 @@ namespace PSMF
                 z);
 
             atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
+            // dst[global_dof_indices] += shared_data.local_dst[index]; //
+            // colored
           }
       }
   }
@@ -768,7 +787,7 @@ namespace PSMF
                   shared_data.der_half[ind]  = __float2half(tmp_der);
 
 #    if ERRCOR == 1
-                  constexpr int scale = 1 << 11;
+                  constexpr int scale        = 1 << 11;
 
                   shared_data.mass_half[dim * n_dofs_1d * n_dofs_1d + ind] =
                     __float2half(
@@ -862,7 +881,7 @@ namespace PSMF
                   z);
               atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
 #  elif GACCESS == 2
-              const int index = z * n_dofs_1d * n_dofs_1d + tid;
+              const int index              = z * n_dofs_1d * n_dofs_1d + tid;
               const int global_dof_indices =
                 index + gpu_data.first_dof[patch * (1 << dim)];
               atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
@@ -1031,7 +1050,7 @@ namespace PSMF
             atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
             atomicAdd(&dst[global_dof_indices2], shared_data.local_dst[index2]);
 #  elif GACCESS == 2
-            const int index = z * n_dofs_1d * n_dofs_1d + tid;
+            const int index               = z * n_dofs_1d * n_dofs_1d + tid;
             const int global_dof_indices =
               index + gpu_data.first_dof[patch * (1 << dim)];
             atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);

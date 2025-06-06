@@ -180,6 +180,9 @@ LaplaceProblem<dim, fe_degree>::setup_system()
          << (1 << (nlevels - 1)) << " x (" << fe->degree << " + 1))^" << dim
          << std::endl;
 
+  std::cout << "Number of degrees of freedom: " << dof_handler.n_dofs()
+         << std::endl;
+
   *pcout << "Setting up Matrix-Free...\n";
   // Initialization of Dirichlet boundaries
   std::set<types::boundary_id> dirichlet_boundary;
@@ -283,8 +286,9 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
     }
 
     // std::cout << min_cycles << " " << max_cycles << std::endl;
-    // std::cout << std::fixed << std::setprecision(10) << solution_dp.l2_norm()
-    //           << std::endl;
+    std::cout << "best time: " << best_time * 1000 << " ms" << std::endl;
+    std::cout << std::fixed << std::setprecision(10) << solution_dp.l2_norm()
+              << std::endl;
 
 #if TIMING != 0
   for (unsigned int i = 0; i < n_patches; ++i)
@@ -353,8 +357,9 @@ LaplaceProblem<dim, fe_degree>::do_Ax()
     }
 
     // std::cout << min_cycless << " " << max_cycless << std::endl;
-    // std::cout << std::fixed << std::setprecision(10) << solution_sp.l2_norm()
-    //           << std::endl;
+    std::cout << "best time: " << best_time * 1000 << " ms" << std::endl;
+    std::cout << std::fixed << std::setprecision(10) << solution_dp.l2_norm()
+              << std::endl;
 
 #if TIMING != 0
   for (unsigned int i = 0; i < n_patches; ++i)

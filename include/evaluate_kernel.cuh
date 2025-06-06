@@ -434,6 +434,77 @@ namespace PSMF
   };
 
 #elif PIPELINE == 2
+    template <int direction, bool add, bool sub = false>
+    __device__ void
+    apply(const Number *shape_data, const Number *in, Number *out)
+    {
+      constexpr int multiple = std::is_same<Number, double>::value ?
+                                 Util::calculate_multiple<n_dofs_1d, 16>() :
+                                 Util::calculate_multiple<n_dofs_1d, 32>();
+      constexpr int stride   = n_dofs_1d * n_dofs_1d;
+      constexpr int K        = 4;
+      constexpr int SubM = n_dofs_1d / K;
+
+      const int tid       = threadIdx.y * n_dofs_1d + threadIdx.x;
+      const int layer_tid = tid % (K * K);
+
+      const int z   = tid / (K * K);
+      const int row = layer_tid / K;
+      const int col = layer_tid % K;
+
+      for (int i = z; i < n_dofs_1d; i += stride / (K * K))
+        {
+          Number regC[SubM][SubM] = {0.};
+          Number regA[SubM];
+          Number regB[SubM];
+
+          for (int k = 0; k < n_dofs_1d; ++k)
+            {
+              for (int ii = 0; ii < SubM; ++ii)
+                {
+                  regA[ii] =
+                    shape_data[((row + ii * K) * n_dofs_1d + k) ^
+                               Util::get_base<n_dofs_1d, Number>(row + ii * K)];
+                  regB[ii] =
+                    direction == 0 ?
+                      in[((col + ii * K) * n_dofs_1d + k + i * stride) ^
+                         Util::get_base<n_dofs_1d, Number>(col + ii * K, i)] :
+                    direction == 1 ?
+                      in[(k * n_dofs_1d + col + ii * K + i * stride) ^
+                         Util::get_base<n_dofs_1d, Number>(k, i)] :
+                      in[(i * n_dofs_1d + col + ii * K + k * stride) ^
+                         Util::get_base<n_dofs_1d, Number>(i, k)];
+                }
+
+              for (int ii = 0; ii < SubM; ++ii)
+                for (int jj = 0; jj < SubM; ++jj)
+                  regC[ii][jj] += regA[ii] * regB[jj];
+            }
+
+          const int dst_base_idx =
+            direction == 0 ? col * n_dofs_1d + row + i * stride :
+            direction == 1 ? row * n_dofs_1d + col + i * stride :
+                             i * n_dofs_1d + col + row * stride;
+          for (int ii = 0; ii < SubM; ++ii)
+            for (int jj = 0; jj < SubM; ++jj)
+              {
+                const int dst_idx =
+                  direction == 0 ?
+                    (dst_base_idx + jj * K * n_dofs_1d + ii * K) ^
+                      Util::get_base<n_dofs_1d, Number>(col + jj * K, i) :
+                  direction == 1 ?
+                    (dst_base_idx + ii * K * n_dofs_1d + jj * K) ^
+                      Util::get_base<n_dofs_1d, Number>(row + ii * K, i) :
+                    (dst_base_idx + jj * K + ii * K * stride) ^
+                      Util::get_base<n_dofs_1d, Number>(i, row + ii * K);
+
+                out[dst_idx] = add ? out[dst_idx] + regC[ii][jj] :
+                               sub ? out[dst_idx] - regC[ii][jj] :
+                                     regC[ii][jj];
+              }
+        }
+    }
+  };
 
 #endif
 
