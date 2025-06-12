@@ -267,6 +267,12 @@ namespace PSMF
         Util::pow(n_dofs_1d_p, dim - 1) * n_dofs_1d;
       // local_src, local_dst
       shared_mem += 2 * patch_per_block * local_dim_p * sizeof(Number);
+#if N_PATCH > 1
+      // pipeline buffer
+      shared_mem += patch_per_block * local_dim_p * sizeof(Number);
+      shared_mem +=
+        2 * patch_per_block * n_dofs_1d_p * n_dofs_1d_p * 3 * sizeof(Number);
+#endif
       // local_mass, local_derivative
       shared_mem +=
         2 * patch_per_block * n_dofs_1d_p * n_dofs_1d_p * 3 * sizeof(Number);
@@ -281,7 +287,7 @@ namespace PSMF
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         shared_mem));
 
-      block_dim = dim3(n_dofs_1d_p, n_dofs_1d_p);
+      block_dim = dim3(n_dofs_1d_p, n_dofs_1d_p, 1);
     }
 
     template <typename VectorType, typename DataType>
@@ -292,13 +298,15 @@ namespace PSMF
                 const dim3       &grid_dim,
                 const dim3 &) const
     {
+      auto grid_dim1 = dim3((grid_dim.x + N_PATCH - 1) / N_PATCH);
+
       laplace_kernel_tensorcoremma<dim,
                                    fe_degree,
                                    Number,
                                    LaplaceVariant::TensorCoreMMA>
-        <<<grid_dim, block_dim, shared_mem>>>(src.get_values(),
-                                              dst.get_values(),
-                                              gpu_data);
+        <<<grid_dim1, block_dim, shared_mem>>>(src.get_values(),
+                                               dst.get_values(),
+                                               gpu_data);
     }
   };
 #endif

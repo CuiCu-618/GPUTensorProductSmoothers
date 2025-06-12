@@ -66,6 +66,23 @@ namespace Util
            z * (fe_degree + 1) * (fe_degree + 1) + y * (fe_degree + 1) + x;
   }
 
+  template <int dim, int fe_degree>
+  __device__ unsigned int
+  compute_indices(unsigned int *first_dofs,
+                  unsigned int  xy_offset,
+                  unsigned int  xy_shift,
+                  unsigned int  tid_z)
+  {
+    const int z_off = tid_z / (fe_degree + 1);
+    const int z     = tid_z % (fe_degree + 1);
+
+    auto idx = first_dofs[z_off * 4 + xy_offset] +
+               z * (fe_degree + 1) * (fe_degree + 1) + xy_shift;
+
+    return idx;
+  }
+
+
 
   /**
    * Compute dofs in a patch based on first_dof.
@@ -194,7 +211,7 @@ namespace Util
     return base1 ^ base2 ^ base3 ^ base4;
   }
 
-#if 1
+#if 0
   template <>
   __host__ __device__ inline unsigned int
   get_base<16, float>(const unsigned int row, const unsigned int z)

@@ -292,6 +292,9 @@ namespace PSMF
     // create patches
     std::vector<std::vector<CellIterator>> cell_collections;
     cell_collections = std::move(gather_vertex_patches(*dof_handler, level));
+    std::sort(cell_collections.begin(),
+              cell_collections.end(),
+              [](auto &a, auto &b) { return a[0] < b[0]; });
 
     graph_ptr_raw.clear();
     graph_ptr_raw.resize(1);

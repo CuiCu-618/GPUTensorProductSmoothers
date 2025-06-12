@@ -17,12 +17,12 @@
 #include "tensor_product.h"
 #include "utilities.cuh"
 
-#define PIPELINE 2
+#define PIPELINE 0
 // 0 - no pipeline
 // 1 - register blocking
-// 2 - register blocking n x n x 1 
+// 2 - register blocking n x n x 1
 
-#define N_PATCH 1
+#define N_PATCH 16
 
 #define GACCESS 1
 // 0 - no global memory access
@@ -646,11 +646,13 @@ namespace PSMF
                     (MMAKERNEL != 0 && MMAKERNEL != 7 && MMAKERNEL != 8))
         {
           local_src = data;
-          local_dst = local_src + n_buff * local_dim;
+          local_dst = local_src + n_buff * local_dim * (N_PATCH > 1 ? 2 : 1);
 
           local_mass       = local_dst + n_buff * local_dim;
-          local_derivative = local_mass + n_buff * n_dofs_1d * n_dofs_1d * n;
-          tmp = local_derivative + n_buff * n_dofs_1d * n_dofs_1d * n;
+          local_derivative = local_mass + n_buff * n_dofs_1d * n_dofs_1d * n *
+                                            (N_PATCH > 1 ? 2 : 1);
+          tmp = local_derivative +
+                n_buff * n_dofs_1d * n_dofs_1d * n * (N_PATCH > 1 ? 2 : 1);
         }
       else
         {

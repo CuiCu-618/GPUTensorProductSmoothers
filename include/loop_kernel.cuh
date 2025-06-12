@@ -12,8 +12,12 @@
 #ifndef LOOP_KERNEL_CUH
 #define LOOP_KERNEL_CUH
 
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
+
 #include "evaluate_kernel.cuh"
 #include "patch_base.cuh"
+#include <cuda/pipeline>
 
 namespace PSMF
 {
@@ -87,6 +91,21 @@ namespace PSMF
         asm volatile("cp.async.wait_group %0;\n" ::"n"(N));
       }
   }
+
+  template <typename Number>
+  struct scaler_to_vector;
+
+  template <>
+  struct scaler_to_vector<double>
+  {
+    using type = double2;
+  };
+
+  template <>
+  struct scaler_to_vector<float>
+  {
+    using type = float2;
+  };
 
 #if N_PATCH == 1
   template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
@@ -724,7 +743,7 @@ namespace PSMF
   }
 #endif
 
-#if MMAKERNEL != 0
+#if MMAKERNEL != 0 && N_PATCH == 1
   template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
   __global__ typename std::enable_if<fe_degree == 3 || fe_degree == 7>::type
   laplace_kernel_tensorcoremma(
@@ -896,6 +915,134 @@ namespace PSMF
       }
   }
 #endif
+
+  template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
+  __global__ __launch_bounds__(1 * Util::pow(2 * fe_degree + 2, 2))
+    typename std::enable_if<fe_degree == 3 || fe_degree == 7>::type
+    laplace_kernel_tensorcoremma(
+      const Number                                                 *src,
+      Number                                                       *dst,
+      const typename LevelVertexPatch<dim, fe_degree, Number>::Data gpu_data)
+  {
+    constexpr int n_stages = 2;
+
+    constexpr int n_dofs_1d = 2 * fe_degree + 2;
+    constexpr int local_dim = Util::pow(n_dofs_1d, dim);
+    constexpr int n_dofs_z  = dim == 2 ? 1 : n_dofs_1d;
+
+    const int patch_0     = blockIdx.x * N_PATCH;
+    const int local_tid_x = threadIdx.x;
+    const int tid         = threadIdx.y * n_dofs_1d + local_tid_x;
+
+    int dof_offset[n_stages], shape_offset[n_stages];
+    for (int i = 0; i < n_stages; ++i)
+      {
+        dof_offset[i]   = i * local_dim;
+        shape_offset[i] = i * n_dofs_1d * n_dofs_1d * 3;
+      }
+
+    SharedMemData<dim, Number, true> shared_data(get_shared_data_ptr<Number>(),
+                                                 1,
+                                                 n_dofs_1d,
+                                                 local_dim);
+
+    auto load_shape_data = [&](int patch_id, int stage) {
+      for (int d = 0; d < dim; ++d)
+        {
+          auto inds =
+            gpu_data.patch_type[patch_id * dim + d] * n_dofs_1d * n_dofs_1d +
+            tid;
+
+          auto ind = shape_offset[stage] + d * n_dofs_1d * n_dofs_1d +
+                     (tid ^ Util::get_base<n_dofs_1d, Number>(threadIdx.y));
+
+          // shared_data.local_mass[ind]       = gpu_data.laplace_mass_1d[inds];
+          // shared_data.local_derivative[ind] =
+          // gpu_data.laplace_stiff_1d[inds];
+
+          copy(gpu_data.laplace_mass_1d[inds], shared_data.local_mass[ind]);
+          copy(gpu_data.laplace_stiff_1d[inds],
+               shared_data.local_derivative[ind]);
+        }
+    };
+
+    auto load_dof_val = [&](int patch_id, int stage) {
+      auto xy_offset =
+        threadIdx.y / (fe_degree + 1) * 2 + local_tid_x / (fe_degree + 1);
+      auto xy_shift =
+        (threadIdx.y & fe_degree) * (fe_degree + 1) + (local_tid_x & fe_degree);
+
+      for (int z = 0; z < n_dofs_z; ++z)
+        {
+          const int index =
+            dof_offset[stage] + (z * n_dofs_1d * n_dofs_1d + tid) ^
+            Util::get_base<n_dofs_1d, Number>(threadIdx.y, z);
+
+          const int global_dof_indices = Util::compute_indices<dim, fe_degree>(
+            &gpu_data.first_dof[patch_id * (1 << dim)], xy_offset, xy_shift, z);
+
+          // shared_data.local_src[index] = src[global_dof_indices];
+
+          copy(src[global_dof_indices], shared_data.local_src[index]);
+        }
+    };
+
+    auto store_dof_val = [&](int patch_id) {
+      auto xy_offset =
+        threadIdx.y / (fe_degree + 1) * 2 + local_tid_x / (fe_degree + 1);
+      auto xy_shift =
+        (threadIdx.y & fe_degree) * (fe_degree + 1) + (local_tid_x & fe_degree);
+
+      for (int z = 0; z < n_dofs_z; ++z)
+        {
+          const int index = ((z * n_dofs_1d * n_dofs_1d + tid) ^
+                             Util::get_base<n_dofs_1d, Number>(threadIdx.y, z));
+
+          const int global_dof_indices = Util::compute_indices<dim, fe_degree>(
+            &gpu_data.first_dof[patch_id * (1 << dim)], xy_offset, xy_shift, z);
+          atomicAdd(&dst[global_dof_indices], shared_data.local_dst[index]);
+        }
+    };
+
+    auto compute = [&](int stage) {
+      evaluate_laplace_pipe<dim, fe_degree, Number, laplace>(
+        shared_data.local_dst,
+        shared_data.local_src + dof_offset[stage],
+        shared_data.local_mass + shape_offset[stage],
+        shared_data.local_derivative + shape_offset[stage],
+        shared_data.tmp);
+    };
+
+    for (unsigned int compute_patch = 0, fetch_patch = 0;
+         compute_patch < N_PATCH;
+         ++compute_patch)
+      {
+        for (;
+             fetch_patch < N_PATCH && fetch_patch < (compute_patch + n_stages);
+             ++fetch_patch)
+          {
+            auto patch = patch_0 + fetch_patch;
+            if (patch < gpu_data.n_patches)
+              {
+                load_shape_data(patch, fetch_patch % n_stages);
+                load_dof_val(patch, fetch_patch % n_stages);
+                cp_async_fence();
+              }
+          }
+
+        auto patch = patch_0 + compute_patch;
+        if (patch < gpu_data.n_patches)
+          {
+            cp_async_wait<n_stages - 1>();
+            __syncthreads();
+
+            compute(compute_patch % n_stages);
+            __syncthreads();
+            store_dof_val(patch);
+          }
+      }
+  }
+
 
 
 #if MMAKERNEL == 5
