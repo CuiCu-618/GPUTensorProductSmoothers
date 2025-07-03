@@ -476,6 +476,7 @@ namespace PSMF
                          Util::get_base<n_dofs_1d, Number>(i, k)];
                 }
 
+#  pragma unroll
               for (int ii = 0; ii < SubM; ++ii)
                 for (int jj = 0; jj < SubM; ++jj)
                   regC[ii][jj] += regA[ii] * regB[jj];

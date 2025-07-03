@@ -211,7 +211,7 @@ namespace Util
     return base1 ^ base2 ^ base3 ^ base4;
   }
 
-#if 0
+#if 1
   template <>
   __host__ __device__ inline unsigned int
   get_base<16, float>(const unsigned int row, const unsigned int z)

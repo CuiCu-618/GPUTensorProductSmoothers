@@ -168,7 +168,7 @@ namespace PSMF
 
             shared_data.local_src[index] = src[global_dof_indices];
 
-            shared_data.local_dst[index] = 0.;
+            // shared_data.local_dst[index] = 0.;
           }
 
         evaluate_laplace<dim, fe_degree, Number, laplace>(0, &shared_data);
@@ -914,7 +914,7 @@ namespace PSMF
 #  endif
       }
   }
-#endif
+#else
 
   template <int dim, int fe_degree, typename Number, LaplaceVariant laplace>
   __global__ __launch_bounds__(1 * Util::pow(2 * fe_degree + 2, 2))
@@ -1042,6 +1042,7 @@ namespace PSMF
           }
       }
   }
+#endif // MMAKERNEL != 0 && N_PATCH == 1
 
 
 
