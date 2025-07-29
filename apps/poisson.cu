@@ -50,6 +50,8 @@ namespace Step64
 {
   using namespace dealii;
 
+  constexpr unsigned int L = 15;
+
   template <int dim, typename Number>
   class Solution : public Function<dim, Number>
   {
@@ -57,24 +59,37 @@ namespace Step64
     virtual Number
     value(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      Number val = 1.;
-      for (unsigned int d = 0; d < dim; ++d)
-        val *= std::sin(numbers::PI * p[d]);
-      return -val;
+      Number val = 0.;
+      for (unsigned int k = 1; k <= L; ++k)
+        {
+          Number tmp = 1.;
+          for (unsigned int d = 0; d < dim; ++d)
+            tmp *= std::sin(numbers::PI * k * p[d]);
+
+          val += tmp / k / k;
+        }
+      return val;
     }
 
+    // TODO: osciallatory solution
     virtual Tensor<1, dim, Number>
     gradient(const Point<dim> &p, const unsigned int = 0) const override final
     {
       Tensor<1, dim, Number> grad;
       for (unsigned int d = 0; d < dim; ++d)
         {
-          grad[d] = 1.;
-          for (unsigned int e = 0; e < dim; ++e)
-            if (d == e)
-              grad[d] *= -numbers::PI * std::cos(numbers::PI * p[e]);
-            else
-              grad[d] *= std::sin(numbers::PI * p[e]);
+          grad[d] = 0;
+          for (unsigned int k = 1; k <= L; ++k)
+            {
+              Number tmp = 1.;
+              for (unsigned int e = 0; e < dim; ++e)
+                if (d == e)
+                  tmp *= numbers::PI * k * std::cos(numbers::PI * k * p[e]);
+                else
+                  tmp *= std::sin(numbers::PI * k * p[e]);
+
+              grad[d] += tmp / k / k;
+            }
         }
       return grad;
     }
@@ -87,11 +102,16 @@ namespace Step64
     virtual Number
     value(const Point<dim> &p, const unsigned int = 0) const override final
     {
-      const Number arg = numbers::PI;
-      Number       val = 1.;
-      for (unsigned int d = 0; d < dim; ++d)
-        val *= std::sin(arg * p[d]);
-      return -dim * arg * arg * val;
+      Number val = 0.;
+      for (unsigned int k = 1; k <= L; ++k)
+        {
+          Number tmp = 1.;
+          for (unsigned int d = 0; d < dim; ++d)
+            tmp *= std::sin(numbers::PI * k * p[d]);
+
+          val += -dim * numbers::PI * numbers::PI * tmp;
+        }
+      return -val;
     }
   };
 
@@ -377,7 +397,7 @@ namespace Step64
 #ifdef CHEBYSHEV
     std::vector<PSMF::SolverData> comp_data = solver_cheby.static_comp();
 #else
-    std::vector<PSMF::SolverData> comp_data   = solver.static_comp();
+    std::vector<PSMF::SolverData> comp_data = solver.static_comp();
 #endif
     for (auto &data : comp_data)
       {
