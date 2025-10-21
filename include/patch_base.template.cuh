@@ -9,7 +9,6 @@
 
 namespace PSMF
 {
-
   template <int dim, int fe_degree, typename Number, SmootherVariant kernel>
   LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::
     LevelVertexPatch()
@@ -161,9 +160,9 @@ namespace PSMF
   template <typename Functor, typename VectorType, typename Functor_inv>
   void
   LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::patch_loop(
-    const Functor     &func,
-    const VectorType  &src,
-    VectorType        &dst,
+    const Functor &    func,
+    const VectorType & src,
+    VectorType &       dst,
     const Functor_inv &func_inv) const
   {
     switch (kernel)
@@ -202,9 +201,9 @@ namespace PSMF
   template <typename Functor, typename VectorType>
   void
   LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::
-    patch_loop_fused(const Functor    &func,
+    patch_loop_fused(const Functor &   func,
                      const VectorType &src,
-                     VectorType       &dst) const
+                     VectorType &      dst) const
   {
     auto shared_mem = [&]() {
       std::size_t mem = 0;
@@ -368,10 +367,10 @@ namespace PSMF
   template <typename Functor, typename Functor_inv, typename VectorType>
   void
   LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::
-    patch_loop_seperate(const Functor     &func,
+    patch_loop_seperate(const Functor &    func,
                         const Functor_inv &func_inv,
-                        const VectorType  &src,
-                        VectorType        &dst) const
+                        const VectorType & src,
+                        VectorType &       dst) const
   {
     auto shared_mem = [&]() {
       std::size_t mem = 0;
@@ -480,10 +479,10 @@ namespace PSMF
   template <typename MatrixType, typename Functor_inv, typename VectorType>
   void
   LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::
-    patch_loop_global(const MatrixType  &A,
+    patch_loop_global(const MatrixType & A,
                       const Functor_inv &func_inv,
-                      const VectorType  &src,
-                      VectorType        &dst) const
+                      const VectorType & src,
+                      VectorType &       dst) const
   {
     auto shared_mem_inv = [&]() {
       std::size_t mem = 0;
@@ -537,6 +536,7 @@ namespace PSMF
 
     constexpr unsigned int N    = fe_degree + 1;
     const Number scaling_factor = dim == 2 ? 1 : 1. / Util::pow(2, level);
+    const Number h              = Util::pow(2, level);
 
     QGauss<1> quadrature(N);
 
@@ -629,6 +629,27 @@ namespace PSMF
 
     auto exact_inverse = tensor_product.inverse_matrix_to_table();
 
+    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
+
+    // compute cholesky decomposition of 1D mass matrix
+    std::array<FullMatrix<Number>, dim> mass_1d;
+    for (int d = 0; d < dim; ++d)
+      {
+        mass_1d[d].reinit(n_dofs_1d - 2, n_dofs_1d - 2);
+        for (unsigned int i = 1; i < n_dofs_1d - 1; ++i)
+          for (unsigned int j = 1; j < n_dofs_1d - 1; ++j)
+            {
+              mass_1d[d](i - 1, j - 1) = patch_mass[0](i, j);
+            }
+      }
+
+    // std::array<FullMatrix<Number>, dim> L;
+    for (int d = 0; d < dim; ++d)
+      {
+        // L[d].cholesky(mass_1d[d]);
+        mass_1d[d].gauss_jordan();
+      }
+
     // auto print_matrices = [](auto matrix) {
     //   for (auto m = 0U; m < matrix.size(1); ++m)
     //     {
@@ -640,8 +661,7 @@ namespace PSMF
     // };
 
     // print_matrices(exact_inverse);
-
-    constexpr unsigned int n_dofs_1d = 2 * fe_degree + 1;
+    // print_matrices(mass_1d[0]);
 
     auto *mass    = new Number[n_dofs_1d * n_dofs_1d * dim];
     auto *laplace = new Number[n_dofs_1d * n_dofs_1d * dim];
@@ -665,8 +685,13 @@ namespace PSMF
                        &values[n_dofs_1d * n_dofs_1d * d],
                        [](const Number m) -> Number { return m; });
 
-        std::transform(eigenvec[d].begin(),
-                       eigenvec[d].end(),
+        // std::transform(eigenvec[d].begin(),
+        //                eigenvec[d].end(),
+        //                &vectors[n_dofs_1d * n_dofs_1d * d],
+        //                [](const Number m) -> Number { return m; });
+
+        std::transform(mass_1d[d].begin(),
+                       mass_1d[d].end(),
                        &vectors[n_dofs_1d * n_dofs_1d * d],
                        [](const Number m) -> Number { return m; });
       }
@@ -1244,7 +1269,7 @@ namespace PSMF
   template <typename Number1>
   void
   LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::alloc_arrays(
-    Number1          **array_device,
+    Number1 **         array_device,
     const unsigned int n)
   {
     cudaError_t error_code = cudaMalloc(array_device, n * sizeof(Number1));

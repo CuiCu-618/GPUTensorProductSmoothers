@@ -528,15 +528,21 @@ namespace PSMF
       __syncthreads();
       apply<1, false>(mass_matrix, &temp[local_dim], temp);
       __syncthreads();
-      apply<2, false, true>(derivative_matrix, temp, dst);
-      __syncthreads();
-      apply<1, false>(derivative_matrix, &temp[local_dim], temp);
-      __syncthreads();
-      apply<0, false>(derivative_matrix, src, &temp[local_dim]);
-      __syncthreads();
-      apply<1, true>(mass_matrix, &temp[local_dim], temp);
-      __syncthreads();
       apply<2, false, true>(mass_matrix, temp, dst);
+
+      // apply<0, false>(mass_matrix, src, &temp[local_dim]);
+      // __syncthreads();
+      // apply<1, false>(mass_matrix, &temp[local_dim], temp);
+      // __syncthreads();
+      // apply<2, false, true>(derivative_matrix, temp, dst);
+      // __syncthreads();
+      // apply<1, false>(derivative_matrix, &temp[local_dim], temp);
+      // __syncthreads();
+      // apply<0, false>(derivative_matrix, src, &temp[local_dim]);
+      // __syncthreads();
+      // apply<1, true>(mass_matrix, &temp[local_dim], temp);
+      // __syncthreads();
+      // apply<2, false, true>(mass_matrix, temp, dst);
     }
 
     /**
@@ -1361,19 +1367,26 @@ namespace PSMF
       __syncthreads();
       apply<1, true>(eigenvectors, temp, &temp[local_dim]);
       __syncthreads();
-      apply<2, true>(eigenvectors, &temp[local_dim], temp);
+      apply<2, true, true>(eigenvectors, &temp[local_dim], dst);
       __syncthreads();
-      if (linear_tid < (kernel_size - 2) * (kernel_size - 2))
-        for (unsigned int z = 0; z < kernel_size - 2; ++z)
-          temp[z * kernel_size * kernel_size + row * (kernel_size - 2) + col] /=
-            (eigenvalues[z] + eigenvalues[row] + eigenvalues[col]);
-      __syncthreads();
-      apply<0, false>(eigenvectors, temp, &temp[local_dim]);
-      __syncthreads();
-      apply<1, false>(eigenvectors, &temp[local_dim], temp);
-      __syncthreads();
-      apply<2, false, true>(eigenvectors, temp, dst);
-      __syncthreads();
+
+      // apply<0, true>(eigenvectors, src, temp);
+      // __syncthreads();
+      // apply<1, true>(eigenvectors, temp, &temp[local_dim]);
+      // __syncthreads();
+      // apply<2, true>(eigenvectors, &temp[local_dim], temp);
+      // __syncthreads();
+      // if (linear_tid < (kernel_size - 2) * (kernel_size - 2))
+      //   for (unsigned int z = 0; z < kernel_size - 2; ++z)
+      //     temp[z * kernel_size * kernel_size + row * (kernel_size - 2) + col] /=
+      //       (eigenvalues[z] + eigenvalues[row] + eigenvalues[col]);
+      // __syncthreads();
+      // apply<0, false>(eigenvectors, temp, &temp[local_dim]);
+      // __syncthreads();
+      // apply<1, false>(eigenvectors, &temp[local_dim], temp);
+      // __syncthreads();
+      // apply<2, false, true>(eigenvectors, temp, dst);
+      // __syncthreads();
     }
 
     /**

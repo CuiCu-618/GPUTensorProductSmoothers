@@ -215,12 +215,15 @@ namespace Step64
       {
         time.reset();
         time.start();
-        solver.solve(false);
+        solver.solve_cg(false);
         cudaDeviceSynchronize();
         best_time = std::min(time.wall_time(), best_time);
         tot_time += time.wall_time();
-        *pcout << "Time solve FMG              " << time.wall_time() << "\n";
+        *pcout << "Time solve CG               " << time.wall_time() << "\n";
       }
+    std::optional<ReductionControl> solver_control_cg = solver.solve_cg(true);
+
+    auto n_cg_iter = solver_control_cg->last_step();
 
     solver.print_wall_times();
     {
@@ -306,8 +309,8 @@ namespace Step64
         best_mv = std::min(best_mv, stat.max);
         *pcout << "matvec time dp " << stat.min << " [p" << stat.min_index
                << "] " << stat.avg << " " << stat.max << " [p" << stat.max_index
-               << "]" << " DoFs/s: " << dof_handler.n_dofs() / stat.max
-               << std::endl;
+               << "]"
+               << " DoFs/s: " << dof_handler.n_dofs() / stat.max << std::endl;
       }
     double best_mvs = 1e10;
     for (unsigned int i = 0; i < 5; ++i)
@@ -324,11 +327,11 @@ namespace Step64
         best_mvs = std::min(best_mvs, stat.max);
         *pcout << "smoother time " << stat.min << " [p" << stat.min_index
                << "] " << stat.avg << " " << stat.max << " [p" << stat.max_index
-               << "]" << " DoFs/s: " << dof_handler.n_dofs() / stat.max
-               << std::endl;
+               << "]"
+               << " DoFs/s: " << dof_handler.n_dofs() / stat.max << std::endl;
       }
     *pcout << "Best timings for ndof = " << dof_handler.n_dofs() << "   mv "
-           << best_mv << "    mv smooth " << best_mvs << "   fmg " << best_time
+           << best_mv << "    mv smooth " << best_mvs << "   cg " << best_time
            << "   gmres-mg " << time_gmres << std::endl;
 
     *pcout << "L2 error with ndof = " << dof_handler.n_dofs() << "  "
@@ -336,17 +339,18 @@ namespace Step64
 
     convergence_table.add_value("cells", triangulation.n_global_active_cells());
     convergence_table.add_value("dofs", dof_handler.n_dofs());
-    convergence_table.add_value("mat-vec", dof_handler.n_dofs() / best_mv);
-    convergence_table.add_value("smoother", dof_handler.n_dofs() / best_mvs);
-    convergence_table.add_value("fmg_L2error", l2_error);
-    convergence_table.add_value("fmg_H1error", H1_error);
-    convergence_table.add_value("fmg_time", best_time);
+    // convergence_table.add_value("mat-vec", dof_handler.n_dofs() / best_mv);
+    // convergence_table.add_value("smoother", dof_handler.n_dofs() / best_mvs);
+    convergence_table.add_value("cg_L2error", l2_error);
+    convergence_table.add_value("cg_H1error", H1_error);
+    convergence_table.add_value("cg_time", best_time);
+    convergence_table.add_value("cg_its", n_cg_iter);
     convergence_table.add_value("gmres_L2error", l2_error_gmres);
     convergence_table.add_value("gmres_H1error", H1_error_gmres);
     convergence_table.add_value("gmres_time", time_gmres);
     convergence_table.add_value("gmres_its", n_iter);
-    convergence_table.add_value("frac_its", n_frac);
-    convergence_table.add_value("gmres_reduction", rho);
+    // convergence_table.add_value("frac_its", n_frac);
+    // convergence_table.add_value("gmres_reduction", rho);
   }
 
 
@@ -423,20 +427,20 @@ namespace Step64
 
     if (true)
       {
-        convergence_table.set_scientific("fmg_L2error", true);
-        convergence_table.set_precision("fmg_L2error", 3);
+        convergence_table.set_scientific("cg_L2error", true);
+        convergence_table.set_precision("cg_L2error", 3);
         convergence_table.evaluate_convergence_rates(
-          "fmg_L2error", "cells", ConvergenceTable::reduction_rate_log2, dim);
-        convergence_table.set_scientific("fmg_H1error", true);
-        convergence_table.set_precision("fmg_H1error", 3);
+          "cg_L2error", "cells", ConvergenceTable::reduction_rate_log2, dim);
+        convergence_table.set_scientific("cg_H1error", true);
+        convergence_table.set_precision("cg_H1error", 3);
         convergence_table.evaluate_convergence_rates(
-          "fmg_H1error", "cells", ConvergenceTable::reduction_rate_log2, dim);
+          "cg_H1error", "cells", ConvergenceTable::reduction_rate_log2, dim);
         convergence_table.set_scientific("mat-vec", true);
         convergence_table.set_precision("mat-vec", 3);
         convergence_table.set_scientific("smoother", true);
         convergence_table.set_precision("smoother", 3);
-        convergence_table.set_scientific("fmg_time", true);
-        convergence_table.set_precision("fmg_time", 3);
+        convergence_table.set_scientific("cg_time", true);
+        convergence_table.set_precision("cg_time", 3);
 
         convergence_table.set_scientific("gmres_L2error", true);
         convergence_table.set_precision("gmres_L2error", 3);
@@ -478,7 +482,7 @@ main(int argc, char *argv[])
       else
         AssertThrow(false, ExcMessage("Invalid Vcycle number type."));
 
-      deallog.depth_console(2);
+      deallog.depth_console(0);
       std::ofstream logfile("deallog_D" + std::to_string(CT::DIMENSION_) +
                             "_Q" + std::to_string(CT::FE_DEGREE_) + "_" +
                             value_type);

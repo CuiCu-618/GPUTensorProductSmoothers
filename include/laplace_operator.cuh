@@ -26,7 +26,8 @@ namespace PSMF
     operator()(
       FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> *fe_eval) const
     {
-      fe_eval->submit_gradient(fe_eval->get_gradient());
+      // fe_eval->submit_gradient(fe_eval->get_gradient());
+      fe_eval->submit_value(fe_eval->get_value());
     }
   };
 
@@ -56,10 +57,10 @@ namespace PSMF
       FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> fe_eval(
         cell, gpu_data, shared_data, dofs_per_dim);
       fe_eval.read_dof_values(src);
-      fe_eval.evaluate(false, true);
+      fe_eval.evaluate(true, false);
       fe_eval.apply_for_each_quad_point(
         LaplaceOperatorQuad<dim, fe_degree, Number>());
-      fe_eval.integrate(false, true);
+      fe_eval.integrate(true, false);
       fe_eval.distribute_local_to_global(dst);
     }
   };

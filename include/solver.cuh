@@ -45,9 +45,9 @@ namespace PSMF
   template <bool is_zero, typename Number>
   __global__ void
   set_inhomogeneous_dofs(const unsigned int *indicex,
-                         const Number       *values,
+                         const Number *      values,
                          const unsigned int  n_inhomogeneous_dofs,
-                         Number             *dst)
+                         Number *            dst)
   {
     const unsigned int dof =
       threadIdx.x + blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
@@ -89,8 +89,8 @@ namespace PSMF
 
     virtual void
     operator()(const unsigned int level,
-               VectorType        &dst,
-               const VectorType  &src) const
+               VectorType &       dst,
+               const VectorType & src) const
     {
       if (is_empty)
         return;
@@ -181,12 +181,12 @@ namespace PSMF
     using MatrixType  = LaplaceOperator<dim, fe_degree, Number, dof_layout>;
     using MatrixType2 = LaplaceOperator<dim, fe_degree, Number2, dof_layout>;
 
-    MultigridSolver(const DoFHandler<dim>                          &dof_handler,
-                    const MGLevelObject<MatrixType>                &matrix_dp,
-                    const MGLevelObject<MatrixType2>               &matrix,
+    MultigridSolver(const DoFHandler<dim> &                         dof_handler,
+                    const MGLevelObject<MatrixType> &               matrix_dp,
+                    const MGLevelObject<MatrixType2> &              matrix,
                     const MGTransferCUDA<dim, Number2, dof_layout> &transfer,
-                    const Function<dim, Number>        &boundary_values,
-                    const Function<dim, Number>        &right_hand_side,
+                    const Function<dim, Number> &       boundary_values,
+                    const Function<dim, Number> &       right_hand_side,
                     std::shared_ptr<ConditionalOStream> pcout,
                     const unsigned int                  n_cycles = 1)
       : dof_handler(&dof_handler)
@@ -712,7 +712,7 @@ namespace PSMF
             }
 
           unsigned int *inhomogeneous_index;
-          Number       *inhomogeneous_value;
+          Number *      inhomogeneous_value;
 
           cudaError_t cuda_error =
             cudaMalloc(&inhomogeneous_index,
@@ -749,7 +749,7 @@ namespace PSMF
     template <bool is_d2f = true, typename number, typename number2>
     void
     convert_precision(
-      LinearAlgebra::distributed::Vector<number, MemorySpace::CUDA>        &dst,
+      LinearAlgebra::distributed::Vector<number, MemorySpace::CUDA> &       dst,
       const LinearAlgebra::distributed::Vector<number2, MemorySpace::CUDA> &src)
       const
     {
@@ -961,12 +961,12 @@ namespace PSMF
       LinearAlgebra::distributed::Vector<Number, MemorySpace::CUDA>;
     using MatrixType = LaplaceOperator<dim, fe_degree, Number, dof_layout>;
 
-    MultigridSolver(const DoFHandler<dim>           &dof_handler,
+    MultigridSolver(const DoFHandler<dim> &          dof_handler,
                     const MGLevelObject<MatrixType> &matrix_dp,
                     const MGLevelObject<MatrixType> &,
                     const MGTransferCUDA<dim, Number, dof_layout> &transfer_dp,
-                    const Function<dim, Number>        &boundary_values,
-                    const Function<dim, Number>        &right_hand_side,
+                    const Function<dim, Number> &       boundary_values,
+                    const Function<dim, Number> &       right_hand_side,
                     std::shared_ptr<ConditionalOStream> pcout,
                     const unsigned int                  n_cycles = 1)
       : dof_handler(&dof_handler)
@@ -1432,7 +1432,7 @@ namespace PSMF
             }
 
           unsigned int *inhomogeneous_index;
-          Number       *inhomogeneous_value;
+          Number *      inhomogeneous_value;
 
           cudaError_t cuda_error =
             cudaMalloc(&inhomogeneous_index,
@@ -1542,10 +1542,10 @@ namespace PSMF
   class MultigridSolvers
   {
   public:
-    MultigridSolvers(const DoFHandler<dim>              &dof_handler,
-                     const Function<dim, Number2>       &boundary_values,
-                     const Function<dim, Number2>       &right_hand_side,
-                     const Function<dim, Number2>       &coefficient,
+    MultigridSolvers(const DoFHandler<dim> &             dof_handler,
+                     const Function<dim, Number2> &      boundary_values,
+                     const Function<dim, Number2> &      right_hand_side,
+                     const Function<dim, Number2> &      coefficient,
                      std::shared_ptr<ConditionalOStream> pcout,
                      const unsigned int                  n_cycles = 1)
       : dof_handler(&dof_handler)
@@ -1909,6 +1909,39 @@ namespace PSMF
         return std::nullopt;
     }
 
+    std::optional<ReductionControl>
+    solve_cg(const bool do_analyze)
+    {
+      ReductionControl solver_control(CT::MAX_STEPS_ * 100, 1e-16, CT::REDUCE_);
+      solver_control.enable_history_data();
+      solver_control.log_history(true);
+
+      // typename SolverGMRES<VectorType2>::AdditionalData additional_data;
+      // additional_data.use_default_residual = true;
+      // SolverGMRES<VectorType2> solver_gmres(solver_control, additional_data);
+
+      SolverCG<VectorType2> solver_cg(solver_control);
+      solution[maxlevel] = 0;
+
+      try
+        {
+          solver_cg.solve(matrix_dp[maxlevel],
+                          solution[maxlevel],
+                          rhs[maxlevel],
+                          PreconditionIdentity());
+        }
+      catch (...)
+        {
+          *pcout << "CG solver failed within " << CT::MAX_STEPS_ * 100
+                 << " iterations." << std::endl;
+        }
+
+      if (do_analyze)
+        return solver_control;
+      else
+        return std::nullopt;
+    }
+
 
 
     // Implement the vmult() function needed by the preconditioner interface
@@ -1917,16 +1950,18 @@ namespace PSMF
           const LinearAlgebra::distributed::Vector<Number2, MemorySpace::CUDA>
             &src) const
     {
-      Timer time1, time;
-      // defect[maxlevel].copy_locally_owned_data_from(src);
-      convert_precision<true>(defect[maxlevel], src);
-      timings[maxlevel][4] += time.wall_time();
-      v_cycle(maxlevel, 1);
-      time.restart();
-      // dst.copy_locally_owned_data_from(solution_update[maxlevel]);
-      convert_precision<false>(dst, solution_update[maxlevel]);
-      timings[maxlevel][4] += time.wall_time();
-      timings[minlevel][2] += time1.wall_time();
+      // Timer time1, time;
+      // // defect[maxlevel].copy_locally_owned_data_from(src);
+      // convert_precision<true>(defect[maxlevel], src);
+      // timings[maxlevel][4] += time.wall_time();
+      // v_cycle(maxlevel, 1);
+      // time.restart();
+      // // dst.copy_locally_owned_data_from(solution_update[maxlevel]);
+      // convert_precision<false>(dst, solution_update[maxlevel]);
+      // timings[maxlevel][4] += time.wall_time();
+      // timings[minlevel][2] += time1.wall_time();
+
+      smooth[maxlevel].vmult(dst, src);
     }
 
     // run matrix-vector product in double precision
@@ -2033,7 +2068,7 @@ namespace PSMF
             }
 
           unsigned int *inhomogeneous_index;
-          Number2      *inhomogeneous_value;
+          Number2 *     inhomogeneous_value;
 
           cudaError_t cuda_error =
             cudaMalloc(&inhomogeneous_index,
@@ -2070,7 +2105,7 @@ namespace PSMF
     template <bool is_d2f = true, typename number, typename number2>
     void
     convert_precision(
-      LinearAlgebra::distributed::Vector<number, MemorySpace::CUDA>        &dst,
+      LinearAlgebra::distributed::Vector<number, MemorySpace::CUDA> &       dst,
       const LinearAlgebra::distributed::Vector<number2, MemorySpace::CUDA> &src)
       const
     {
