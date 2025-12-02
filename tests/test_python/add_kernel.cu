@@ -1,9 +1,11 @@
 // add_kernel.cu
-#include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>   // at::cuda::getCurrentCUDAStream
-#include <c10/cuda/CUDAGuard.h>      // c10::cuda::CUDAGuard
+#include <pybind11/pybind11.h>
+#include <cuda_runtime.h>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
 
-namespace {
+namespace py = pybind11;
 
 __global__ void vector_add_kernel(const float* __restrict__ a,
                                   const float* __restrict__ b,
@@ -16,47 +18,33 @@ __global__ void vector_add_kernel(const float* __restrict__ a,
     }
 }
 
-torch::Tensor vector_add_cuda(torch::Tensor a, torch::Tensor b) {
-    TORCH_CHECK(a.is_cuda(), "a must be a CUDA tensor");
-    TORCH_CHECK(b.is_cuda(), "b must be a CUDA tensor");
-    TORCH_CHECK(a.scalar_type() == torch::kFloat32,
-                "a must be float32");
-    TORCH_CHECK(b.scalar_type() == torch::kFloat32,
-                "b must be float32");
-    TORCH_CHECK(a.sizes() == b.sizes(),
-                "a and b must have the same shape");
-
-    a = a.contiguous();
-    b = b.contiguous();
-
-    auto c = torch::empty_like(a);
-    int64_t n = a.numel();
+// 这里不再用 torch::Tensor，而是用设备指针 + 长度
+void vector_add_cuda(std::uintptr_t a_ptr,
+                     std::uintptr_t b_ptr,
+                     std::uintptr_t c_ptr,
+                     std::int64_t n) {
+    const float* a = reinterpret_cast<const float*>(a_ptr);
+    const float* b = reinterpret_cast<const float*>(b_ptr);
+    float*       c = reinterpret_cast<float*>(c_ptr);
 
     const int threads = 256;
     const int blocks  = static_cast<int>((n + threads - 1) / threads);
 
-    // 保证当前 CUDA device 与张量所在 device 一致
-    c10::cuda::CUDAGuard device_guard(a.device());
+    vector_add_kernel<<<blocks, threads>>>(a, b, c, n);
 
-    // 拿到当前 stream（对应这个 device）
-    auto stream = at::cuda::getCurrentCUDAStream(a.device().index());
-
-    vector_add_kernel<<<blocks, threads, 0, stream>>>(
-        a.data_ptr<float>(),
-        b.data_ptr<float>(),
-        c.data_ptr<float>(),
-        n
-    );
-
-    TORCH_CHECK(cudaGetLastError() == cudaSuccess,
-                "CUDA kernel launch failed");
-
-    return c;
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        throw std::runtime_error(
+            std::string("CUDA kernel launch failed: ") +
+            cudaGetErrorString(err));
+    }
 }
-
-} // namespace
 
 PYBIND11_MODULE(add_cuda, m) {
     m.def("add", &vector_add_cuda,
-          "Vector addition (CUDA, takes torch.Tensor)");
+          "Vector addition (CUDA, takes device pointers)",
+          py::arg("a_ptr"),
+          py::arg("b_ptr"),
+          py::arg("c_ptr"),
+          py::arg("n"));
 }
