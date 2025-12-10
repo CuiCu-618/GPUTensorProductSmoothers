@@ -4,12 +4,12 @@
  */
 
 #include <fstream>
+#include <iterator>
 
 #include "loop_kernel.cuh"
 
 namespace PSMF
 {
-
   template <int dim, int fe_degree, typename Number, SmootherVariant kernel>
   LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::
     LevelVertexPatch()
@@ -29,6 +29,10 @@ namespace PSMF
     for (auto &first_dof_color_ptr : first_dof)
       Utilities::CUDA::free(first_dof_color_ptr);
     first_dof.clear();
+
+    for (auto &patch_vertices_color_ptr : patch_vertices)
+      Utilities::CUDA::free(patch_vertices_color_ptr);
+    patch_vertices.clear();
 
     for (auto &patch_id_color_ptr : patch_id)
       Utilities::CUDA::free(patch_id_color_ptr);
@@ -59,6 +63,133 @@ namespace PSMF
       }
     return result;
   }
+
+  template <int dim, int fe_degree, typename Number, SmootherVariant kernel>
+  std::vector<std::vector<
+    typename LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::
+      CellIterator>>
+  LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::
+    gather_vertex_patches(const DoFHandler<dim> &dof_handler,
+                          const unsigned int     level) const
+  {
+    // LAMBDA checks if a vertex is at the physical boundary
+    auto &&is_boundary_vertex = [](const CellIterator &cell,
+                                   const unsigned int  vertex_id) {
+      return std::any_of(
+        std::begin(GeometryInfo<dim>::vertex_to_face[vertex_id]),
+        std::end(GeometryInfo<dim>::vertex_to_face[vertex_id]),
+        [&cell](const auto &face_no) { return cell->at_boundary(face_no); });
+    };
+
+    const auto locally_owned_range_mg =
+      filter_iterators(dof_handler.mg_cell_iterators_on_level(level),
+                       IteratorFilters::LocallyOwnedLevelCell());
+    /**
+     * A mapping @p global_to_local_map between the global vertex and
+     * the pair containing the number of locally owned cells and the
+     * number of all cells (including ghosts) is constructed
+     */
+    std::map<unsigned int, std::pair<unsigned int, unsigned int>>
+      global_to_local_map;
+    for (const auto &cell : locally_owned_range_mg)
+      {
+        for (unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_cell; ++v)
+          if (!is_boundary_vertex(cell, v))
+            {
+              const unsigned int global_index = cell->vertex_index(v);
+              const auto element = global_to_local_map.find(global_index);
+              if (element != global_to_local_map.cend())
+                {
+                  ++(element->second.first);
+                  ++(element->second.second);
+                }
+              else
+                {
+                  const auto n_cells_pair = std::pair<unsigned, unsigned>{1, 1};
+                  const auto status       = global_to_local_map.insert(
+                    std::make_pair(global_index, n_cells_pair));
+                  (void)status;
+                  Assert(status.second,
+                         ExcMessage("failed to insert key-value-pair"))
+                }
+            }
+      }
+
+    /**
+     * Enumerate the patches contained in @p global_to_local_map by
+     * replacing the former number of locally owned cells in terms of a
+     * consecutive numbering. The local numbering is required for
+     * gathering the level cell iterators into a collection @
+     * cell_collections according to the global vertex index.
+     */
+    unsigned int local_index = 0;
+    for (auto &key_value : global_to_local_map)
+      {
+        key_value.second.first = local_index++;
+      }
+    const unsigned n_subdomains = global_to_local_map.size();
+    AssertDimension(n_subdomains, local_index);
+    std::vector<std::vector<CellIterator>> cell_collections;
+    cell_collections.resize(n_subdomains);
+    for (auto &cell : dof_handler.mg_cell_iterators_on_level(level))
+      for (unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_cell; ++v)
+        {
+          const unsigned int global_index = cell->vertex_index(v);
+          const auto         element = global_to_local_map.find(global_index);
+          if (element != global_to_local_map.cend())
+            {
+              const unsigned int local_index = element->second.first;
+              const unsigned int patch_size  = element->second.second;
+              auto              &collection  = cell_collections[local_index];
+              if (collection.empty())
+                collection.resize(patch_size);
+              if (patch_size == regular_vpatch_size) // regular patch
+                collection[regular_vpatch_size - 1 - v] = cell;
+              else                                   // irregular patch
+                AssertThrow(false, ExcMessage("TODO irregular vertex patches"));
+            }
+        }
+    return cell_collections;
+  }
+
+  template <int dim, int fe_degree, typename Number, SmootherVariant kernel>
+  void
+  LevelVertexPatch<dim, fe_degree, Number, kernel, DoFLayout::Q>::
+    get_patch_data(const PatchIterator &patch, const unsigned int patch_id)
+  {
+    auto cmp = [](const Point<dim, Number> &a, const Point<dim, Number> &b) {
+      for (int d = 0; d < dim; ++d)
+        {
+          if (a[d] < b[d])
+            return true;
+          if (a[d] > b[d])
+            return false;
+        }
+      return false;
+    };
+
+    std::set<Point<dim, Number>, decltype(cmp)> points(cmp);
+    for (unsigned int cell = 0; cell < regular_vpatch_size; ++cell)
+      {
+        auto cell_ptr = (*patch)[cell];
+        for (unsigned int d = 0; d < Util::pow(2, dim); ++d)
+          {
+            auto point = cell_ptr->vertex(d);
+            points.insert(point);
+          }
+      }
+    Number *ptr = &patch_vertices_host[patch_id * Util::pow(3, dim) * dim];
+    for (auto &p : points)
+      {
+        std::transform(&p[0], &p[0] + dim, ptr, [](const Number &x) {
+          return x;
+        });
+        ptr += dim;
+      }
+    // for (auto p : points)
+    //   std::cout << p << std::endl;
+  }
+
 
   template <int dim, int fe_degree, typename Number, SmootherVariant kernel>
   template <typename MatrixFreeType>
@@ -101,6 +232,52 @@ namespace PSMF
 
     setup_color_arrays(n_colors);
 
+    // create patches
+    std::vector<std::vector<CellIterator>> cell_collections;
+    cell_collections = std::move(gather_vertex_patches(*dof_handler, level));
+
+    graph_ptr_raw.clear();
+    graph_ptr_raw.resize(1);
+    for (auto patch = cell_collections.begin(); patch != cell_collections.end();
+         ++patch)
+      graph_ptr_raw[0].push_back(patch);
+
+    // coloring
+    graph_ptr_colored.clear();
+    graph_ptr_colored.resize(regular_vpatch_size);
+    for (auto patch = cell_collections.begin(); patch != cell_collections.end();
+         ++patch)
+      {
+        auto first_cell = (*patch)[0];
+
+        graph_ptr_colored[first_cell->parent()->child_iterator_to_index(
+                            first_cell)]
+          .push_back(patch);
+      }
+
+    for (unsigned int i = 0; i < regular_vpatch_size; ++i)
+      {
+        auto n_patches = graph_ptr_colored[i].size();
+
+        patch_vertices_host.clear();
+        patch_vertices_host.resize(n_patches * Util::pow(3, dim) * dim);
+
+        auto patch     = graph_ptr_colored[i].begin(),
+             end_patch = graph_ptr_colored[i].end();
+        for (unsigned int p_id = 0; patch != end_patch; ++patch, ++p_id)
+          get_patch_data(*patch, p_id);
+
+        alloc_arrays(&patch_vertices[i], n_patches * Util::pow(3, dim) * dim);
+
+        cudaError_t error_code =
+          cudaMemcpy(patch_vertices[i],
+                     patch_vertices_host.data(),
+                     n_patches * Util::pow(3, dim) * dim * sizeof(Number),
+                     cudaMemcpyHostToDevice);
+        AssertCuda(error_code);
+      }
+
+
     for (unsigned int i = 0; i < n_colors; ++i)
       {
         n_patches[i] = graph[i].size();
@@ -140,6 +317,7 @@ namespace PSMF
     data_copy.patch_per_block      = patch_per_block;
     data_copy.relaxation           = relaxation;
     data_copy.first_dof            = first_dof[color];
+    data_copy.patch_vertices       = patch_vertices[color];
     data_copy.patch_id             = patch_id[color];
     data_copy.eigenvalues          = eigenvalues;
     data_copy.eigenvectors         = eigenvectors;
@@ -1116,6 +1294,7 @@ namespace PSMF
     this->block_dim.resize(n_colors);
     this->block_dim_inv.resize(n_colors);
     this->first_dof.resize(n_colors);
+    this->patch_vertices.resize(n_colors);
     this->patch_id.resize(n_colors);
   }
 

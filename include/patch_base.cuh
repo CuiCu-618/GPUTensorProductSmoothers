@@ -133,8 +133,11 @@ namespace PSMF
     : public Subscriptor
   {
   public:
-    using CellFilter =
-      FilteredIterator<typename DoFHandler<dim>::level_cell_iterator>;
+    using CellIterator = typename DoFHandler<dim>::level_cell_iterator;
+    using PatchIterator =
+      typename std::vector<std::vector<CellIterator>>::const_iterator;
+
+    static constexpr unsigned int regular_vpatch_size = 1 << dim;
 
     /**
      * Standardized data struct to pipe additional data to LevelVertexPatch.
@@ -194,6 +197,11 @@ namespace PSMF
        * @note Lexicographic ordering is needed.
        */
       unsigned int *first_dof;
+
+      /**
+       * Pointer to the vertices in each patch.
+       */
+      Number *patch_vertices;
 
       /**
        * Pointer to the patch id.
@@ -333,6 +341,17 @@ namespace PSMF
                         VectorType        &dst) const;
 
     /**
+     * Helper function. Get tensor product data for each patch.
+     */
+    void
+    get_patch_data(const PatchIterator &patch, const unsigned int patch_id);
+
+    std::vector<std::vector<CellIterator>>
+    gather_vertex_patches(const DoFHandler<dim> &dof_handler,
+                          const unsigned int     level) const;
+
+
+    /**
      * Helper function. Implement multiple red-black coloring.
      */
     void
@@ -412,9 +431,14 @@ namespace PSMF
     std::vector<std::vector<unsigned int>> graph;
 
     /**
+     * Raw graphed of locally owned active patches.
+     */
+    std::vector<std::vector<PatchIterator>> graph_ptr_raw;
+
+    /**
      * Colored graphed of locally owned active patches.
      */
-    std::vector<std::vector<CellFilter>> graph_ptr;
+    std::vector<std::vector<PatchIterator>> graph_ptr_colored;
 
     /**
      * Number of patches in each color.
@@ -432,6 +456,13 @@ namespace PSMF
      * @note Need Lexicographic ordering degree of freedoms.
      */
     std::vector<unsigned int *> first_dof;
+
+    /**
+      * Vector of pointer to the vertices in each patch.
+      */
+    std::vector<Number *> patch_vertices;
+
+    std::vector<Number> patch_vertices_host;
 
     /**
      * Vector of pointer to the patch id of each color.

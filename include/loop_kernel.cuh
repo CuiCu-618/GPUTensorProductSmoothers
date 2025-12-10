@@ -522,6 +522,12 @@ namespace PSMF
 
     if (patch < gpu_data.n_patches)
       {
+
+        // if (threadIdx.x == 0 && threadIdx.y == 0) {
+        //   printf("%f %f\n", gpu_data.patch_vertices[patch * Util::pow(3, dim) * dim],
+        //                     gpu_data.patch_vertices[patch * Util::pow(3, dim) * dim + 1]);
+        // }
+
         shared_data.local_mass[local_tid_x] = gpu_data.eigenvalues[local_tid_x];
         shared_data.local_derivative[threadIdx.y * n_dofs_1d + local_tid_x] =
           gpu_data.eigenvectors[threadIdx.y * n_dofs_1d + local_tid_x];
